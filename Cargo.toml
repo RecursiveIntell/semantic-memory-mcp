@@ -1,0 +1,63 @@
+[package]
+name = "semantic-memory-mcp"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+authors = ["Josh Stevenson <j.stevenson.cs@gmail.com>"]
+readme = "README.md"
+repository = "https://github.com/RecursiveIntell/semantic-memory-mcp"
+homepage = "https://github.com/RecursiveIntell/semantic-memory-mcp"
+documentation = "https://docs.rs/semantic-memory-mcp"
+description = "MCP server wrapping semantic-memory — local-first knowledge management with evidence-scored retrieval, contradiction detection, and adaptive routing"
+keywords = ["mcp", "semantic-memory", "rag", "knowledge-management", "vector-search"]
+categories = ["database", "text-processing", "development-tools"]
+
+[workspace]
+
+[[bin]]
+name = "semantic-memory-mcp"
+path = "src/main.rs"
+
+[features]
+# SM-AUD-001: The MCP server references routing, integration, decoder, discord,
+# provenance, factor_graph, topology, and community modules unconditionally in
+# server.rs. These are all behind `full` features in semantic-memory. Making
+# `full` the default ensures the advertised 18-tool surface compiles and works
+# out of the box. A minimal `search`-only profile can be built with
+# `--no-default-features --features search` but will not expose advanced tools.
+default = ["full"]
+# Core: usearch 2.25 backend (the default and recommended backend for
+# semantic-memory — won the benchmark vs hnsw_rs by 2-78x on every metric
+# that matters for a desktop RAG app, +4pp better recall@10 at D=768).
+# No brute-force — usearch is the production backend.
+# Includes candle-embedder so the default build needs no Ollama.
+search = ["semantic-memory/usearch-backend", "semantic-memory/candle-embedder", "candle-embedder"]
+# Local feature that forwards to semantic-memory's candle-embedder.
+# Used for cfg gates in bridge.rs.
+candle-embedder = ["semantic-memory/candle-embedder"]
+# Full: all knowledge management features + codec integration
+full = [
+    "search",
+    "semantic-memory/provenance",
+    "semantic-memory/temporal",
+    "semantic-memory/multiscale",
+    "semantic-memory/discord",
+    "semantic-memory/decoder",
+    "semantic-memory/subtraction",
+    "semantic-memory/compression-governor",
+    "semantic-memory/routing",
+    "semantic-memory/integration",
+]
+
+[dependencies]
+semantic-memory = { version = "0.5.3", path = "../semantic-memory", default-features = false }
+rmcp = { version = "1", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

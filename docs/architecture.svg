@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 720" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <style>
+    .bg { fill: #0d1117; }
+    .card { fill: #161b22; stroke: #30363d; stroke-width: 1; rx: 8; }
+    .card-mcp { fill: #0f2438; stroke: #1f6feb; stroke-width: 1.5; rx: 8; }
+    .card-lib { fill: #161b22; stroke: #39d0d8; stroke-width: 1.5; rx: 8; }
+    .card-embed { fill: #1a1a2e; stroke: #8b949e; stroke-width: 1; rx: 8; }
+    .module { fill: #1c2331; stroke: #30363d; stroke-width: 0.75; rx: 4; }
+    .tool { fill: #0f2438; stroke: #1f6feb; stroke-width: 0.75; rx: 3; }
+    .title { fill: #f0f6fc; font-weight: 700; font-size: 15px; }
+    .subtitle { fill: #8b949e; font-size: 11px; }
+    .label { fill: #c9d1d9; font-size: 11px; }
+    .label-sm { fill: #8b949e; font-size: 9.5px; }
+    .label-tool { fill: #79c0ff; font-size: 9px; font-weight: 600; }
+    .accent { fill: #39d0d8; }
+    .accent-blue { fill: #1f6feb; }
+    .arrow { stroke: #484f58; stroke-width: 1.5; fill: none; }
+    .arrow-label { fill: #8b949e; font-size: 9.5px; text-anchor: middle; }
+  </style>
+
+  <rect width="880" height="720" class="bg"/>
+
+  <!-- Client layer -->
+  <rect x="20" y="20" width="840" height="70" class="card"/>
+  <text x="440" y="42" text-anchor="middle" class="title">MCP Client (Hermes Agent, Claude Desktop, Cursor, Windsurf)</text>
+  <text x="440" y="58" text-anchor="middle" class="subtitle">Discovers and calls tools via JSON-RPC over stdio</text>
+  <text x="440" y="75" text-anchor="middle" class="label-sm">tools/list → 18 tools discovered · tools/call → tool executes and returns JSON</text>
+
+  <!-- Arrow: client -> mcp -->
+  <path d="M 440 90 L 440 115" class="arrow" marker-end="url(#arrowhead)"/>
+  <text x="460" y="105" class="label-sm">MCP Protocol</text>
+
+  <!-- MCP server layer -->
+  <rect x="40" y="115" width="800" height="115" class="card-mcp"/>
+  <text x="440" y="135" text-anchor="middle" class="title" fill="#79c0ff">semantic-memory-mcp (1,710 LOC, 4 source files)</text>
+  <text x="440" y="149" text-anchor="middle" class="subtitle">MCP stdio server using rmcp SDK · #[tool_router] macro auto-generates JSON Schema</text>
+
+  <!-- Tool grid -->
+  <g transform="translate(55, 158)">
+    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_search</text>
+    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_explained</text>
+    <rect x="190" width="88" height="16" class="tool"/><text x="234" y="11" text-anchor="middle" class="label-tool">sm_add_fact</text>
+    <rect x="285" width="88" height="16" class="tool"/><text x="329" y="11" text-anchor="middle" class="label-tool">sm_ingest_doc</text>
+    <rect x="380" width="88" height="16" class="tool"/><text x="424" y="11" text-anchor="middle" class="label-tool">sm_stats</text>
+    <rect x="475" width="88" height="16" class="tool"/><text x="519" y="11" text-anchor="middle" class="label-tool">sm_graph_path</text>
+    <rect x="570" width="88" height="16" class="tool"/><text x="614" y="11" text-anchor="middle" class="label-tool">sm_provenance</text>
+    <rect x="665" width="88" height="16" class="tool"/><text x="709" y="11" text-anchor="middle" class="label-tool">sm_route_q</text>
+  </g>
+  <g transform="translate(55, 178)">
+    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_routing</text>
+    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_decoder</text>
+    <rect x="190" width="88" height="16" class="tool"/><text x="234" y="11" text-anchor="middle" class="label-tool">sm_discord</text>
+    <rect x="285" width="88" height="16" class="tool"/><text x="329" y="11" text-anchor="middle" class="label-tool">sm_lifecycle</text>
+    <rect x="380" width="88" height="16" class="tool"/><text x="424" y="11" text-anchor="middle" class="label-tool">sm_add_edge</text>
+    <rect x="475" width="88" height="16" class="tool"/><text x="519" y="11" text-anchor="middle" class="label-tool">sm_list_edges</text>
+    <rect x="570" width="88" height="16" class="tool"/><text x="614" y="11" text-anchor="middle" class="label-tool">sm_inval_edge</text>
+    <rect x="665" width="88" height="16" class="tool"/><text x="709" y="11" text-anchor="middle" class="label-tool">sm_factor_g</text>
+  </g>
+  <g transform="translate(55, 198)">
+    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_topology</text>
+    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_community</text>
+  </g>
+
+  <!-- Arrow: mcp -> library -->
+  <path d="M 440 230 L 440 255" class="arrow" marker-end="url(#arrowhead)"/>
+  <text x="460" y="248" class="label-sm">Rust API calls</text>
+
+  <!-- Library layer -->
+  <rect x="40" y="255" width="800" height="395" class="card-lib"/>
+  <text x="440" y="275" text-anchor="middle" class="title" fill="#39d0d8">semantic-memory (0.5.2 · 51 source files · ~51K LOC)</text>
+  <text x="440" y="289" text-anchor="middle" class="subtitle">Local-first hybrid search · SQLite authoritative · usearch 2.25 sidecar · 321 tests pass</text>
+
+  <!-- Left column: Storage + Search -->
+  <text x="100" y="308" text-anchor="middle" class="label" font-weight="700">Storage</text>
+  <rect x="50" y="312" width="200" height="22" class="module"/><text x="150" y="327" text-anchor="middle" class="label">SQLite + WAL (authoritative)</text>
+  <rect x="50" y="338" width="200" height="22" class="module"/><text x="150" y="353" text-anchor="middle" class="label">FTS5 (BM25 full-text search)</text>
+  <rect x="50" y="364" width="200" height="22" class="module"/><text x="150" y="379" text-anchor="middle" class="label">usearch 2.25 (vector sidecar)</text>
+  <rect x="50" y="390" width="200" height="22" class="module"/><text x="150" y="405" text-anchor="middle" class="label">Bitemporal truth (valid/recorded)</text>
+  <rect x="50" y="416" width="200" height="22" class="module"/><text x="150" y="431" text-anchor="middle" class="label">Typed receipts (blake3-digested)</text>
+
+  <text x="150" y="455" text-anchor="middle" class="label" font-weight="700">Search Pipeline</text>
+  <rect x="50" y="459" width="200" height="22" class="module"/><text x="150" y="474" text-anchor="middle" class="label">BM25 + Vector + RRF Fusion</text>
+  <rect x="50" y="485" width="200" height="22" class="module"/><text x="150" y="500" text-anchor="middle" class="label">search_explained() breakdown</text>
+  <rect x="50" y="511" width="200" height="22" class="module"/><text x="150" y="526" text-anchor="middle" class="label">Adaptive routing (query profiling)</text>
+  <rect x="50" y="537" width="200" height="22" class="module"/><text x="150" y="552" text-anchor="middle" class="label">Reconcile (rebuild from SQLite)</text>
+
+  <!-- Middle column: Reasoning -->
+  <text x="440" y="308" text-anchor="middle" class="label" font-weight="700">Graph + Reasoning</text>
+  <rect x="270" y="312" width="340" height="22" class="module"/><text x="440" y="327" text-anchor="middle" class="label">Graph edges (semantic, temporal, causal, entity)</text>
+  <rect x="270" y="338" width="340" height="22" class="module"/><text x="440" y="353" text-anchor="middle" class="label">Factor graph (belief propagation over all 4 edge types)</text>
+  <rect x="270" y="364" width="340" height="22" class="module"/><text x="440" y="379" text-anchor="middle" class="label">Decoder (syndromes + corrections + message passing)</text>
+  <rect x="270" y="390" width="340" height="22" class="module"/><text x="440" y="405" text-anchor="middle" class="label">Discord (second-order graph-neighbor retrieval)</text>
+  <rect x="270" y="416" width="340" height="22" class="module"/><text x="440" y="431" text-anchor="middle" class="label">Topology (Betti numbers, void detection)</text>
+  <rect x="270" y="442" width="340" height="22" class="module"/><text x="440" y="457" text-anchor="middle" class="label">Community (Leiden detection, contradiction scan)</text>
+  <rect x="270" y="468" width="340" height="22" class="module"/><text x="440" y="483" text-anchor="middle" class="label">Subtraction (lawful forgetting + invariant verification)</text>
+  <rect x="270" y="494" width="340" height="22" class="module"/><text x="440" y="509" text-anchor="middle" class="label">Compression governor (importance-driven quantization)</text>
+
+  <!-- Right column: Provenance + Temporal -->
+  <text x="720" y="308" text-anchor="middle" class="label" font-weight="700">Provenance</text>
+  <rect x="630" y="312" width="200" height="22" class="module"/><text x="730" y="327" text-anchor="middle" class="label">ConfidenceSemiring</text>
+  <rect x="630" y="338" width="200" height="22" class="module"/><text x="730" y="353" text-anchor="middle" class="label">Temporal weight (age + supersession)</text>
+  <rect x="630" y="364" width="200" height="22" class="module"/><text x="730" y="379" text-anchor="middle" class="label">Subgraph pruning (access-based)</text>
+  <rect x="630" y="390" width="200" height="22" class="module"/><text x="730" y="405" text-anchor="middle" class="label">Matryoshka (multi-resolution)</text>
+
+  <text x="730" y="455" text-anchor="middle" class="label" font-weight="700">Integration</text>
+  <rect x="630" y="459" width="200" height="22" class="module"/><text x="730" y="474" text-anchor="middle" class="label">routing → decoder → subtraction</text>
+  <rect x="630" y="485" width="200" height="22" class="module"/><text x="730" y="500" text-anchor="middle" class="label">subtraction → compression</text>
+  <rect x="630" y="511" width="200" height="22" class="module"/><text x="730" y="526" text-anchor="middle" class="label">discord → provenance feedback</text>
+  <rect x="630" y="537" width="200" height="22" class="module"/><text x="730" y="552" text-anchor="middle" class="label">provenance → temporal weight</text>
+
+  <!-- Arrow: library -> ollama -->
+  <path d="M 440 650 L 440 675" class="arrow" marker-end="url(#arrowhead)"/>
+  <text x="460" y="672" class="label-sm">POST /api/embed</text>
+
+  <!-- Ollama layer -->
+  <rect x="250" y="675" width="380" height="35" class="card-embed"/>
+  <text x="440" y="693" text-anchor="middle" class="title" font-size="13px">Ollama (nomic-embed-text · 768-dim · localhost:11434)</text>
+  <text x="440" y="706" text-anchor="middle" class="label-sm">Separate process · crash-isolated · no in-process embedder</text>
+
+  <!-- Arrowhead marker -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#484f58"/>
+    </marker>
+  </defs>
+</svg>
