@@ -3448,6 +3448,7 @@ name = "semantic-memory-mcp"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "boundary-compiler",
  "chrono",
  "claim-ledger",
  "clap",

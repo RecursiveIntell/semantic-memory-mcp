@@ -530,9 +530,9 @@ impl SemanticMemoryServer {
                             if let Some(response_str) =
                                 v.get("response").and_then(|r| r.as_str())
                             {
-                                if let Ok(parsed) =
-                                    serde_json::from_str::<serde_json::Value>(response_str.trim())
-                                {
+                                // Use boundary compiler for robust JSON parsing with duplicate-key rejection
+                                let parsed_result = boundary_compiler::parse_with_dup_check(response_str.trim());
+                                if let Ok(parsed) = parsed_result {
                                     if let Some(entities) =
                                         parsed.get("entities").and_then(|e| e.as_array())
                                     {

@@ -65,6 +65,7 @@ llm-parser = ["dep:llm-output-parser"]
 semantic-memory = { version = "0.5.3", path = "../semantic-memory", default-features = false }
 claim-ledger = { path = "../claim-ledger", optional = true }
 llm-output-parser = { path = "../llm-output-parser", optional = true }
+boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
 rmcp = { version = "1", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
 serde = { version = "1", features = ["derive"] }
