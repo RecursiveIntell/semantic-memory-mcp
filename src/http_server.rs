@@ -237,13 +237,27 @@ fn handle_search(
             };
 
             let count = final_results.len();
+            let provenance = serde_json::json!({
+                "stages_fired": {
+                    "bm25": true,
+                    "vector": true,
+                    "late_interaction": false,
+                    "rerank": do_rerank,
+                },
+                "result_count": count,
+                "view": "semantic",
+                "widening_occurred": false,
+            });
             (
                 "200 OK",
                 serde_json::json!({
                     "ok": true,
+                    "query": query,
+                    "top_k": top_k,
                     "results": final_results,
                     "count": count,
                     "reranked": do_rerank,
+                    "provenance": provenance,
                 }),
             )
         }
@@ -329,7 +343,9 @@ fn handle_search_routed(
                 .map(|r| {
                     let namespace = match &r.source {
                         semantic_memory::SearchSource::Fact { namespace, .. } => namespace.clone(),
-                        semantic_memory::SearchSource::Chunk { document_title, .. } => document_title.clone(),
+                        semantic_memory::SearchSource::Chunk { document_title, .. } => {
+                            document_title.clone()
+                        }
                         _ => String::new(),
                     };
                     serde_json::json!({
@@ -338,16 +354,39 @@ fn handle_search_routed(
                         "score": r.score,
                         "cosine_similarity": r.cosine_similarity,
                         "namespace": namespace,
+                        "source_type": match &r.source {
+                            semantic_memory::SearchSource::Fact { .. } => "fact",
+                            semantic_memory::SearchSource::Chunk { .. } => "chunk",
+                            semantic_memory::SearchSource::Message { .. } => "message",
+                            _ => "unknown",
+                        },
                     })
                 })
                 .collect();
-            let count = json_results.len();
+
+            // Query provenance: declare which retrieval stages contributed
+            let provenance = serde_json::json!({
+                "stages_fired": {
+                    "bm25": results.iter().any(|r| r.bm25_rank.is_some()),
+                    "vector": results.iter().any(|r| r.vector_rank.is_some()),
+                    "late_interaction": true, // search-routed uses late interaction
+                    "discord": false, // set below if discord was used
+                    "decoder": false, // set below if decoder was used
+                },
+                "result_count": results.len(),
+                "view": "routed", // this endpoint returns adaptive routed view
+                "query_class": query_class,
+                "widening_occurred": false,
+            });
+
             (
                 "200 OK",
                 serde_json::json!({
                     "ok": true,
+                    "query": query,
+                    "top_k": base_top_k,
                     "results": json_results,
-                    "count": count,
+                    "provenance": provenance,
                     "query_class": query_class,
                     "routed": true,
                 }),

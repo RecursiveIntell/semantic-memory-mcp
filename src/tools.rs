@@ -57,6 +57,18 @@ pub struct AddFactParams {
     /// When true, extract named entities via Ollama and link them as graph edges (opt-in)
     #[serde(default)]
     pub extract_entities: Option<bool>,
+    /// Memory kind classification: durable_fact, preference, project_state, instruction_policy,
+    /// correction, observation, episode_summary, skill_procedure, ephemeral_inference.
+    /// Default: durable_fact. Ephemeral inferences require evidence_refs to promote.
+    #[serde(default)]
+    pub memory_kind: Option<String>,
+    /// Sensitivity class: public, internal, confidential, restricted.
+    /// Default: internal. Confidential/restricted facts are blocked from autocapture.
+    #[serde(default)]
+    pub sensitivity: Option<String>,
+    /// Evidence references supporting this fact (URLs, fact IDs, source paths).
+    #[serde(default)]
+    pub evidence_refs: Option<Vec<String>>,
 }
 
 /// Parameters for sm_ingest_document

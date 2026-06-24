@@ -369,10 +369,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
-        annotations(read_only_hint = true)
-    )]
+    // DEPRECATED #[tool(
+        // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
+        // annotations(read_only_hint = true)
+    // )]
     fn sm_search_explained(
         &self,
         Parameters(SearchExplainedParams { query, top_k }): Parameters<SearchExplainedParams>,
@@ -464,10 +464,46 @@ impl SemanticMemoryServer {
             namespace,
             source,
             extract_entities,
+            memory_kind,
+            sensitivity,
+            evidence_refs,
         }): Parameters<AddFactParams>,
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
         let src = source.as_deref();
+
+        // Admission gate: classify sensitivity
+        let sens = sensitivity.unwrap_or_else(|| "internal".to_string());
+        let kind = memory_kind.unwrap_or_else(|| "durable_fact".to_string());
+
+        // Block confidential/restricted content from autocapture
+        if sens == "confidential" || sens == "restricted" {
+            return Err(ErrorData::invalid_params(
+                format!("Admission gate BLOCKED: sensitivity='{sens}' content cannot be stored without explicit user request"),
+                None,
+            ));
+        }
+
+        // Block ephemeral_inference from becoming durable without evidence
+        if kind == "ephemeral_inference" {
+            let refs = evidence_refs.as_ref().map(|v| v.len()).unwrap_or(0);
+            if refs == 0 {
+                return Err(ErrorData::invalid_params(
+                    "Admission gate BLOCKED: ephemeral_inference requires evidence_refs to promote to durable".to_string(),
+                    None,
+                ));
+            }
+        }
+
+        // Build metadata JSON with typed memory fields
+        let mut meta = serde_json::Map::new();
+        meta.insert("memory_kind".to_string(), serde_json::json!(kind));
+        meta.insert("sensitivity".to_string(), serde_json::json!(sens));
+        if let Some(refs) = evidence_refs {
+            meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
+        }
+        let metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
+
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.add_fact(&namespace, &content, src, None))
         });
@@ -901,10 +937,10 @@ impl SemanticMemoryServer {
 
     // ── Conversation / session tools (v0.3.0) ────────────────────────
 
-    #[tool(
-        description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
-        annotations(idempotent_hint = true)
-    )]
+    // DEPRECATED #[tool(
+        // description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
+        // annotations(idempotent_hint = true)
+    // )]
     fn sm_create_session(
         &self,
         Parameters(CreateSessionParams { channel, metadata }): Parameters<CreateSessionParams>,
@@ -927,9 +963,9 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
-    )]
+    // DEPRECATED #[tool(
+        // description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
+    // )]
     fn sm_add_message(
         &self,
         Parameters(AddMessageParams {
@@ -971,7 +1007,7 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
+    // DEPRECATED #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
     fn sm_list_sessions(
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
@@ -1001,10 +1037,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
-        annotations(read_only_hint = true)
-    )]
+    // DEPRECATED #[tool(
+        // description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
+        // annotations(read_only_hint = true)
+    // )]
     fn sm_get_messages(
         &self,
         Parameters(GetMessagesParams {
