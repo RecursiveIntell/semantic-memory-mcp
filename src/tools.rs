@@ -5,6 +5,20 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// Edge type for graph edges. JSON Schema enum helps LLMs pick the
+/// right value without guessing.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub enum EdgeType {
+    /// Semantic similarity edge (requires cosine_similarity)
+    Semantic,
+    /// Temporal ordering edge (requires delta_secs)
+    Temporal,
+    /// Causal relationship edge (requires confidence)
+    Causal,
+    /// Named relationship edge (requires relation)
+    Entity,
+}
+
 // ─── Core search tools ──────────────────────────────────────────────────
 
 /// Parameters for sm_search
@@ -137,8 +151,8 @@ pub struct AddGraphEdgeParams {
     pub source: String,
     /// Target node ID (prefixed)
     pub target: String,
-    /// Edge type: "semantic", "temporal", "causal", or "entity"
-    pub edge_type: String,
+    /// Edge type: semantic, temporal, causal, or entity
+    pub edge_type: EdgeType,
     /// Edge weight (default 1.0)
     #[serde(default = "default_weight")]
     pub weight: f64,
@@ -259,4 +273,121 @@ pub struct CommunityParams {
     /// Optional importance scores per item for community-aware compression recommendations
     #[serde(default)]
     pub importance_scores: Option<Vec<(String, f64)>>,
+}
+
+// ─── Direct read and supersession tools (v0.3.1) ─────────────────────────
+
+/// Parameters for sm_get_fact
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFactParams {
+    /// The fact id. Accepts a bare UUID or a prefixed id like "fact:<uuid>".
+    pub fact_id: String,
+}
+
+/// Parameters for sm_list_facts
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListFactsParams {
+    /// Namespace to enumerate facts from.
+    pub namespace: String,
+    /// Maximum facts to return (default 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Offset for pagination (default 0).
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+/// Parameters for sm_get_fact_neighbors
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFactNeighborsParams {
+    /// The node id whose neighbors to fetch (bare UUID or prefixed "fact:<uuid>").
+    pub item_id: String,
+}
+
+/// Parameters for sm_supersede_fact
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SupersedeFactParams {
+    /// Existing stale fact id. Accepts a bare UUID or prefixed "fact:<uuid>".
+    pub old_fact_id: String,
+    /// Replacement fact content.
+    pub content: String,
+    /// Optional namespace for the replacement fact. Defaults to the old fact's namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Optional source attribution for the replacement fact.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Optional reason stored on the supersedes graph edge.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+// ─── Conversation / session tools (v0.3.0) ──────────────────────────────
+
+/// Parameters for sm_create_session
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateSessionParams {
+    /// Channel/label for the session (e.g. "claude-code", "project-x").
+    pub channel: String,
+    /// Optional metadata as a JSON object string.
+    #[serde(default)]
+    pub metadata: Option<String>,
+}
+
+/// Parameters for sm_add_message
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddMessageParams {
+    /// Session id to append to.
+    pub session_id: String,
+    /// Role: "user", "assistant", "system", or "tool".
+    pub role: String,
+    /// Message content (embedded + FTS-indexed for conversation search).
+    pub content: String,
+}
+
+/// Parameters for sm_list_sessions
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListSessionsParams {
+    /// Maximum sessions to return (default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Offset for pagination (default 0).
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+/// Parameters for sm_get_messages
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMessagesParams {
+    /// Session id to read messages from.
+    pub session_id: String,
+    /// Return the most recent messages fitting within this token budget (default 4000).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+/// Parameters for sm_search_conversations
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchConversationsParams {
+    /// The search query string.
+    pub query: String,
+    /// Maximum number of results (default 5).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+}
+
+// ─── Delete / forget tools (admin-ops) ──────────────────────────────────
+
+/// Parameters for sm_delete_fact
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteFactParams {
+    /// The fact id to permanently delete (bare UUID or prefixed "fact:<uuid>").
+    pub fact_id: String,
+}
+
+/// Parameters for sm_delete_namespace
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteNamespaceParams {
+    /// The namespace to permanently delete (all its facts, documents, chunks, and namespaced sessions).
+    pub namespace: String,
 }
