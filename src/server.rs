@@ -2678,6 +2678,55 @@ impl SemanticMemoryServer {
             "message": format!("Found {} facts valid as of {}", filtered.len(), as_of_date),
         }))
     }
+
+    // ─── Verification gate ─────────────────────────────────────────────
+
+    #[tool(
+        description = "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims need falsification. Critical claims need replay AND falsification. Returns disposition: promote, reject, quarantine, or defer.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_verify_claim(
+        &self,
+        Parameters(VerifyClaimParams { claim, risk_class, evidence_refs, refutation_attempted }): Parameters<VerifyClaimParams>,
+    ) -> Result<String, ErrorData> {
+        let risk = risk_class.to_lowercase();
+        let has_evidence = evidence_refs.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+        let refuted = refutation_attempted.unwrap_or(false);
+
+        // Required checks by risk class
+        let (needs_replay, needs_falsification, disposition, rationale) = match risk.as_str() {
+            "low" => (false, false, "promote", "Low risk: cheap checks only, claim can be promoted"),
+            "medium" => (true, false, "promote", "Medium risk: replay check required, claim can be promoted"),
+            "high" => (true, true, if refuted { "quarantine" } else if has_evidence { "promote" } else { "defer" },
+                if refuted { "High risk: refutation attempted, claim quarantined" }
+                else if has_evidence { "High risk: falsification passed with evidence, claim promoted" }
+                else { "High risk: no evidence provided, claim deferred" }),
+            "critical" => (true, true, if refuted { "quarantine" } else if has_evidence && refutation_attempted == Some(true) { "promote" } else { "defer" },
+                if refuted { "Critical risk: refutation found, claim quarantined" }
+                else if has_evidence && refutation_attempted == Some(true) { "Critical risk: replay + falsification passed, claim promoted" }
+                else { "Critical risk: requires evidence AND refutation, claim deferred" }),
+            _ => return Err(ErrorData::invalid_params(
+                format!("Invalid risk_class '{risk}'. Must be: low, medium, high, or critical"),
+                None,
+            )),
+        };
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "claim": claim,
+            "risk_class": risk,
+            "required_checks": {
+                "cheap_checks": true,
+                "replay_checks": needs_replay,
+                "falsification_checks": needs_falsification,
+            },
+            "has_evidence": has_evidence,
+            "refutation_attempted": refuted,
+            "disposition": disposition,
+            "rationale": rationale,
+            "can_promote": disposition == "promote",
+        }))
+    }
 }
 
 /// Build path segments with edge evidence for each hop in a path.

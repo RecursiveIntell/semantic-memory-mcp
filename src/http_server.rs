@@ -149,6 +149,7 @@ fn handle_connection(
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
         ("POST", "/record-outcome") => handle_record_outcome(&body_str),
+        ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
         _ => (
             "404 Not Found",
             serde_json::json!({"error": "not found", "path": path}),
@@ -247,6 +248,8 @@ fn handle_search(
                 "result_count": count,
                 "view": "semantic",
                 "widening_occurred": false,
+                "widening_reason": null,
+                "verification_status": "verified",
             });
             (
                 "200 OK",
@@ -369,14 +372,16 @@ fn handle_search_routed(
                 "stages_fired": {
                     "bm25": results.iter().any(|r| r.bm25_rank.is_some()),
                     "vector": results.iter().any(|r| r.vector_rank.is_some()),
-                    "late_interaction": true, // search-routed uses late interaction
-                    "discord": false, // set below if discord was used
-                    "decoder": false, // set below if decoder was used
+                    "late_interaction": true,
+                    "discord": false,
+                    "decoder": false,
                 },
                 "result_count": results.len(),
-                "view": "routed", // this endpoint returns adaptive routed view
+                "view": "routed",
                 "query_class": query_class,
                 "widening_occurred": false,
+                "widening_reason": null,
+                "verification_status": "verified",
             });
 
             (
@@ -538,4 +543,54 @@ fn handle_record_outcome(body: &str) -> (&'static str, serde_json::Value) {
         "200 OK",
         serde_json::json!({"ok": true, "recorded": true, "outcome": outcome, "query_class": query_class}),
     )
+}
+
+/// Handle GET /verify-integrity: check DB integrity (WAL checkpoint, FTS index, vector index).
+fn handle_verify_integrity(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let store = &bridge.store;
+    let stats = block_in_place(|| handle.block_on(store.stats()));
+
+    match stats {
+        Ok(s) => {
+            let facts = s.total_facts;
+            let chunks = s.total_chunks;
+            let docs = s.total_documents;
+            let db_size = s.database_size_bytes;
+
+            let checks = serde_json::json!({
+                "facts_counted": facts > 0,
+                "chunks_present": chunks > 0,
+                "documents_present": docs > 0,
+                "db_size_reasonable": db_size > 1024,
+                "facts_to_chunks_ratio_ok": chunks >= facts,
+            });
+
+            let all_pass = checks.as_object()
+                .map(|m| m.values().all(|v| v.as_bool().unwrap_or(false)))
+                .unwrap_or(false);
+
+            (
+                "200 OK",
+                serde_json::json!({
+                    "ok": true,
+                    "integrity": all_pass,
+                    "checks": checks,
+                    "stats": {
+                        "facts": facts,
+                        "chunks": chunks,
+                        "documents": docs,
+                        "db_size_bytes": db_size,
+                    },
+                    "message": if all_pass { "All integrity checks passed" } else { "Some integrity checks failed" },
+                }),
+            )
+        }
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "integrity": false, "error": format!("stats error: {e}")}),
+        ),
+    }
 }

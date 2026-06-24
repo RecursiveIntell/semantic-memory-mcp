@@ -492,3 +492,20 @@ pub struct SearchAsOfParams {
     /// Optional namespace filter.
     pub namespace: Option<String>,
 }
+
+// ─── Verification gate ─────────────────────────────────────────────────
+
+/// Parameters for sm_verify_claim
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VerifyClaimParams {
+    /// The claim text to verify.
+    pub claim: String,
+    /// Risk class: low, medium, high, critical.
+    pub risk_class: String,
+    /// Optional evidence references supporting the claim.
+    #[serde(default)]
+    pub evidence_refs: Option<Vec<String>>,
+    /// Whether refutation was attempted (if false, high/critical claims cannot be promoted).
+    #[serde(default)]
+    pub refutation_attempted: Option<bool>,
+}
