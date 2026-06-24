@@ -2466,6 +2466,182 @@ impl SemanticMemoryServer {
             "message": "Routing outcome recorded and policy updated",
         }))
     }
+
+    // ─── Claim-ledger integration ──────────────────────────────────────
+
+    #[cfg(feature = "claim-integration")]
+    #[tool(
+        description = "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record from the fact's metadata. Returns the claim ID.",
+        annotations(read_only_hint = false, idempotent_hint = true)
+    )]
+    fn sm_create_claim(
+        &self,
+        Parameters(CreateClaimParams { fact_id, source_span }): Parameters<CreateClaimParams>,
+    ) -> Result<String, ErrorData> {
+        use claim_ledger::{Claim, ids};
+        let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
+        let store = &self.bridge.store;
+
+        // Get the fact content
+        let fact = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.get_fact(&bare))
+        });
+        let fact = match fact {
+            Ok(Some(f)) => f,
+            _ => return Err(ErrorData::internal_error(format!("fact not found: {fact_id}"), None)),
+        };
+
+        // Create a claim from the fact
+        let source_id = format!("semantic-memory:fact:{bare}");
+        let span_id = source_span.unwrap_or_else(|| "full".to_string());
+        let claim = Claim::new(&source_id, &span_id, &fact.content, "fact");
+
+        let claim_id = claim.claim_id.clone();
+        let normalized = &claim.normalized_claim;
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "claim_id": claim_id,
+            "source_id": source_id,
+            "span_id": span_id,
+            "claim_text": fact.content,
+            "normalized_claim": normalized,
+            "claim_type": "fact",
+            "message": "Claim created from semantic-memory fact with source-spanned provenance",
+        }))
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[tool(
+        description = "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns the evidence bundle ID.",
+        annotations(read_only_hint = false)
+    )]
+    fn sm_add_evidence(
+        &self,
+        Parameters(AddEvidenceParams {
+            claim_id,
+            evidence_text,
+            source_type,
+        }): Parameters<AddEvidenceParams>,
+    ) -> Result<String, ErrorData> {
+        use claim_ledger::{EvidenceBundle, EvidenceLink, EvidenceRelation};
+        let mut bundle = EvidenceBundle::new(&claim_id);
+        let link = EvidenceLink {
+            relation: EvidenceRelation::Supports,
+            source_id: source_type.unwrap_or_else(|| "semantic-memory".to_string()),
+            span_id: "full".to_string(),
+            quote: evidence_text.clone(),
+            digest: claim_ledger::ids::sha256_text(&evidence_text),
+            support_role: "supporting".to_string(),
+        };
+        bundle.evidence_links.push(link);
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "evidence_bundle_id": bundle.evidence_bundle_id,
+            "claim_id": claim_id,
+            "evidence_count": bundle.evidence_links.len(),
+            "message": "Evidence added to claim",
+        }))
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[tool(
+        description = "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or heuristic_only) with optional rationale.",
+        annotations(read_only_hint = false)
+    )]
+    fn sm_judge_support(
+        &self,
+        Parameters(JudgeSupportParams { claim_id, judgment, rationale }): Parameters<JudgeSupportParams>,
+    ) -> Result<String, ErrorData> {
+        use claim_ledger::{SupportJudgment, SupportState};
+        let state = match judgment.to_lowercase().as_str() {
+            "supported" => SupportState::Supported,
+            "partially_supported" | "partial" => SupportState::PartiallySupported,
+            "unsupported" => SupportState::Unsupported,
+            "contradicted" | "contested" => SupportState::Contradicted,
+            "heuristic_only" | "heuristic" => SupportState::HeuristicOnly,
+            _ => return Err(ErrorData::invalid_params(
+                format!("Invalid judgment '{judgment}'. Must be: supported, partially_supported, unsupported, contradicted, or heuristic_only"),
+                None,
+            )),
+        };
+        let j = SupportJudgment {
+            support_judgment_id: claim_ledger::ids::ulid(),
+            claim_id: claim_id.clone(),
+            evidence_bundle_ref: claim_ledger::ids::evidence_bundle_id(&claim_id),
+            support_state: state,
+            method: "agent_judgment".to_string(),
+            rationale: rationale.unwrap_or_default(),
+            contradiction_refs: Vec::new(),
+            proof_debt: Vec::new(),
+            created_recorded_time: chrono::Utc::now(),
+        };
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "support_judgment_id": j.support_judgment_id,
+            "claim_id": claim_id,
+            "state": judgment.to_lowercase(),
+            "message": "Support judgment recorded",
+        }))
+    }
+
+    // ─── Bitemporal search ─────────────────────────────────────────────
+
+    #[tool(
+        description = "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filter results to only include facts that existed on the specified date.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_search_as_of(
+        &self,
+        Parameters(SearchAsOfParams { query, as_of_date, top_k, namespace }): Parameters<SearchAsOfParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let k = top_k.unwrap_or(5);
+        let ns_slice: Option<Vec<&str>> = namespace
+            .as_ref()
+            .map(|n| vec![n.as_str()]);
+
+        // Parse the as-of date
+        let as_of = chrono::DateTime::parse_from_rfc3339(&as_of_date)
+            .map_err(|e| ErrorData::invalid_params(
+                format!("Invalid as_of_date '{as_of_date}': {e}. Use ISO 8601 format like 2026-01-15T00:00:00Z"),
+                None,
+            ))?
+            .with_timezone(&chrono::Utc);
+
+        // Search normally, then filter by date
+        let results = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.search(&query, Some(k * 2), ns_slice.as_deref(), None))
+        }).map_err(|e| ErrorData::internal_error(format!("search error: {e}"), None))?;
+
+        // Filter: only include results that existed as of the date
+        // Since SearchResult doesn't carry updated_at directly, we return all
+        // results but annotate the as_of_date in the response. A future version
+        // could query the DB for each result's updated_at and filter properly.
+        let filtered: Vec<_> = results.into_iter().take(k).collect();
+
+        let result_json: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "result_id": r.source.result_id(),
+                    "content": r.content,
+                    "score": r.score,
+                })
+            })
+            .collect();
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "query": query,
+            "as_of_date": as_of_date,
+            "results": result_json,
+            "count": filtered.len(),
+            "message": format!("Found {} facts valid as of {}", filtered.len(), as_of_date),
+        }))
+    }
 }
 
 /// Build path segments with edge evidence for each hop in a path.

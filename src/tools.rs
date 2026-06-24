@@ -431,3 +431,52 @@ pub struct RecordOutcomeParams {
     /// The outcome of the routing decision: "good", "bad", or "neutral".
     pub outcome: String,
 }
+
+// ─── Claim-ledger integration ──────────────────────────────────────────
+
+/// Parameters for sm_create_claim
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateClaimParams {
+    /// The fact ID to create a claim from (with or without "fact:" prefix).
+    pub fact_id: String,
+    /// Optional source span description (e.g., "line 42-58").
+    pub source_span: Option<String>,
+}
+
+/// Parameters for sm_add_evidence
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddEvidenceParams {
+    /// The claim ID to add evidence to.
+    pub claim_id: String,
+    /// The evidence text supporting the claim.
+    pub evidence_text: String,
+    /// Optional source type (e.g., "document", "web", "experiment").
+    pub source_type: Option<String>,
+}
+
+/// Parameters for sm_judge_support
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct JudgeSupportParams {
+    /// The claim ID to judge.
+    pub claim_id: String,
+    /// The support judgment: "supported", "unsupported", "contested", or "heuristic_only".
+    pub judgment: String,
+    /// Optional rationale for the judgment.
+    pub rationale: Option<String>,
+}
+
+// ─── Bitemporal search ─────────────────────────────────────────────────
+
+/// Parameters for sm_search_as_of
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchAsOfParams {
+    /// The search query.
+    pub query: String,
+    /// The date to search as of (ISO 8601, e.g., "2026-01-15T00:00:00Z").
+    pub as_of_date: String,
+    /// Maximum number of results (default: 5).
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    /// Optional namespace filter.
+    pub namespace: Option<String>,
+}
