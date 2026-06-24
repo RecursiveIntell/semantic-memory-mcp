@@ -68,6 +68,21 @@ struct Cli {
     /// Use this for standalone warm-server mode (benchmarks, hooks).
     #[arg(long)]
     http_only: bool,
+
+    /// Enable TurboQuant compressed vector candidate backend.
+    /// When enabled, embeddings are compressed using turbo-quant codecs for
+    /// faster candidate generation, with exact f32 rerank for final results.
+    /// Requires the `turbo-quant-codec` feature.
+    #[arg(long)]
+    turbo_quant: bool,
+
+    /// TurboQuant polar angle bits (default: 8). Only used when --turbo-quant is set.
+    #[arg(long)]
+    turbo_quant_bits: Option<u8>,
+
+    /// TurboQuant QJL projection count (default: 16). Only used when --turbo-quant is set.
+    #[arg(long)]
+    turbo_quant_projections: Option<usize>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -125,6 +140,9 @@ fn main() -> anyhow::Result<()> {
         cli.embedding_url.as_deref(),
         cli.embedding_model.as_deref(),
         cli.embedding_dims,
+        cli.turbo_quant,
+        cli.turbo_quant_bits,
+        cli.turbo_quant_projections,
     );
 
     let bridge = bridge::MemoryBridge::open(bridge_config)?;

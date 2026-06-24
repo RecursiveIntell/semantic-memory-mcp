@@ -69,6 +69,12 @@ pub struct BridgeConfig {
     /// Embedding model name — used by both Candle (as HF model ID) and Ollama.
     pub embedding_model: String,
     pub embedding_dims: usize,
+    /// Enable TurboQuant compressed vector candidate backend.
+    pub turbo_quant_enabled: bool,
+    /// TurboQuant polar angle bits (default: 8).
+    pub turbo_quant_bits: Option<u8>,
+    /// TurboQuant QJL projection count (default: 16).
+    pub turbo_quant_projections: Option<usize>,
 }
 
 impl BridgeConfig {
@@ -78,6 +84,9 @@ impl BridgeConfig {
         embedding_url: Option<&str>,
         embedding_model: Option<&str>,
         embedding_dims: Option<usize>,
+        turbo_quant_enabled: bool,
+        turbo_quant_bits: Option<u8>,
+        turbo_quant_projections: Option<usize>,
     ) -> Self {
         Self {
             memory_dir: PathBuf::from(memory_dir),
@@ -87,6 +96,9 @@ impl BridgeConfig {
                 .to_string(),
             embedding_model: embedding_model.unwrap_or("nomic-embed-text").to_string(),
             embedding_dims: embedding_dims.unwrap_or(768),
+            turbo_quant_enabled,
+            turbo_quant_bits,
+            turbo_quant_projections,
         }
     }
 }
@@ -134,10 +146,27 @@ impl MemoryBridge {
             }
         };
 
+        let mut search_config = SearchConfig::default();
+
+        // TurboQuant compressed vector candidate backend
+        #[cfg(feature = "semantic-memory/turbo-quant-codec")]
+        {
+            if config.turbo_quant_enabled {
+                use semantic_memory::DerivedVectorBackendPolicy;
+                search_config.derived_vector_backend = DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
+                if let Some(bits) = config.turbo_quant_bits {
+                    search_config.turbo_quant_bits = bits;
+                }
+                if let Some(projs) = config.turbo_quant_projections {
+                    search_config.turbo_quant_projections = projs;
+                }
+            }
+        }
+
         let mem_config = MemoryConfig {
             base_dir: config.memory_dir,
             embedding: embedding_config,
-            search: SearchConfig::default(),
+            search: search_config,
             ..Default::default()
         };
 
