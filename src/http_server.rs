@@ -212,11 +212,17 @@ fn handle_search(
             let json_results: Vec<serde_json::Value> = results
                 .iter()
                 .map(|r| {
+                    let namespace = match &r.source {
+                        semantic_memory::SearchSource::Fact { namespace, .. } => namespace.clone(),
+                        semantic_memory::SearchSource::Chunk { document_title, .. } => document_title.clone(),
+                        _ => String::new(),
+                    };
                     serde_json::json!({
                         "result_id": r.source.result_id(),
                         "content": r.content,
                         "score": r.score,
                         "cosine_similarity": r.cosine_similarity,
+                        "namespace": namespace,
                     })
                 })
                 .collect();
@@ -321,11 +327,17 @@ fn handle_search_routed(
             let json_results: Vec<serde_json::Value> = results
                 .iter()
                 .map(|r| {
+                    let namespace = match &r.source {
+                        semantic_memory::SearchSource::Fact { namespace, .. } => namespace.clone(),
+                        semantic_memory::SearchSource::Chunk { document_title, .. } => document_title.clone(),
+                        _ => String::new(),
+                    };
                     serde_json::json!({
                         "result_id": r.source.result_id(),
                         "content": r.content,
                         "score": r.score,
                         "cosine_similarity": r.cosine_similarity,
+                        "namespace": namespace,
                     })
                 })
                 .collect();
