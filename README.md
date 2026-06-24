@@ -58,6 +58,35 @@ Your agent gets a persistent knowledge base that:
 - **Detects communities** — Leiden-inspired community detection with
   within-community contradiction scanning and compression-aware
   recommendations.
+- **Self-edits memory** — `sm_update_fact` modifies facts in-place
+  with re-embedding. `sm_consolidate_facts` merges duplicates with
+  automatic supersession edges.
+- **Learns from outcomes** — `sm_record_outcome` feeds good/bad/neutral
+  signals to the RL routing policy, improving retrieval decisions over
+  time.
+- **Reranks with LLM** — optional `POST /rerank` endpoint uses an LLM
+  (granite4.1:3b via Ollama) to rate query-document relevance 1-5 and
+  reorder results for higher precision.
+- **Extracts entities** — when `extract_entities: true` is passed to
+  `sm_add_fact`, an LLM extracts named entities and auto-creates
+  `entity:{name}` graph edges.
+- **Generates community summaries** — when `summarize: true` is passed
+  to `sm_community`, each community gets an LLM-generated summary
+  paragraph.
+- **Groups by community** — `group_by_community: true` in
+  `sm_search_with_routing` clusters results by knowledge community for
+  synthesis queries.
+- **Routes adaptively** — `POST /search-routed` endpoint adjusts
+  top_k and exactness profile based on query complexity class
+  (A/B/C/D/E classification).
+- **Serves via HTTP** — `--http-port 1738` starts a warm HTTP server
+  alongside stdio MCP. Hooks, benchmarks, and scripts query it
+  directly without spawning new processes (4.9x faster).
+- **Compresses result content** — `compress_results` in SearchConfig
+  shortens search result content to first sentence + key terms,
+  reducing token cost by 30-50%.
+- **Does 2-stage search** — Matryoshka multi-resolution: 64d truncated
+  embeddings for fast candidate generation, 768d exact rerank.
 
 The combination of hybrid retrieval, provenance-weighted belief
 propagation, typed graph edges, and autonomous lifecycle management
@@ -287,7 +316,7 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes 32 MCP tools. Use `tools/list` as the source of
+The server exposes 38 MCP tools. Use `tools/list` as the source of
 truth for the available tool surface on your build.
 
 ### Core tools (always available)
@@ -611,7 +640,7 @@ sm_discord_search(["fact:abc123-...", "fact:def456-..."])
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | yes | All features — the full 32-tool surface + Candle embedder. This is the default build. |
+| `full` | yes | All features — the full 38-tool surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
 | `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
 | `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
 
