@@ -50,6 +50,8 @@ full = [
     "semantic-memory/integration",
     "semantic-memory/admin-ops",
     "semantic-memory/late-interaction",
+    "semantic-memory/turbo-quant-codec",
+    "semantic-memory/rl-routing",
 ]
 
 [dependencies]

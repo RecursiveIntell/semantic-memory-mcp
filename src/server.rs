@@ -17,7 +17,7 @@ use tokio::runtime::Handle;
 // Re-export the specific parameter types we use in tool signatures.
 use crate::tools::{
     AddGraphEdgeParams, CommunityParams, FactorGraphParams, InvalidateGraphEdgeParams,
-    ListGraphEdgesParams, TopologyParams,
+    ListGraphEdgesParams, RecordOutcomeParams, TopologyParams,
 };
 
 pub struct SemanticMemoryServer {
@@ -1397,6 +1397,61 @@ impl SemanticMemoryServer {
                         serde_json::Value::Null
                     };
 
+                // Task 7: Auto-call topology when routing returns Class D (SYNTHESIS) and >10 results.
+                let mut topology_payload = serde_json::json!({ "auto_called": false });
+                {
+                    use semantic_memory::routing::{QueryComplexityClass, QueryProfile};
+                    let route_profile = QueryProfile::from_query(&query);
+                    if route_profile.complexity_class == QueryComplexityClass::Synthesis
+                        && result_refs.len() > 10
+                    {
+                        #[cfg(feature = "full")]
+                        {
+                            use semantic_memory::topology::{compute_betti_numbers, find_voids};
+                            let edges = load_stored_edge_pairs(store).unwrap_or_default();
+                            if !edges.is_empty() {
+                                let mut adjacency: std::collections::HashMap<String, Vec<String>> =
+                                    std::collections::HashMap::new();
+                                for (src, tgt) in &edges {
+                                    adjacency.entry(src.clone()).or_default().push(tgt.clone());
+                                    adjacency.entry(tgt.clone()).or_default().push(src.clone());
+                                }
+                                let betti = compute_betti_numbers(&adjacency);
+                                let voids = find_voids(&edges);
+                                topology_payload = serde_json::json!({
+                                    "auto_called": true,
+                                    "trigger": "synthesis_class_with_10_plus_results",
+                                    "betti_numbers": {
+                                        "betti_0": betti.betti_0,
+                                        "betti_1": betti.betti_1,
+                                    },
+                                    "void_count": voids.len(),
+                                    "voids": voids.iter().map(|v| serde_json::json!({
+                                        "description": v.description,
+                                        "void_type": format!("{:?}", v.void_type),
+                                        "nearby_items": v.nearby_items,
+                                        "suggested_connections": v.suggested_connections,
+                                    })).collect::<Vec<_>>(),
+                                });
+                            } else {
+                                topology_payload = serde_json::json!({
+                                    "auto_called": true,
+                                    "trigger": "synthesis_class_with_10_plus_results",
+                                    "note": "no graph edges in store",
+                                });
+                            }
+                        }
+                        #[cfg(not(feature = "full"))]
+                        {
+                            topology_payload = serde_json::json!({
+                                "auto_called": true,
+                                "trigger": "synthesis_class_with_10_plus_results",
+                                "error": "topology requires the full feature",
+                            });
+                        }
+                    }
+                }
+
                 json_to_string(&serde_json::json!({
                     "ok": true,
                     "routing_decision": {
@@ -1420,6 +1475,7 @@ impl SemanticMemoryServer {
                     "factor_graph": factor_graph_payload,
                     "matryoshka": matryoshka_payload,
                     "grouped_results": grouped_results_payload,
+                    "topology": topology_payload,
                 }))
             }
             Err(e) => Err(ErrorData::internal_error(
@@ -2354,6 +2410,61 @@ impl SemanticMemoryServer {
                 None,
             )),
         }
+    }
+
+    // ── RL routing feedback ────────────────────────────────────────────
+
+    #[tool(
+        description = "Record routing outcome feedback for RL-trained retrieval routing. Stores the outcome (good/bad/neutral) and updates the tabular routing policy Q-table. Use after sm_search_with_routing to provide feedback on routing quality.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_record_outcome(
+        &self,
+        Parameters(RecordOutcomeParams { query, outcome }): Parameters<RecordOutcomeParams>,
+    ) -> Result<String, ErrorData> {
+        use semantic_memory::rl_routing::{record_routing_outcome, RoutingOutcome, RoutingPolicy};
+        use semantic_memory::routing::{QueryProfile, RetrievalRouter};
+
+        let outcome_enum = match outcome.to_lowercase().as_str() {
+            "good" => RoutingOutcome::Good,
+            "bad" => RoutingOutcome::Bad,
+            "neutral" => RoutingOutcome::Neutral,
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    format!("outcome must be 'good', 'bad', or 'neutral', got '{outcome}'"),
+                    None,
+                ));
+            }
+        };
+
+        let profile = QueryProfile::from_query(&query);
+        let router = RetrievalRouter::default();
+        let decision = router.route(&profile);
+
+        let mut policy = RoutingPolicy::default();
+        record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "query": query,
+            "outcome": outcome,
+            "routing_decision": {
+                "bm25_coarse": decision.bm25_coarse,
+                "vector_medium": decision.vector_medium,
+                "rerank_fine": decision.rerank_fine,
+                "graph_expansion": decision.graph_expansion,
+                "decoder": decision.decoder,
+                "discord": decision.discord,
+                "no_retrieval": decision.no_retrieval,
+                "reasoning": decision.reasoning,
+            },
+            "policy_state": {
+                "trained_examples": policy.trained_examples,
+                "baseline": policy.baseline,
+                "weights": policy.weights,
+            },
+            "message": "Routing outcome recorded and policy updated",
+        }))
     }
 }
 

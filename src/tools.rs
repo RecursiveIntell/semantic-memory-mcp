@@ -420,3 +420,14 @@ pub struct ConsolidateFactsParams {
     /// Optional merged content. If not provided, content from both facts will be concatenated.
     pub merged_content: Option<String>,
 }
+
+// ─── RL routing feedback tool ──────────────────────────────────────────
+
+/// Parameters for sm_record_outcome
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecordOutcomeParams {
+    /// The query string that was routed.
+    pub query: String,
+    /// The outcome of the routing decision: "good", "bad", or "neutral".
+    pub outcome: String,
+}
