@@ -287,7 +287,7 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes 18 MCP tools. Use `tools/list` as the source of
+The server exposes 28 MCP tools. Use `tools/list` as the source of
 truth for the available tool surface on your build.
 
 ### Core tools (always available)
@@ -295,6 +295,9 @@ truth for the available tool surface on your build.
 #### sm_search
 
 Hybrid BM25 + vector + RRF semantic search over the knowledge base.
+By default, results targeted by `supersedes` graph edges are filtered
+when non-superseded alternatives exist. Queries that explicitly ask for
+stale, old, historical, or superseded facts keep those results available.
 
 ```json
 {
@@ -313,6 +316,7 @@ Returns ranked results with content, scores, and stable result IDs
 Same as `sm_search` but with the full per-signal score breakdown:
 BM25 score, vector score, recency score, RRF score, weights, and
 contribution percentages. Useful for debugging retrieval quality.
+It applies the same superseded-result filtering as `sm_search`.
 
 #### sm_add_fact
 
@@ -324,6 +328,23 @@ backend (Candle by default) and indexed for both BM25 and vector search.
   "content": "Rust 1.75 stabilized async fn in traits",
   "namespace": "rust-facts",
   "source": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html"
+}
+```
+
+#### sm_supersede_fact
+
+Create a replacement fact and link it to an older stale fact with a
+durable entity edge using `relation: "supersedes"`. Use this for verified
+corrections so old facts remain auditable but no longer stand alone as
+unmarked stale context.
+
+```json
+{
+  "old_fact_id": "fact:a1b2c3d4-...",
+  "content": "The current verified fact as of 2026-06-21 is ...",
+  "namespace": "codex",
+  "source": "repo:/path/or/url",
+  "reason": "verified against current repository state"
 }
 ```
 
@@ -590,7 +611,7 @@ sm_discord_search(["fact:abc123-...", "fact:def456-..."])
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | yes | All features — the full 18-tool surface + Candle embedder. This is the default build. |
+| `full` | yes | All features — the full 28-tool surface + Candle embedder. This is the default build. |
 | `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
 | `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
 

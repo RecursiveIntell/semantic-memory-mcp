@@ -9,6 +9,7 @@
 //!   semantic-memory-mcp --memory-dir /path --embedder ollama --embedding-url http://localhost:11434
 
 mod bridge;
+mod http_server;
 mod server;
 mod tools;
 
@@ -27,8 +28,17 @@ struct Cli {
     #[arg(long)]
     memory_dir: String,
 
-    /// Embedding backend: candle (default, in-process, no Ollama needed),
-    /// ollama (external Ollama server), or mock (testing).
+    /// Embedding backend: candle (default, in-process CPU, no Ollama needed),
+    /// ollama (external Ollama server, GPU-accelerated), or mock (testing).
+    ///
+    /// Candle: pure-Rust, CPU-only, downloads model from HuggingFace.
+    ///   Pros: zero external dependencies, works everywhere.
+    ///   Cons: ~138ms per embedding on CPU.
+    ///
+    /// Ollama: external server with GPU support (ROCm/CUDA/Metal).
+    ///   Pros: ~33ms per embedding (4x faster with GPU).
+    ///   Cons: requires `ollama serve` running and model pulled.
+    ///   Setup: `ollama pull nomic-embed-text` then `--embedder ollama`
     #[arg(long, default_value = "candle")]
     embedder: EmbedderBackend,
 
@@ -46,6 +56,18 @@ struct Cli {
     /// Embedding dimensions (default: 768)
     #[arg(long)]
     embedding_dims: Option<usize>,
+
+    /// Optional HTTP port for warm-server access. When set, starts a
+    /// minimal HTTP server alongside stdio MCP so hooks, benchmarks,
+    /// and scripts can query the warm process without spawning new ones.
+    /// Example: --http-port 1738
+    #[arg(long)]
+    http_port: Option<u16>,
+
+    /// Run only the HTTP server (skip stdio MCP). Requires --http-port.
+    /// Use this for standalone warm-server mode (benchmarks, hooks).
+    #[arg(long)]
+    http_only: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -59,10 +81,7 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("semantic-memory-mcp starting...");
     eprintln!("  memory_dir: {}", cli.memory_dir);
-    eprintln!(
-        "  embedder: {:?}",
-        cli.embedder
-    );
+    eprintln!("  embedder: {:?}", cli.embedder);
     match cli.embedder {
         EmbedderBackend::Candle => {
             eprintln!(
@@ -72,12 +91,24 @@ fn main() -> anyhow::Result<()> {
             );
         }
         EmbedderBackend::Ollama => {
+            let url = cli.embedding_url.as_deref().unwrap_or("http://localhost:11434");
             eprintln!(
-                "  embedding: {} @ {} ({}d)",
+                "  embedding: {} @ {} ({}d) — Ollama GPU-accelerated",
                 cli.embedding_model.as_deref().unwrap_or("nomic-embed-text"),
-                cli.embedding_url.as_deref().unwrap_or("http://localhost:11434"),
+                url,
                 cli.embedding_dims.unwrap_or(768)
             );
+            // Health check: verify Ollama is reachable before starting
+            let model = cli.embedding_model.as_deref().unwrap_or("nomic-embed-text");
+            if let Err(e) = reqwest::blocking::get(format!("{}/api/tags", url)) {
+                eprintln!("  WARNING: Ollama not reachable at {} — {}", url, e);
+                eprintln!("  Make sure Ollama is running: `ollama serve`");
+                eprintln!("  And the model is pulled: `ollama pull {}`", model);
+                eprintln!("  Falling back would require restart with --embedder candle");
+                anyhow::bail!("Ollama not reachable at {}", url);
+            } else {
+                eprintln!("  Ollama health check: OK");
+            }
         }
         EmbedderBackend::Mock => {
             eprintln!(
@@ -98,8 +129,32 @@ fn main() -> anyhow::Result<()> {
 
     let bridge = bridge::MemoryBridge::open(bridge_config)?;
 
+    // Create the tokio runtime first (needed for both HTTP and stdio)
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()?;
+
     // Create the MCP server
-    let server = server::SemanticMemoryServer::new(bridge);
+    let server = server::SemanticMemoryServer::new(bridge.clone());
+
+    // Start HTTP server if --http-port was specified.
+    // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
+    if let Some(port) = cli.http_port {
+        http_server::start_http_server(port, bridge, rt.handle().clone());
+    }
+
+    // If --http-only was set, skip stdio MCP and just keep the process alive
+    // for the HTTP server.
+    if cli.http_only {
+        eprintln!("HTTP-only mode: stdio MCP disabled, serving HTTP requests.");
+        // Park the main thread -- the HTTP server runs in its own thread
+        rt.block_on(async {
+            // Wait forever -- the HTTP server thread keeps the process alive
+            std::future::pending::<()>().await;
+        });
+        return Ok(());
+    }
 
     // Serve over stdio (MCP transport)
     // rmcp handles the JSON-RPC protocol: initialize, tools/list, tools/call
@@ -107,10 +162,6 @@ fn main() -> anyhow::Result<()> {
     // tokio::task::block_in_place to call async store methods from sync fn.
     // MCP-008: worker_threads(4) as a conservative floor to avoid thread
     // exhaustion under multi-client use.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(4)
-        .build()?;
 
     rt.block_on(async {
         let service = server.serve(rmcp::transport::stdio()).await?;

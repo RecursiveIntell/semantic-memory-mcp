@@ -4,10 +4,10 @@
 //! are async (tokio). This bridge wraps the store and uses the current
 //! tokio runtime handle for async calls (no separate runtime).
 
-use semantic_memory::{MemoryStore, MemoryConfig, EmbeddingConfig, SearchConfig};
-use semantic_memory::embedder::{OllamaEmbedder, MockEmbedder, Embedder};
 #[cfg(feature = "candle-embedder")]
 use semantic_memory::embedder::CandleEmbedder;
+use semantic_memory::embedder::{Embedder, MockEmbedder, OllamaEmbedder};
+use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, SearchConfig};
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 
@@ -53,6 +53,7 @@ impl std::str::FromStr for EmbedderBackend {
     }
 }
 
+#[derive(Clone)]
 pub struct MemoryBridge {
     pub store: MemoryStore,
 }
@@ -81,7 +82,9 @@ impl BridgeConfig {
         Self {
             memory_dir: PathBuf::from(memory_dir),
             embedder_backend,
-            embedding_url: embedding_url.unwrap_or("http://localhost:11434").to_string(),
+            embedding_url: embedding_url
+                .unwrap_or("http://localhost:11434")
+                .to_string(),
             embedding_model: embedding_model.unwrap_or("nomic-embed-text").to_string(),
             embedding_dims: embedding_dims.unwrap_or(768),
         }
@@ -101,12 +104,8 @@ impl MemoryBridge {
         };
 
         let embedder: Box<dyn Embedder> = match config.embedder_backend {
-            EmbedderBackend::Mock => {
-                Box::new(MockEmbedder::new(config.embedding_dims))
-            }
-            EmbedderBackend::Ollama => {
-                Box::new(OllamaEmbedder::try_new(&embedding_config)?)
-            }
+            EmbedderBackend::Mock => Box::new(MockEmbedder::new(config.embedding_dims)),
+            EmbedderBackend::Ollama => Box::new(OllamaEmbedder::try_new(&embedding_config)?),
             EmbedderBackend::Candle => {
                 #[cfg(feature = "candle-embedder")]
                 {
