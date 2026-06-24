@@ -391,3 +391,23 @@ pub struct DeleteNamespaceParams {
     /// The namespace to permanently delete (all its facts, documents, chunks, and namespaced sessions).
     pub namespace: String,
 }
+
+/// Parameters for sm_update_fact
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateFactParams {
+    /// The fact ID to update (with or without "fact:" prefix).
+    pub fact_id: String,
+    /// The new content for the fact.
+    pub content: String,
+}
+
+/// Parameters for sm_consolidate_facts
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConsolidateFactsParams {
+    /// First fact ID (will be kept and updated with merged content).
+    pub keep_id: String,
+    /// Second fact ID (will be superseded by the kept fact).
+    pub supersede_id: String,
+    /// Optional merged content. If not provided, content from both facts will be concatenated.
+    pub merged_content: Option<String>,
+}

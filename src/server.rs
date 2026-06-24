@@ -2037,6 +2037,119 @@ impl SemanticMemoryServer {
             Err(e) => Err(ErrorData::internal_error(format!("delete_namespace error: {e}"), None)),
         }
     }
+
+    #[tool(
+        description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
+        annotations(idempotent_hint = true)
+    )]
+    fn sm_update_fact(
+        &self,
+        Parameters(UpdateFactParams { fact_id, content }): Parameters<UpdateFactParams>,
+    ) -> Result<String, ErrorData> {
+        let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| Handle::current().block_on(store.update_fact(&bare, &content)));
+        match result {
+            Ok(()) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "fact_id": format!("fact:{bare}"),
+                "message": "Fact content updated and re-embedded",
+            })),
+            Err(e) => Err(ErrorData::internal_error(format!("update_fact error: {e}"), None)),
+        }
+    }
+
+    #[tool(
+        description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
+    )]
+    fn sm_consolidate_facts(
+        &self,
+        Parameters(ConsolidateFactsParams { keep_id, supersede_id, merged_content }): Parameters<ConsolidateFactsParams>,
+    ) -> Result<String, ErrorData> {
+        let keep_bare = keep_id.strip_prefix("fact:").unwrap_or(&keep_id).to_string();
+        let sup_bare = supersede_id.strip_prefix("fact:").unwrap_or(&supersede_id).to_string();
+        let store = &self.bridge.store;
+
+        // Get both facts to determine namespace and merge content
+        let keep_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
+        let sup_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
+
+        let (namespace, final_content) = match (keep_fact, sup_fact) {
+            (Ok(Some(k)), Ok(Some(s))) => {
+                let ns = k.namespace.clone();
+                let content = merged_content.unwrap_or_else(|| {
+                    if k.content.len() >= s.content.len() {
+                        if !k.content.contains(&s.content) {
+                            format!("{}\n\nAdditional: {}", k.content, s.content)
+                        } else {
+                            k.content.clone()
+                        }
+                    } else if !s.content.contains(&k.content) {
+                        format!("{}\n\nAdditional: {}", s.content, k.content)
+                    } else {
+                        s.content.clone()
+                    }
+                });
+                (ns, content)
+            }
+            (Ok(Some(k)), _) => (
+                k.namespace.clone(),
+                merged_content.unwrap_or(k.content.clone()),
+            ),
+            (Err(_), _) | (Ok(None), _) => {
+                return Err(ErrorData::internal_error(
+                    format!("keep fact not found"),
+                    None,
+                ));
+            }
+        };
+
+        // Update the kept fact with merged content
+        let update_result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.update_fact(&keep_bare, &final_content))
+        });
+        if let Err(e) = update_result {
+            return Err(ErrorData::internal_error(format!("update keep fact error: {e}"), None));
+        }
+
+        // Supersede the other fact: add a new fact with merged content and link with "supersedes" edge
+        use semantic_memory::GraphEdgeType;
+        let new_id = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.add_fact(&namespace, &final_content, None, None))
+        });
+        match new_id {
+            Ok(nid) => {
+                let new_node = format!("fact:{nid}");
+                let old_node = format!("fact:{sup_bare}");
+                let metadata = serde_json::json!({
+                    "reason": "consolidated duplicate",
+                    "consolidated_with": format!("fact:{}", keep_bare),
+                });
+                let _edge = tokio::task::block_in_place(|| {
+                    Handle::current().block_on(store.add_graph_edge(
+                        &new_node,
+                        &old_node,
+                        GraphEdgeType::Entity {
+                            relation: "supersedes".to_string(),
+                        },
+                        1.0,
+                        Some(metadata),
+                    ))
+                });
+                json_to_string(&serde_json::json!({
+                    "ok": true,
+                    "kept_fact_id": format!("fact:{}", keep_bare),
+                    "superseded_fact_id": format!("fact:{}", sup_bare),
+                    "new_fact_id": format!("fact:{}", nid),
+                    "message": "Facts consolidated: kept fact updated, duplicate superseded",
+                }))
+            }
+            Err(e) => Err(ErrorData::internal_error(
+                format!("supersede error: {e}"),
+                None,
+            )),
+        }
+    }
 }
 
 /// Build path segments with edge evidence for each hop in a path.
