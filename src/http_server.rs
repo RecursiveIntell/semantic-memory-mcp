@@ -144,6 +144,7 @@ fn handle_connection(
             serde_json::json!({"ok": true, "service": "semantic-memory-mcp"}),
         ),
         ("POST", "/search") => handle_search(&body_str, &bridge, &handle),
+        ("POST", "/search-routed") => handle_search_routed(&body_str, &bridge, &handle),
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
@@ -236,6 +237,106 @@ fn handle_search(
                     "results": final_results,
                     "count": count,
                     "reranked": do_rerank,
+                }),
+            )
+        }
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("search error: {e}")}),
+        ),
+    }
+}
+
+/// Handle /search-routed: routing-aware search for complex queries.
+///
+/// Accepts a `query_class` field (A/B/C/D/E) from the Python classifier:
+/// - D (SYNTHESIS): increases top_k to gather more candidates
+/// - C (CONTRADICTION): uses exact search profile
+/// - A/B/E: identical to /search (early return, no overhead)
+fn handle_search_routed(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let base_top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(12) as usize;
+    let query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let namespaces: Option<Vec<String>> = params
+        .get("namespaces")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    if query.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "missing 'query' field"}),
+        );
+    }
+
+    // Class D (SYNTHESIS): retrieve more candidates to support comprehensive answers
+    let top_k = if query_class == "D" {
+        (base_top_k * 2).min(20)
+    } else {
+        base_top_k
+    };
+
+    let store = &bridge.store;
+    let ns_slice: Option<Vec<&str>> = namespaces
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect());
+
+    // Class C (CONTRADICTION): use ExactSearch context for higher-fidelity results
+    let result = if query_class == "C" {
+        use semantic_memory::{ExactnessProfile, SearchContext};
+        let mut ctx = SearchContext::default_now();
+        ctx.exactness_profile = ExactnessProfile::PreferExact;
+        block_in_place(|| {
+            handle.block_on(store.search_with_context(
+                query,
+                Some(top_k),
+                ns_slice.as_deref(),
+                None,
+                ctx,
+            ))
+        })
+        .map(|r| r.results)
+    } else {
+        block_in_place(|| {
+            handle.block_on(store.search(query, Some(top_k), ns_slice.as_deref(), None))
+        })
+    };
+
+    match result {
+        Ok(results) => {
+            let json_results: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "result_id": r.source.result_id(),
+                        "content": r.content,
+                        "score": r.score,
+                        "cosine_similarity": r.cosine_similarity,
+                    })
+                })
+                .collect();
+            let count = json_results.len();
+            (
+                "200 OK",
+                serde_json::json!({
+                    "ok": true,
+                    "results": json_results,
+                    "count": count,
+                    "query_class": query_class,
+                    "routed": true,
                 }),
             )
         }

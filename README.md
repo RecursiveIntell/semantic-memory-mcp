@@ -287,7 +287,7 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes 28 MCP tools. Use `tools/list` as the source of
+The server exposes 32 MCP tools. Use `tools/list` as the source of
 truth for the available tool surface on your build.
 
 ### Core tools (always available)
@@ -611,7 +611,7 @@ sm_discord_search(["fact:abc123-...", "fact:def456-..."])
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | yes | All features — the full 28-tool surface + Candle embedder. This is the default build. |
+| `full` | yes | All features — the full 32-tool surface + Candle embedder. This is the default build. |
 | `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
 | `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
 
