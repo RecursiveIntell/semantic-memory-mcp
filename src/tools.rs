@@ -54,6 +54,9 @@ pub struct AddFactParams {
     /// Optional source attribution
     #[serde(default)]
     pub source: Option<String>,
+    /// When true, extract named entities via Ollama and link them as graph edges (opt-in)
+    #[serde(default)]
+    pub extract_entities: Option<bool>,
 }
 
 /// Parameters for sm_ingest_document
@@ -102,6 +105,9 @@ pub struct SearchWithRoutingParams {
     /// Known contradiction pairs (item_a, item_b)
     #[serde(default)]
     pub contradictions: Option<Vec<(String, String)>>,
+    /// When true, group search results by knowledge graph community membership
+    #[serde(default)]
+    pub group_by_community: Option<bool>,
 }
 
 /// Parameters for sm_set_provenance
@@ -273,6 +279,9 @@ pub struct CommunityParams {
     /// Optional importance scores per item for community-aware compression recommendations
     #[serde(default)]
     pub importance_scores: Option<Vec<(String, f64)>>,
+    /// When true, generate an LLM summary for each community via Ollama (opt-in)
+    #[serde(default)]
+    pub summarize: Option<bool>,
 }
 
 // ─── Direct read and supersession tools (v0.3.1) ─────────────────────────

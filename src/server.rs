@@ -463,6 +463,7 @@ impl SemanticMemoryServer {
             content,
             namespace,
             source,
+            extract_entities,
         }): Parameters<AddFactParams>,
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
@@ -472,12 +473,68 @@ impl SemanticMemoryServer {
         });
 
         match result {
-            Ok(id) => json_to_string(&serde_json::json!({
-                "ok": true,
-                "fact_id": id,
-                "namespace": namespace,
-                "message": "Fact added successfully",
-            })),
+            Ok(id) => {
+                // Optional entity extraction — best-effort, never fails the whole operation.
+                if extract_entities == Some(true) {
+                    let prompt = format!(
+                        "Extract entities from this text as JSON. Format: {{\"entities\": [{{\"name\": \"...\", \"type\": \"person|project|concept|tool|version|path\"}}]}}\nText: {content}\nJSON:"
+                    );
+                    let body = serde_json::json!({
+                        "model": "granite4.1:3b",
+                        "prompt": prompt,
+                        "stream": false,
+                        "options": {"temperature": 0, "num_predict": 200}
+                    });
+                    if let Ok(resp) = reqwest::blocking::Client::new()
+                        .post("http://127.0.0.1:11434/api/generate")
+                        .json(&body)
+                        .send()
+                    {
+                        if let Ok(v) = resp.json::<serde_json::Value>() {
+                            if let Some(response_str) =
+                                v.get("response").and_then(|r| r.as_str())
+                            {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<serde_json::Value>(response_str.trim())
+                                {
+                                    if let Some(entities) =
+                                        parsed.get("entities").and_then(|e| e.as_array())
+                                    {
+                                        let fact_node = format!("fact:{id}");
+                                        for entity in entities {
+                                            if let Some(name) =
+                                                entity.get("name").and_then(|n| n.as_str())
+                                            {
+                                                let entity_node = format!("entity:{name}");
+                                                let _ = tokio::task::block_in_place(|| {
+                                                    Handle::current().block_on(
+                                                        store.add_graph_edge(
+                                                            &fact_node,
+                                                            &entity_node,
+                                                            semantic_memory::GraphEdgeType::Entity {
+                                                                relation: "mentions".to_string(),
+                                                            },
+                                                            1.0,
+                                                            None,
+                                                        ),
+                                                    )
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                json_to_string(&serde_json::json!({
+                    "ok": true,
+                    "fact_id": id,
+                    "namespace": namespace,
+                    "message": "Fact added successfully",
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("Error adding fact: {e}"),
                 None,
@@ -1060,6 +1117,7 @@ impl SemanticMemoryServer {
             query,
             top_k,
             contradictions,
+            group_by_community,
         }): Parameters<SearchWithRoutingParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::integration::plan_execution;
@@ -1079,9 +1137,6 @@ impl SemanticMemoryServer {
         let contras = contradictions.unwrap_or_default();
         let plan = plan_execution(&decision, contras.clone());
 
-        // Execute search — both branches currently call plain search.
-        // SM-AUD-007: report decoder_executed=false when decoder is planned
-        // but not actually applied to the result ranking.
         let store = &self.bridge.store;
         let search_result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search(&query, Some(search_k), None, None))
@@ -1121,10 +1176,9 @@ impl SemanticMemoryServer {
                     "enabled": false,
                 });
 
-                // Track whether decoder actually affected ranking.
-                // Currently both branches call plain search, so decoder
-                // never affects ranking (SM-AUD-007).
-                let decoder_executed = false;
+                let mut decoder_executed = false;
+                let mut discord_executed = false;
+                let mut discord_results_payload: Vec<serde_json::Value> = Vec::new();
 
                 if decision.decoder {
                     #[cfg(feature = "full")]
@@ -1195,6 +1249,7 @@ impl SemanticMemoryServer {
                                         "total": propagated.factor_counts.total(),
                                     },
                                 });
+                                decoder_executed = true;
                             }
                             Err(e) => {
                                 factor_graph_payload = serde_json::json!({
@@ -1212,6 +1267,44 @@ impl SemanticMemoryServer {
                             "reason": "factor graph analysis requires the `full` feature",
                         });
                     }
+
+                    if !plan.contradictions.is_empty() {
+                        use semantic_memory::decoder::{compute_correction, detect_syndromes};
+                        let result_scores: Vec<(String, f64)> = result_refs
+                            .iter()
+                            .map(|r| (r.source.result_id(), r.score))
+                            .collect();
+                        let syndromes = detect_syndromes(&result_scores, &plan.contradictions);
+                        let _ = compute_correction(&syndromes, 10.0);
+                        decoder_executed = true;
+                    }
+                }
+
+                if plan.use_discord {
+                    use semantic_memory::discord::DiscordScorer;
+                    let direct_ids: Vec<String> = result_refs
+                        .iter()
+                        .map(|r| r.source.result_id())
+                        .collect();
+                    let existing_ids: std::collections::HashSet<String> =
+                        direct_ids.iter().cloned().collect();
+                    if let Ok(edges) =
+                        load_neighborhood_edge_refs(&self.bridge.store, &direct_ids)
+                    {
+                        let scorer = DiscordScorer::with_defaults();
+                        let discord_hits = scorer.score(&direct_ids, &edges);
+                        for hit in &discord_hits {
+                            if !existing_ids.contains(&hit.item_id) {
+                                discord_results_payload.push(serde_json::json!({
+                                    "result_id": hit.item_id,
+                                    "discord_score": hit.discord_score,
+                                    "anchor_ids": hit.anchor_ids,
+                                    "relationship_types": hit.relationship_types,
+                                }));
+                            }
+                        }
+                        discord_executed = true;
+                    }
                 }
 
                 let mut matryoshka_payload = serde_json::json!({
@@ -1227,8 +1320,6 @@ impl SemanticMemoryServer {
                         let route_profile = QueryProfile::from_query(&query);
                         let route_decision =
                             multi_resolution_route(&route_profile, &MatryoshkaConfig::default());
-                        // SM-AUD-007 / MCP-006: renamed from estimated_recall to
-                        // heuristic_recall_estimate with recall_basis field.
                         matryoshka_payload = serde_json::json!({
                             "enabled": true,
                             "candidate_dim": route_decision.candidate_dim,
@@ -1248,6 +1339,64 @@ impl SemanticMemoryServer {
                     }
                 }
 
+                // Community grouping (opt-in).
+                let grouped_results_payload: serde_json::Value =
+                    if group_by_community == Some(true) {
+                        let seed_ids: Vec<String> = result_refs
+                            .iter()
+                            .take(k)
+                            .map(|r| r.source.result_id())
+                            .collect();
+                        let edges =
+                            load_neighborhood_edge_pairs(store, &seed_ids).unwrap_or_default();
+                        if !edges.is_empty() {
+                            use semantic_memory::community::detect_communities;
+                            let communities = detect_communities(&edges, 1.0, 42);
+                            let mut member_to_comm: std::collections::HashMap<String, String> =
+                                std::collections::HashMap::new();
+                            for c in &communities {
+                                for m in &c.members {
+                                    member_to_comm.insert(m.clone(), c.id.clone());
+                                }
+                            }
+                            let mut groups: std::collections::HashMap<
+                                String,
+                                Vec<serde_json::Value>,
+                            > = std::collections::HashMap::new();
+                            let mut ungrouped: Vec<serde_json::Value> = Vec::new();
+                            for r in &json_results {
+                                if let Some(rid) =
+                                    r.get("result_id").and_then(|v| v.as_str())
+                                {
+                                    match member_to_comm.get(rid).cloned() {
+                                        Some(cid) => {
+                                            groups.entry(cid).or_default().push(r.clone())
+                                        }
+                                        None => ungrouped.push(r.clone()),
+                                    }
+                                }
+                            }
+                            let mut map = serde_json::Map::new();
+                            for (cid, items) in groups {
+                                map.insert(
+                                    format!("community_{cid}"),
+                                    serde_json::json!(items),
+                                );
+                            }
+                            if !ungrouped.is_empty() {
+                                map.insert(
+                                    "ungrouped".to_string(),
+                                    serde_json::json!(ungrouped),
+                                );
+                            }
+                            serde_json::Value::Object(map)
+                        } else {
+                            serde_json::Value::Null
+                        }
+                    } else {
+                        serde_json::Value::Null
+                    };
+
                 json_to_string(&serde_json::json!({
                     "ok": true,
                     "routing_decision": {
@@ -1265,8 +1414,12 @@ impl SemanticMemoryServer {
                     "superseded_filtered_count": superseded_filtered_count,
                     "decoder_planned": plan.use_decoder,
                     "decoder_executed": decoder_executed,
+                    "discord_planned": plan.use_discord,
+                    "discord_executed": discord_executed,
+                    "discord_results": discord_results_payload,
                     "factor_graph": factor_graph_payload,
                     "matryoshka": matryoshka_payload,
+                    "grouped_results": grouped_results_payload,
                 }))
             }
             Err(e) => Err(ErrorData::internal_error(
@@ -1955,15 +2108,67 @@ impl SemanticMemoryServer {
         let importance_scores = params.importance_scores.unwrap_or_default();
         let compression = community_aware_compression(&communities, &importance_scores);
 
+        let summarize = params.summarize.unwrap_or(false);
+        let store = &self.bridge.store;
+        let communities_json: Vec<serde_json::Value> = communities
+            .iter()
+            .map(|c| {
+                let summary: Option<String> = if summarize && !c.members.is_empty() {
+                    let member_texts: Vec<String> = c
+                        .members
+                        .iter()
+                        .filter_map(|mid| {
+                            let bare = mid.strip_prefix("fact:").unwrap_or(mid);
+                            tokio::task::block_in_place(|| {
+                                Handle::current().block_on(store.get_fact(bare))
+                            })
+                            .ok()
+                            .flatten()
+                            .map(|f| f.content)
+                        })
+                        .collect();
+                    if !member_texts.is_empty() {
+                        let combined = member_texts.join("\n---\n");
+                        let prompt = format!(
+                            "Summarize these related facts in 1-2 sentences:\n{combined}\nSummary:"
+                        );
+                        let body = serde_json::json!({
+                            "model": "granite4.1:3b",
+                            "prompt": prompt,
+                            "stream": false,
+                            "options": {"temperature": 0, "num_predict": 100}
+                        });
+                        reqwest::blocking::Client::new()
+                            .post("http://127.0.0.1:11434/api/generate")
+                            .json(&body)
+                            .send()
+                            .ok()
+                            .and_then(|resp| resp.json::<serde_json::Value>().ok())
+                            .and_then(|v| {
+                                v.get("response")
+                                    .and_then(|r| r.as_str())
+                                    .map(|s| s.trim().to_string())
+                            })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                serde_json::json!({
+                    "id": c.id,
+                    "members": c.members,
+                    "level": c.level,
+                    "parent": c.parent,
+                    "member_count": c.members.len(),
+                    "summary": summary,
+                })
+            })
+            .collect();
+
         json_to_string(&serde_json::json!({
             "ok": true,
-            "communities": communities.iter().map(|c| serde_json::json!({
-                "id": c.id,
-                "members": c.members,
-                "level": c.level,
-                "parent": c.parent,
-                "member_count": c.members.len(),
-            })).collect::<Vec<_>>(),
+            "communities": communities_json,
             "community_count": communities.len(),
             "contradictions": community_contras.iter().map(|cc| serde_json::json!({
                 "community_id": cc.community_id,

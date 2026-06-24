@@ -18,6 +18,57 @@ use tokio::task::block_in_place;
 
 use crate::bridge::MemoryBridge;
 
+/// Call Ollama to rate each result's relevance to the query (1-5) and sort descending.
+/// Returns a new vec with a `rerank_score` field added to each result object.
+fn rerank_results(
+    query: &str,
+    results: &[serde_json::Value],
+    model: &str,
+) -> Vec<serde_json::Value> {
+    let client = reqwest::blocking::Client::new();
+    let mut scored: Vec<(f64, serde_json::Value)> = results
+        .iter()
+        .map(|r| {
+            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let truncated: String = content.chars().take(500).collect();
+            let prompt = format!(
+                "Rate the relevance of this document to the query on a scale of 1-5. Reply with ONLY the number.\nQuery: {query}\nDocument: {truncated}\nRating:"
+            );
+            let body = serde_json::json!({
+                "model": model,
+                "prompt": prompt,
+                "stream": false,
+                "options": {"temperature": 0, "num_predict": 1}
+            });
+            let rating = client
+                .post("http://127.0.0.1:11434/api/generate")
+                .json(&body)
+                .send()
+                .ok()
+                .and_then(|resp| resp.json::<serde_json::Value>().ok())
+                .and_then(|v| {
+                    v.get("response")
+                        .and_then(|r| r.as_str())
+                        .and_then(|s| s.trim().chars().next())
+                        .and_then(|c| c.to_digit(10))
+                        .map(|d| d as f64)
+                })
+                .unwrap_or(1.0);
+            (rating, r.clone())
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored
+        .into_iter()
+        .map(|(score, mut r)| {
+            if let Some(obj) = r.as_object_mut() {
+                obj.insert("rerank_score".to_string(), serde_json::json!(score));
+            }
+            r
+        })
+        .collect()
+}
+
 pub fn start_http_server(port: u16, bridge: MemoryBridge, handle: Handle) {
     std::thread::spawn(move || {
         let listener = match TcpListener::bind(("127.0.0.1", port)) {
@@ -93,6 +144,7 @@ fn handle_connection(
             serde_json::json!({"ok": true, "service": "semantic-memory-mcp"}),
         ),
         ("POST", "/search") => handle_search(&body_str, &bridge, &handle),
+        ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
         _ => (
@@ -134,6 +186,7 @@ fn handle_search(
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let do_rerank = params.get("rerank").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -146,8 +199,10 @@ fn handle_search(
     let ns_slice: Option<Vec<&str>> = namespaces
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
+    // Fetch top_k * 2 candidates when reranking so the LLM has a richer pool to sort.
+    let fetch_k = if do_rerank { top_k * 2 } else { top_k };
     let result = block_in_place(|| {
-        handle.block_on(store.search(query, Some(top_k), ns_slice.as_deref(), None))
+        handle.block_on(store.search(query, Some(fetch_k), ns_slice.as_deref(), None))
     });
 
     match result {
@@ -163,12 +218,24 @@ fn handle_search(
                     })
                 })
                 .collect();
+
+            let final_results: Vec<serde_json::Value> = if do_rerank && !json_results.is_empty() {
+                rerank_results(query, &json_results, "granite4.1:3b")
+                    .into_iter()
+                    .take(top_k)
+                    .collect()
+            } else {
+                json_results
+            };
+
+            let count = final_results.len();
             (
                 "200 OK",
                 serde_json::json!({
                     "ok": true,
-                    "results": json_results,
-                    "count": json_results.len(),
+                    "results": final_results,
+                    "count": count,
+                    "reranked": do_rerank,
                 }),
             )
         }
@@ -201,6 +268,51 @@ fn handle_stats(
             serde_json::json!({"ok": false, "error": format!("{e}")}),
         ),
     }
+}
+
+fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let model = params
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("granite4.1:3b");
+    let results = match params.get("results").and_then(|v| v.as_array()) {
+        Some(r) => r.clone(),
+        None => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": "missing 'results' array"}),
+            )
+        }
+    };
+
+    if query.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "missing 'query' field"}),
+        );
+    }
+
+    let reranked = rerank_results(query, &results, model);
+    let count = reranked.len();
+    (
+        "200 OK",
+        serde_json::json!({
+            "ok": true,
+            "results": reranked,
+            "count": count,
+        }),
+    )
 }
 
 fn handle_add_fact(
