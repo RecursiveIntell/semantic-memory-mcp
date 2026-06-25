@@ -148,7 +148,12 @@ fn handle_connection(
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
-        ("POST", "/add-edge") => handle_add_edge(&body_str, &bridge, &handle),
+        ("POST", "/add-edge") => {
+            handle_add_edge(&body_str, &bridge, &handle)
+        }
+        ("POST", "/delete-fact") => {
+            handle_delete_fact(&body_str, &bridge, &handle)
+        }
         ("POST", "/record-outcome") => handle_record_outcome(&body_str, &bridge, &handle),
         ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
         ("POST", "/discord") => handle_discord(&body_str, &bridge, &handle),
@@ -849,6 +854,43 @@ fn handle_add_edge(
             "200 OK",
             serde_json::json!({"ok": true, "edge_id": edge.id}),
         ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("{e}")}),
+        ),
+    }
+}
+
+/// Handle /delete-fact: hard-delete a fact by ID.
+fn handle_delete_fact(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let fact_id = params.get("fact_id").and_then(|v| v.as_str()).unwrap_or("");
+    if fact_id.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "missing 'fact_id'"}),
+        );
+    }
+
+    let bare_id = fact_id.strip_prefix("fact:").unwrap_or(fact_id);
+    let store = &bridge.store;
+    let result = block_in_place(|| handle.block_on(store.delete_fact(bare_id)));
+
+    match result {
+        Ok(()) => ("200 OK", serde_json::json!({"ok": true, "deleted": true})),
         Err(e) => (
             "500 Internal Server Error",
             serde_json::json!({"ok": false, "error": format!("{e}")}),
