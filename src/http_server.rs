@@ -1345,38 +1345,127 @@ fn handle_maintenance_auto_edge(
     let max_edges_per_fact =
         params.get("max_edges_per_fact").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let dry_run = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+    let rebuild = params.get("rebuild").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let store = &bridge.store;
 
-    // Common English stopwords to filter out during term extraction.
+    // If rebuild mode, invalidate ALL existing entity edges first.
+    let mut edges_invalidated: u64 = 0;
+    if rebuild && !dry_run {
+        let all_edges = block_in_place(|| handle.block_on(store.list_all_graph_edges()));
+        if let Ok(edges) = all_edges {
+            for edge in &edges {
+                let parsed = edge.edge_type_parsed.clone().or_else(|| {
+                    serde_json::from_str::<semantic_memory::GraphEdgeType>(&edge.edge_type).ok()
+                });
+                if matches!(parsed, Some(semantic_memory::GraphEdgeType::Entity { .. })) {
+                    let _ = block_in_place(|| {
+                        handle.block_on(store.invalidate_graph_edge(&edge.id, "auto-edge rebuild"))
+                    });
+                    edges_invalidated += 1;
+                }
+            }
+        }
+        eprintln!("[auto-edge] rebuild: invalidated {edges_invalidated} existing entity edges");
+    }
+
+    // Namespaces to SKIP entirely — social media noise, not technical knowledge.
+    const SKIP_NAMESPACES: &[&str] = &[
+        "mixed", "chatgpt", "twitter", "tool-receipts", "agentguard",
+    ];
+    let skip_ns: std::collections::HashSet<&str> = SKIP_NAMESPACES.iter().copied().collect();
+
+    // Large stopword list — common English words that should never create edges.
     const STOPWORDS: &[&str] = &[
         "the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one",
         "our", "out", "has", "have", "had", "his", "how", "its", "may", "new", "now", "old",
         "see", "him", "way", "who", "did", "yes", "yet", "say", "she", "too", "use", "via",
         "any", "few", "get", "got", "let", "put", "run", "set", "try", "two", "bad", "big",
-        "far", "off", "own", "per", "sub", "top", "end", "add", "all", "also", "been",
+        "far", "off", "own", "per", "sub", "top", "end", "add", "also", "been",
         "from", "into", "that", "this", "with", "will", "your", "they", "them", "were",
         "what", "when", "where", "which", "while", "there", "their", "about", "after",
         "before", "between", "because", "being", "would", "could", "should", "than",
         "then", "these", "those", "only", "over", "under", "again", "more", "most", "some",
         "such", "very", "just", "like", "even", "back", "both", "down", "here", "make",
         "made", "each", "want", "need", "know", "same", "other", "many", "much", "last",
-        "first", "third", "next", "best", "main", "full", "only", "upon", "within",
-        "without", "through", "during", "above", "below", "upon", "against", "among",
+        "first", "third", "next", "best", "main", "full", "upon", "within",
+        "without", "through", "during", "above", "below", "against", "among",
         "across", "behind", "beside", "beyond",
+        // Common technical/process words that create false connections
+        "project", "work", "thing", "things", "fix", "fixed", "build", "built", "code",
+        "data", "system", "update", "updated", "check", "checked", "test", "tested",
+        "error", "issue", "problem", "result", "results", "status", "state", "info",
+        "note", "notes", "list", "item", "items", "type", "types", "field", "fields",
+        "name", "names", "value", "values", "line", "lines", "file", "files",
+        "part", "parts", "section", "sections", "step", "steps", "task", "tasks",
+        "goal", "goals", "plan", "plans", "done", "open", "close", "closed",
+        "start", "started", "stop", "stopped", "change", "changed", "changing",
+        "good", "bad", "right", "wrong", "true", "false", "yes", "no", "ok",
+        "lots", "lot", "really", "actually", "basically", "probably", "maybe",
+        "going", "getting", "looking", "trying", "working", "something", "anything",
+        "everything", "nothing", "someone", "anyone", "everyone",
+        "still", "always", "never", "sometimes", "usually", "often",
+        "since", "until", "though", "although", "however", "therefore",
+        "either", "neither", "both", "all", "any", "some", "none",
+        "version", "config", "setup", "install", "installed", "running",
+        "report", "reports", "summary", "detail", "details",
+        "feature", "features", "function", "functions", "method", "methods",
+        "class", "classes", "module", "modules", "crate", "crates",
+        "package", "packages", "library", "libraries", "app", "apps",
+        "web", "page", "pages", "site", "sites", "link", "links",
+        "post", "posts", "reply", "replies", "comment", "comments",
+        "read", "write", "call", "called", "calling", "return", "returns",
+        "input", "output", "source", "target", "source_id", "target_id",
+        "create", "created", "creating", "delete", "deleted", "removing",
+        "find", "found", "finding", "search", "searching", "replace", "replaced",
+        "show", "shown", "showing", "hide", "hidden", "display", "rendered",
+        "enable", "enabled", "disable", "disabled", "allow", "allowed",
+        "require", "required", "requiring", "support", "supported",
+        "default", "custom", "general", "specific", "standard",
+        "current", "latest", "previous", "old", "new", "future",
+        "high", "low", "medium", "critical", "normal", "minor", "major",
+        "single", "multiple", "total", "count", "number",
+        "description", "summary", "overview", "introduction", "conclusion",
+        "todo", "fixme", "wip", "draft", "final", "complete", "completed",
+        "include", "includes", "included", "exclude", "excludes", "excluded",
+        "require", "requires", "required", "optional",
+        "important", "urgent", "priority", "blocking",
+        "question", "answer", "response", "request",
     ];
     let stopword_set: std::collections::HashSet<&str> = STOPWORDS.iter().copied().collect();
 
-    /// Extract meaningful terms from text: lowercase, split on non-alpha,
-    /// filter stopwords, min 3 chars, deduplicate.
+    /// Extract HIGH-QUALITY terms from text: only proper nouns, camelCase/snake_case
+    /// identifiers, and words 5+ chars that aren't stopwords. This filters out
+    /// common English words that create false connections.
     fn extract_terms(text: &str, stopwords: &std::collections::HashSet<&str>) -> std::collections::HashSet<String> {
-        text.to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() >= 3)
-            .filter(|w| !stopwords.contains(*w))
-            .filter(|w| !w.chars().all(|c| c.is_ascii_digit()))
-            .map(|w| w.to_string())
-            .collect()
+        let mut terms = std::collections::HashSet::new();
+        for word in text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+            let w = word.trim_matches(|c: char| c == '-' || c == '_');
+            if w.len() < 3 {
+                continue;
+            }
+            let lower = w.to_lowercase();
+            if stopwords.contains(lower.as_str()) {
+                continue;
+            }
+            // Skip pure numbers
+            if lower.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            // Include if:
+            // - camelCase or snake_case (has internal uppercase or _ or -)
+            // - all lowercase and 5+ chars (filters short common words)
+            // - starts with uppercase (proper noun)
+            let has_separator = w.contains('_') || w.contains('-');
+            let has_upper = w.chars().any(|c| c.is_uppercase());
+            let starts_upper = w.chars().next().map(|c| c.is_uppercase()).unwrap_or(false);
+            let long_enough = lower.len() >= 5;
+
+            if has_separator || has_upper || starts_upper || long_enough {
+                terms.insert(lower);
+            }
+        }
+        terms
     }
 
     // 1. Get all namespaces that contain facts
@@ -1389,6 +1478,12 @@ fn handle_maintenance_auto_edge(
             )
         }
     };
+
+    // Filter out skip namespaces
+    let namespaces: Vec<String> = namespaces
+        .into_iter()
+        .filter(|ns| !skip_ns.contains(ns.as_str()))
+        .collect();
 
     // 2. Page through all facts in each namespace, extract terms, store (id, namespace, terms)
     struct FactInfo {
@@ -1415,11 +1510,14 @@ fn handle_maintenance_auto_edge(
             }
             for fact in &batch {
                 let terms = extract_terms(&fact.content, &stopword_set);
-                all_facts.push(FactInfo {
-                    id: fact.id.clone(),
-                    namespace: fact.namespace.clone(),
-                    terms,
-                });
+                // Skip facts with fewer than 3 quality terms — they can't form meaningful edges
+                if terms.len() >= 3 {
+                    all_facts.push(FactInfo {
+                        id: fact.id.clone(),
+                        namespace: fact.namespace.clone(),
+                        terms,
+                    });
+                }
             }
             offset += batch.len();
             if batch.len() < batch_size {
@@ -1431,7 +1529,6 @@ fn handle_maintenance_auto_edge(
     let facts_processed = all_facts.len();
 
     // 3. Load existing edges to skip pairs that already have edges.
-    // Build a set of (source, target) pairs that already have entity edges.
     let existing_edges: std::collections::HashSet<(String, String)> =
         match block_in_place(|| handle.block_on(store.list_all_graph_edges())) {
             Ok(edges) => edges
@@ -1452,8 +1549,8 @@ fn handle_maintenance_auto_edge(
             Err(_) => std::collections::HashSet::new(),
         };
 
-    // 4. For each pair of facts in DIFFERENT namespaces sharing 2+ terms, create entity edge.
-    // Rate-limit: max_edges_per_fact per source fact.
+    // 4. For each pair of facts in DIFFERENT namespaces sharing 3+ terms, create entity edge.
+    // Higher threshold (3 instead of 2) + quality term extraction = much fewer, better edges.
     let mut edges_created: u64 = 0;
     let mut edges_skipped: u64 = 0;
     let mut edge_counts: std::collections::HashMap<String, u64> =
@@ -1476,9 +1573,9 @@ fn handle_maintenance_auto_edge(
                 continue;
             }
 
-            // Check shared terms (need 2+)
+            // Check shared terms (need 3+ for high quality)
             let shared: usize = fact_i.terms.intersection(&fact_j.terms).count();
-            if shared < 2 {
+            if shared < 3 {
                 continue;
             }
 
@@ -1515,7 +1612,8 @@ fn handle_maintenance_auto_edge(
             let edge_type = semantic_memory::GraphEdgeType::Entity {
                 relation: relation.clone(),
             };
-            let weight = shared.min(10) as f64 / 10.0; // 0.2–1.0 based on overlap
+            // Weight based on overlap quality: 3 terms = 0.3, up to 1.0 for 10+ terms
+            let weight = (shared.min(10) as f64) / 10.0;
 
             let result = block_in_place(|| {
                 handle.block_on(store.add_graph_edge(
