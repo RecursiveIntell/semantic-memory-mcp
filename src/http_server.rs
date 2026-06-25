@@ -525,9 +525,11 @@ fn handle_search_routed(
                     for hit in &discord_hits {
                         if !existing_ids.contains(&hit.item_id) {
                             // Fetch the fact's content directly from the DB.
+                            // get_fact expects a bare UUID (without "fact:" prefix).
+                            let bare_id = hit.item_id.strip_prefix("fact:").unwrap_or(&hit.item_id);
                             let (content, namespace) = {
                                 let fact_result = handle.block_on(
-                                    store.get_fact(&hit.item_id)
+                                    store.get_fact(bare_id)
                                 );
                                 match fact_result {
                                     Ok(Some(fact)) => (fact.content, fact.namespace),
