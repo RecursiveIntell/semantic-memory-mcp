@@ -1,15 +1,20 @@
 #!/bin/bash
 # ============================================================================
-# RecursiveIntell Agent Stack Installer
+# RecursiveIntell Agent Stack Installer -- HERMES EDITION
 # ============================================================================
-# Installs and configures the complete evidence-first agent stack:
+# Installs and configures the complete evidence-first agent stack for Hermes:
 #   - Hermes Agent (if not already installed)
 #   - semantic-memory library + MCP server (from source, with Cargo)
-#   - AiDENs platform (from source, with Cargo)
-#   - All 6 Hermes hooks (primer, recall, autocapture, capture-nudge, dedup-guard, tool-receipts)
+#   - All 6 Hermes shell hooks (primer, recall, autocapture, capture-nudge,
+#     dedup-guard, tool-receipts)
 #   - Warm HTTP server on port 1738
 #   - MCP server registration in Hermes config
 #   - Hook allowlist entries
+#
+# For Claude Code: use the semantic-memory-claude-kit plugin instead:
+#   https://github.com/RecursiveIntell/semantic-memory-claude-kit
+#
+# For Codex: use the AGENTS.md approach with MCP server in config
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/RecursiveIntell/semantic-memory-mcp/main/install.sh | bash
@@ -19,7 +24,6 @@
 #
 # Options:
 #   --skip-hermes    Skip Hermes installation (assume already installed)
-#   --skip-aidens    Skip AiDENs installation
 #   --skip-hooks     Skip hook installation
 #   --port PORT      HTTP server port (default: 1738)
 #   --memory-dir DIR Memory DB directory (default: ~/.hermes/semantic-memory.db)
@@ -41,7 +45,6 @@ info() { echo -e "${BLUE}[RI]${NC} $1"; }
 
 # Defaults
 SKIP_HERMES=false
-SKIP_AIDENS=false
 SKIP_HOOKS=false
 PORT=1738
 MEMORY_DIR="$HOME/.hermes/semantic-memory.db"
@@ -52,7 +55,6 @@ AGENT_HOOKS="$HERMES_HOME/agent-hooks"
 while [[ $# -gt 0 ]]; do
     case $1 in
         --skip-hermes) SKIP_HERMES=true; shift ;;
-        --skip-aidens) SKIP_AIDENS=true; shift ;;
         --skip-hooks)  SKIP_HOOKS=true;  shift ;;
         --port)        PORT="$2"; shift 2 ;;
         --memory-dir)  MEMORY_DIR="$2"; shift 2 ;;
@@ -179,24 +181,7 @@ fi
 mkdir -p "$MEMORY_DIR"
 
 # ============================================================================
-# Step 4: Clone and build AiDENs (optional)
-# ============================================================================
-if [ "$SKIP_AIDENS" = false ]; then
-    AIDENS_DIR="$INSTALL_DIR/AiDENs"
-    
-    if [ -d "$AIDENS_DIR" ]; then
-        log "AiDENs already exists at $AIDENS_DIR"
-    else
-        log "AiDENs is part of the Libraries monorepo."
-        warn "  AiDENs requires the full Libraries monorepo. Skipping standalone clone."
-        warn "  If you have the monorepo, AiDENs is at Libraries/AiDENs/"
-    fi
-else
-    warn "Skipping AiDENs installation (--skip-aidens)"
-fi
-
-# ============================================================================
-# Step 5: Install Hermes hooks
+# Step 4: Install Hermes hooks
 # ============================================================================
 if [ "$SKIP_HOOKS" = false ]; then
     log "Installing Hermes hooks..."
@@ -238,7 +223,7 @@ if [ "$SKIP_HOOKS" = false ]; then
     done
     
     # ============================================================================
-    # Step 6: Configure Hermes
+    # Step 5: Configure Hermes
     # ============================================================================
     log "Configuring Hermes..."
     
@@ -308,7 +293,7 @@ else
 fi
 
 # ============================================================================
-# Step 7: Verify installation
+# Step 6: Verify installation
 # ============================================================================
 log "Verifying installation..."
 
@@ -337,14 +322,16 @@ if [ -d "$SM_DIR" ]; then
 fi
 
 # ============================================================================
-# Step 8: Print summary
+# Step 7: Print summary
 # ============================================================================
 echo ""
 echo "============================================================"
+echo "  RecursiveIntell Agent Stack -- Hermes Edition"
 echo "  Installation Complete"
 echo "============================================================"
 echo ""
 echo "  What was installed:"
+echo "    - Hermes Agent: $(hermes --version 2>&1 | head -1 || echo 'check PATH')"
 echo "    - semantic-memory library: $SM_DIR"
 echo "    - semantic-memory-mcp server: $MCP_DIR"
 echo "    - MCP binary: ~/.cargo/bin/semantic-memory-mcp"
@@ -355,7 +342,7 @@ if [ "$SKIP_HOOKS" = false ]; then
 fi
 echo "    - HTTP server port: $PORT"
 echo ""
-echo "  Capabilities:"
+echo "  Capabilities (Hermes-specific):"
 echo "    - 33 MCP tools"
 echo "    - 9 HTTP endpoints"
 echo "    - 6 agent hooks (adaptive routing, LLM rerank, autocapture,"
@@ -366,6 +353,12 @@ echo "    - Bitemporal search (as-of queries)"
 echo "    - Verification gates (risk-class)"
 echo "    - Boundary compiler (RFC 8785 JCS)"
 echo "    - Query provenance with view disclosure"
+echo ""
+echo "  Also available for other platforms:"
+echo "    - Claude Code: https://github.com/RecursiveIntell/semantic-memory-claude-kit"
+echo "      (plugin with hooks, skills, commands, MCP config)"
+echo "    - Codex: Add the MCP server to your AGENTS.md config"
+echo "      (semantic-memory-mcp --memory-dir DIR --embedder candle --http-port $PORT)"
 echo ""
 echo "  Next steps:"
 echo "    1. Start a Hermes session: hermes chat"
@@ -382,5 +375,6 @@ echo ""
 echo "  Documentation:"
 echo "    - semantic-memory: https://github.com/RecursiveIntell/semantic-memory"
 echo "    - semantic-memory-mcp: https://github.com/RecursiveIntell/semantic-memory-mcp"
+echo "    - Claude Code kit: https://github.com/RecursiveIntell/semantic-memory-claude-kit"
 echo "    - Hermes: https://hermes-agent.nousresearch.com/docs"
 echo ""
