@@ -1,0 +1,69 @@
+X THREAD — semantic-memory-mcp v0.3.0 launch
+
+1/ Just published semantic-memory-mcp v0.3.0 on crates.io.
+
+An MCP server that gives your AI agent a persistent knowledge base — 33 tools, pure Rust, local-first, no cloud, no API keys, no telemetry.
+
+cargo install semantic-memory-mcp
+
+https://crates.io/crates/semantic-memory-mcp
+
+2/ Every other MCP memory server does: store text, embed it, search it.
+
+semantic-memory-mcp does contradiction detection with belief propagation, adaptive query routing, factor graph reasoning over 4 edge types, community detection, topological gap analysis, bitemporal truth, and memory lifecycle GC.
+
+3/ The contradiction detector is the differentiator.
+
+When your agent stores conflicting facts, the decoder identifies inconsistent items, runs syndrome detection, and computes minimal corrections via belief propagation on conflict graphs.
+
+No other MCP memory server has this.
+
+4/ 33 tools, all local:
+
+- Hybrid BM25 + vector search (RRF)
+- Knowledge graph (semantic/temporal/causal/entity edges)
+- Factor graph belief propagation
+- Community detection (Leiden-inspired)
+- Topological gap analysis (Betti numbers)
+- Bitemporal truth with supersession tracking
+- Memory lifecycle GC with invariant verification
+- Blake3-digested receipts for every mutation
+
+5/ No Ollama required.
+
+The default embedder is Candle — a pure-Rust ML framework that runs nomic-embed-text-v1.5 in-process on CPU. Model downloads from HuggingFace on first use, cached after.
+
+SQLite + usearch for storage. Single-file. No external vector DB.
+
+6/ Works with Hermes Agent, Claude Desktop, Cursor, and any MCP-compatible client.
+
+Config:
+{
+  "mcpServers": {
+    "semantic-memory": {
+      "command": "semantic-memory-mcp",
+      "args": ["--memory-dir", "/path/to/memory"]
+    }
+  }
+}
+
+7/ The numbers:
+
+- 33 MCP tools
+- 396 tests passing (381 in semantic-memory + 15 integration)
+- 0 compiler warnings
+- Pure Rust, zero non-Rust runtime deps
+- Published: semantic-memory v0.5.7, semantic-memory-mcp v0.3.0
+
+8/ Also published today: claim-ledger v0.1.0 and llm-output-parser v0.2.0 on crates.io. Both are optional deps for the MCP server's claim/evidence ledger and LLM output parsing features.
+
+9/ The underlying engine (semantic-memory) has been in development for months — 381 tests, hybrid search, graph reasoning, bitemporal truth, compression governance, RL routing feedback. The MCP server wraps it for any AI agent to use.
+
+10/ PR submitted to awesome-mcp-servers:
+https://github.com/punkpeye/awesome-mcp-servers/pull/8676
+
+Repo: https://github.com/RecursiveIntell/semantic-memory-mcp
+Crate: https://crates.io/crates/semantic-memory-mcp
+Docs: https://docs.rs/semantic-memory-mcp
+
+Built with Rust. Local-first. Provenance-first.
