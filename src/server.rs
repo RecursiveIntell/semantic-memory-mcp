@@ -1573,6 +1573,45 @@ impl SemanticMemoryServer {
     }
 
     #[tool(
+        description = "Detect contradictions among the top results for a query from their CONTENT (numeric, value, negation, or antonym disagreement) — no pre-asserted edges required. Returns candidate conflicting pairs, each with the signals that fired and a human-readable reason. Persist a confirmed pair with sm_add_graph_edge(edge_type=\"contradicts\") so the decoder/community/factor-graph tools pick it up.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_detect_contradictions(
+        &self,
+        Parameters(DetectContradictionsParams { query, top_k }): Parameters<DetectContradictionsParams>,
+    ) -> Result<String, ErrorData> {
+        use semantic_memory::contradiction_detect::{detect_contradictions, DetectorConfig};
+
+        let k = top_k.map(|v| v as usize).unwrap_or(10);
+        let store = &self.bridge.store;
+        let results = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.search(&query, Some(k), None, None))
+        })
+        .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+
+        let items: Vec<(String, String)> = results
+            .iter()
+            .map(|r| (r.source.result_id(), r.content.clone()))
+            .collect();
+
+        let pairs = detect_contradictions(&items, &DetectorConfig::default());
+
+        json_to_string(&serde_json::json!({
+            "ok": true,
+            "query": query,
+            "items_scanned": items.len(),
+            "contradictions": pairs.iter().map(|p| serde_json::json!({
+                "a": p.a,
+                "b": p.b,
+                "score": p.score,
+                "signals": p.signals.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>(),
+                "reason": p.reason,
+            })).collect::<Vec<_>>(),
+            "count": pairs.len(),
+        }))
+    }
+
+    #[tool(
         description = "Second-order retrieval: find items related to your search results through the graph, but NOT themselves direct hits. Loads edges from store automatically.",
         annotations(read_only_hint = true)
     )]

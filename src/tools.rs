@@ -107,6 +107,16 @@ pub struct RouteQueryParams {
     pub query: String,
 }
 
+/// Parameters for sm_detect_contradictions
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DetectContradictionsParams {
+    /// The query whose top results are scanned for content contradictions
+    pub query: String,
+    /// How many top results to scan (default 10)
+    #[serde(default)]
+    pub top_k: Option<u32>,
+}
+
 /// Parameters for sm_search_with_routing
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchWithRoutingParams {
