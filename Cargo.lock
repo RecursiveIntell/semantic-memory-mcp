@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory"
-version = "0.5.3"
+version = "0.5.7"
 dependencies = [
  "bitemporal-runtime",
  "blake3",
@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "boundary-compiler",
@@ -3459,6 +3459,7 @@ dependencies = [
  "semantic-memory",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

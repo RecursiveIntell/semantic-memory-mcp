@@ -35,6 +35,7 @@ pub struct SearchParams {
 }
 
 /// Parameters for sm_search_explained
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchExplainedParams {
     /// The query string
@@ -346,6 +347,7 @@ pub struct SupersedeFactParams {
 // ─── Conversation / session tools (v0.3.0) ──────────────────────────────
 
 /// Parameters for sm_create_session
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateSessionParams {
     /// Channel/label for the session (e.g. "claude-code", "project-x").
@@ -356,6 +358,7 @@ pub struct CreateSessionParams {
 }
 
 /// Parameters for sm_add_message
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddMessageParams {
     /// Session id to append to.
@@ -367,6 +370,7 @@ pub struct AddMessageParams {
 }
 
 /// Parameters for sm_list_sessions
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListSessionsParams {
     /// Maximum sessions to return (default 20).
@@ -378,6 +382,7 @@ pub struct ListSessionsParams {
 }
 
 /// Parameters for sm_get_messages
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetMessagesParams {
     /// Session id to read messages from.

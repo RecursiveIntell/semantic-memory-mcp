@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -14,6 +14,10 @@ keywords = ["mcp", "semantic-memory", "rag", "knowledge-management", "vector-sea
 categories = ["database", "text-processing", "development-tools"]
 
 [workspace]
+
+[lib]
+name = "semantic_memory_mcp"
+path = "src/lib.rs"
 
 [[bin]]
 name = "semantic-memory-mcp"
@@ -62,9 +66,9 @@ claim-integration = ["dep:claim-ledger"]
 llm-parser = ["dep:llm-output-parser"]
 
 [dependencies]
-semantic-memory = { version = "0.5.3", path = "../semantic-memory", default-features = false }
-claim-ledger = { path = "../claim-ledger", optional = true }
-llm-output-parser = { path = "../llm-output-parser", optional = true }
+semantic-memory = { version = "0.5.7", path = "../semantic-memory", default-features = false }
+claim-ledger = { version = "0.1.0", path = "../claim-ledger", optional = true }
+llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
 rmcp = { version = "1", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
@@ -77,3 +81,6 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

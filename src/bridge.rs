@@ -149,7 +149,7 @@ impl MemoryBridge {
         let mut search_config = SearchConfig::default();
 
         // TurboQuant compressed vector candidate backend
-        #[cfg(feature = "semantic-memory/turbo-quant-codec")]
+        #[cfg(feature = "full")]
         {
             if config.turbo_quant_enabled {
                 use semantic_memory::DerivedVectorBackendPolicy;

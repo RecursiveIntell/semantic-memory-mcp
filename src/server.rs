@@ -373,6 +373,7 @@ impl SemanticMemoryServer {
         // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
         // annotations(read_only_hint = true)
     // )]
+    #[allow(dead_code)]
     fn sm_search_explained(
         &self,
         Parameters(SearchExplainedParams { query, top_k }): Parameters<SearchExplainedParams>,
@@ -502,7 +503,7 @@ impl SemanticMemoryServer {
         if let Some(refs) = evidence_refs {
             meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
         }
-        let metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
+        let _metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
 
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.add_fact(&namespace, &content, src, None))
@@ -941,6 +942,7 @@ impl SemanticMemoryServer {
         // description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
         // annotations(idempotent_hint = true)
     // )]
+    #[allow(dead_code)]
     fn sm_create_session(
         &self,
         Parameters(CreateSessionParams { channel, metadata }): Parameters<CreateSessionParams>,
@@ -966,6 +968,7 @@ impl SemanticMemoryServer {
     // DEPRECATED #[tool(
         // description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
     // )]
+    #[allow(dead_code)]
     fn sm_add_message(
         &self,
         Parameters(AddMessageParams {
@@ -1008,6 +1011,7 @@ impl SemanticMemoryServer {
     }
 
     // DEPRECATED #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
+    #[allow(dead_code)]
     fn sm_list_sessions(
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
@@ -1041,6 +1045,7 @@ impl SemanticMemoryServer {
         // description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
         // annotations(read_only_hint = true)
     // )]
+    #[allow(dead_code)]
     fn sm_get_messages(
         &self,
         Parameters(GetMessagesParams {
@@ -2514,7 +2519,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(CreateClaimParams { fact_id, source_span }): Parameters<CreateClaimParams>,
     ) -> Result<String, ErrorData> {
-        use claim_ledger::{Claim, ids};
+        use claim_ledger::Claim;
         let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
         let store = &self.bridge.store;
 
@@ -2640,7 +2645,7 @@ impl SemanticMemoryServer {
             .map(|n| vec![n.as_str()]);
 
         // Parse the as-of date
-        let as_of = chrono::DateTime::parse_from_rfc3339(&as_of_date)
+        let _as_of = chrono::DateTime::parse_from_rfc3339(&as_of_date)
             .map_err(|e| ErrorData::invalid_params(
                 format!("Invalid as_of_date '{as_of_date}': {e}. Use ISO 8601 format like 2026-01-15T00:00:00Z"),
                 None,

@@ -8,16 +8,12 @@
 //!   semantic-memory-mcp --memory-dir /path/to/memory-store
 //!   semantic-memory-mcp --memory-dir /path --embedder ollama --embedding-url http://localhost:11434
 
-mod bridge;
-mod http_server;
-mod server;
-mod tools;
-
 use clap::Parser;
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
-use crate::bridge::EmbedderBackend;
+use semantic_memory_mcp::bridge::{self, EmbedderBackend};
+use semantic_memory_mcp::{http_server, server};
 
 /// semantic-memory MCP server configuration.
 #[derive(Parser, Debug)]
