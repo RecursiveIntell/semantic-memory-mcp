@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -68,7 +68,7 @@ llm-parser = ["dep:llm-output-parser"]
 hnsw = ["semantic-memory/hnsw"]
 
 [dependencies]
-semantic-memory = { version = "0.5.7", path = "../semantic-memory", default-features = false }
+semantic-memory = { version = "0.5.8", path = "../semantic-memory", default-features = false }
 stack-ids = { version = "0.1.1", path = "../stack-ids" }
 claim-ledger = { version = "0.1.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }

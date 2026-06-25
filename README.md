@@ -80,13 +80,35 @@ Your agent gets a persistent knowledge base that:
   top_k and exactness profile based on query complexity class
   (A/B/C/D/E classification).
 - **Serves via HTTP** — `--http-port 1738` starts a warm HTTP server
-  alongside stdio MCP. Hooks, benchmarks, and scripts query it
-  directly without spawning new processes (4.9x faster).
+  alongside stdio MCP. 17 HTTP endpoints: /health, /search,
+  /search-routed, /rerank, /stats, /add, /add-edge, /delete-fact,
+  /record-outcome, /verify-integrity, /discord, /maintenance/check,
+  /maintenance/vacuum, /maintenance/reembed, /maintenance/reconcile,
+  /maintenance/compact-hnsw, /maintenance/auto-edge. Hooks,
+  benchmarks, and scripts query it directly without spawning new
+  processes (4.9x faster).
 - **Compresses result content** — `compress_results` in SearchConfig
   shortens search result content to first sentence + key terms,
   reducing token cost by 30-50%.
 - **Does 2-stage search** — Matryoshka multi-resolution: 64d truncated
   embeddings for fast candidate generation, 768d exact rerank.
+- **Auto-creates graph edges** — `POST /maintenance/auto-edge` scans
+  all facts across namespaces and creates entity edges between related
+  items. Quality filtering with 300+ stopwords, only proper nouns,
+  camelCase, and 5+ character words. Skips social media namespaces.
+  Supports rebuild mode (invalidates old edges first). Runs
+  automatically via cron (daily 4am) and primer hook (session start).
+- **Hard-deletes facts** — `POST /delete-fact` removes a single fact
+  and its FTS/vector entries by ID. Irreversible — prefer
+  `sm_supersede_fact` for corrections. Useful for KB hygiene and
+  removing junk facts.
+- **Adds edges via HTTP** — `POST /add-edge` creates a typed graph edge
+  between two nodes via the HTTP server. Same semantics as the
+  `sm_add_graph_edge` MCP tool but accessible from scripts and hooks.
+- **Enriches discord results** — `/discord` and `/search-routed` now
+  return fact content and namespace for graph neighbors via `get_fact`
+  enrichment. Previously discord results only had IDs — now you get
+  the full content of each second-order result.
 
 The combination of hybrid retrieval, provenance-weighted belief
 propagation, typed graph edges, and autonomous lifecycle management
@@ -101,7 +123,7 @@ knowledge management, not just vector search.
 cargo install semantic-memory-mcp
 ```
 
-This pulls semantic-memory 0.5.3 and all dependencies from crates.io
+This pulls semantic-memory 0.5.8 and all dependencies from crates.io
 automatically. No need to clone any repos.
 
 ### Option 2: Build from source
@@ -130,7 +152,7 @@ and GitHub:
 
 | Crate | crates.io | GitHub | Purpose |
 |-------|-----------|--------|---------|
-| [semantic-memory](https://github.com/RecursiveIntell/semantic-memory) | [0.5.3](https://crates.io/crates/semantic-memory) | [GitHub](https://github.com/RecursiveIntell/semantic-memory) | Core search engine, storage, graph, reasoning |
+|| [semantic-memory](https://github.com/RecursiveIntell/semantic-memory) | [0.5.8](https://crates.io/crates/semantic-memory) | [GitHub](https://github.com/RecursiveIntell/semantic-memory) | Core search engine, storage, graph, reasoning |
 | [stack-ids](https://github.com/RecursiveIntell/stack-ids) | [0.1.1](https://crates.io/crates/stack-ids) | [GitHub](https://github.com/RecursiveIntell/stack-ids) | Typed IDs, scopes, trace context, BLAKE3 digests |
 | [bitemporal-runtime](https://github.com/RecursiveIntell/bitemporal-runtime) | [0.1.0](https://crates.io/crates/bitemporal-runtime) | [GitHub](https://github.com/RecursiveIntell/bitemporal-runtime) | Bitemporal truth (valid_time / recorded_time) |
 | [boundary-compiler](https://github.com/RecursiveIntell/boundary-compiler) | [0.1.0](https://crates.io/crates/boundary-compiler) | [GitHub](https://github.com/RecursiveIntell/boundary-compiler) | RFC 8785 JSON Canonicalization (JCS) |
@@ -661,7 +683,7 @@ the MCP server's functionality.
 
 ```
 semantic-memory-mcp (MCP stdio server, rmcp SDK)
-  └── semantic-memory (Rust library, 0.5.3)
+  └── semantic-memory (Rust library, 0.5.8)
         ├── Candle embedder (pure-Rust, CPU-only, default — no Ollama required)
         ├── SQLite (authoritative storage, FTS5, WAL)
         ├── usearch 2.25 (vector sidecar, default backend)
@@ -691,7 +713,7 @@ decision: the store is the single source of truth for graph state.
 ## Underlying crate
 
 This server wraps the [semantic-memory](https://crates.io/crates/semantic-memory)
-crate (0.5.3), which provides the storage engine, search pipeline,
+crate (0.5.8), which provides the storage engine, search pipeline,
 and all feature modules. See the
 [semantic-memory crate documentation](https://github.com/RecursiveIntell/Libraries/tree/main/semantic-memory)
 for the full library API, including direct usage without an MCP
