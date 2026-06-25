@@ -524,3 +524,112 @@ pub struct VerifyClaimParams {
     #[serde(default)]
     pub refutation_attempted: Option<bool>,
 }
+
+// ─── Search receipt tools ──────────────────────────────────────────────
+
+/// Parameters for sm_get_search_receipt
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSearchReceiptParams {
+    /// The receipt/request ID to look up.
+    pub receipt_id: String,
+}
+
+/// Parameters for sm_replay_search_receipt
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReplaySearchReceiptParams {
+    /// The receipt/request ID to replay.
+    pub receipt_id: String,
+    /// The query text to use for replay (receipts don't store query text).
+    pub query: String,
+    /// Optional top_k for replay (defaults to original receipt's result count).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// Optional namespace filter for replay.
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+}
+
+// ─── Reconcile tool ───────────────────────────────────────────────────
+
+/// Parameters for sm_reconcile
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReconcileParams {
+    /// Action to take: "report_only", "rebuild_fts", or "re_embed".
+    pub action: String,
+}
+
+// ─── Maintenance tools ────────────────────────────────────────────────
+
+/// Parameters for sm_embeddings_are_dirty (no params needed, but struct for consistency)
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EmbeddingsAreDirtyParams {}
+
+/// Parameters for sm_list_imports
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListImportsParams {
+    /// Optional namespace filter.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Maximum number of import records to return (default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Parameters for sm_import_status
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportStatusParams {
+    /// The envelope ID to check import status for.
+    pub envelope_id: String,
+}
+
+/// Parameters for sm_import_envelope
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportEnvelopeParams {
+    /// The import envelope as a JSON string.
+    pub envelope_json: String,
+}
+
+// ─── Projection query tools ───────────────────────────────────────────
+
+/// Parameters for projection query tools (sm_query_claim_versions, etc.)
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectionQueryParams {
+    /// Namespace to query within.
+    pub namespace: String,
+    /// Optional domain scope filter.
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// Optional workspace ID scope filter.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Optional repo ID scope filter.
+    #[serde(default)]
+    pub repo_id: Option<String>,
+    /// Optional free-text query.
+    #[serde(default)]
+    pub text_query: Option<String>,
+    /// Optional valid-time as-of filter (ISO 8601).
+    #[serde(default)]
+    pub valid_at: Option<String>,
+    /// Optional transaction-time cutoff (ISO 8601).
+    #[serde(default)]
+    pub recorded_at_or_before: Option<String>,
+    /// Optional subject entity ID filter.
+    #[serde(default)]
+    pub subject_entity_id: Option<String>,
+    /// Optional canonical entity ID filter.
+    #[serde(default)]
+    pub canonical_entity_id: Option<String>,
+    /// Optional claim state filter.
+    #[serde(default)]
+    pub claim_state: Option<String>,
+    /// Optional claim ID filter.
+    #[serde(default)]
+    pub claim_id: Option<String>,
+    /// Optional claim version ID filter.
+    #[serde(default)]
+    pub claim_version_id: Option<String>,
+    /// Maximum results to return (default 10).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}

@@ -26,10 +26,56 @@ pub struct SemanticMemoryServer {
 }
 
 impl SemanticMemoryServer {
-    pub fn new(bridge: MemoryBridge) -> Self {
+    pub fn new(bridge: MemoryBridge, tool_profile: &str) -> Self {
+        let mut router = Self::tool_router();
+
+        // Tools hidden in "lean" mode (maintenance + audit + bitemporal query + import)
+        let admin_tools = [
+            // Maintenance
+            "sm_reconcile",
+            "sm_vacuum",
+            "sm_reembed_all",
+            "sm_embeddings_are_dirty",
+            // Audit
+            "sm_get_search_receipt",
+            "sm_replay_search_receipt",
+            // Bitemporal query
+            "sm_query_claim_versions",
+            "sm_query_relation_versions",
+            "sm_query_episodes",
+            "sm_query_entity_aliases",
+            "sm_query_evidence_refs",
+            // Import
+            "sm_import_envelope",
+            "sm_import_status",
+            "sm_list_imports",
+        ];
+
+        match tool_profile {
+            "full" => { /* all tools visible */ }
+            "standard" => {
+                // Hide import tools only
+                for t in &["sm_import_envelope", "sm_import_status", "sm_list_imports"] {
+                    router.disable_route(*t);
+                }
+            }
+            _ => {
+                // "lean" (default) — hide all admin tools
+                for t in &admin_tools {
+                    router.disable_route(*t);
+                }
+            }
+        }
+
+        eprintln!(
+            "Tool profile: {} ({} tools visible)",
+            tool_profile,
+            router.list_all().len()
+        );
+
         Self {
             bridge: Arc::new(bridge),
-            tool_router: Self::tool_router(),
+            tool_router: router,
         }
     }
 }
@@ -285,6 +331,36 @@ fn query_allows_superseded(query: &str) -> bool {
 
 /// Serialize a JSON value to a pretty string, mapping serialization errors
 /// to protocol-level errors instead of success strings.
+/// Build a `ProjectionQuery` from the MCP-facing `ProjectionQueryParams`.
+///
+/// Maps the flat parameter struct into the library's `ProjectionQuery` with
+/// a fully-resolved `ScopeKey` and typed ID filters.
+fn build_projection_query(params: ProjectionQueryParams) -> semantic_memory::ProjectionQuery {
+    use stack_ids::{ClaimId, ClaimVersionId, EntityId, ScopeKey};
+
+    let scope = ScopeKey {
+        namespace: params.namespace,
+        domain: params.domain,
+        workspace_id: params.workspace_id,
+        repo_id: params.repo_id,
+    };
+
+    let limit = params.limit.unwrap_or(10) as usize;
+
+    semantic_memory::ProjectionQuery {
+        scope,
+        text_query: params.text_query,
+        valid_at: params.valid_at,
+        recorded_at_or_before: params.recorded_at_or_before,
+        subject_entity_id: params.subject_entity_id.map(EntityId::new),
+        canonical_entity_id: params.canonical_entity_id.map(EntityId::new),
+        claim_state: params.claim_state,
+        claim_id: params.claim_id.map(ClaimId::new),
+        claim_version_id: params.claim_version_id.map(ClaimVersionId::new),
+        limit,
+    }
+}
+
 fn json_to_string(value: &serde_json::Value) -> Result<String, ErrorData> {
     serde_json::to_string_pretty(value)
         .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))
@@ -1162,19 +1238,23 @@ impl SemanticMemoryServer {
         }): Parameters<SearchWithRoutingParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::integration::plan_execution;
-        use semantic_memory::routing::RetrievalRouter;
+        use semantic_memory::rl_routing::route_with_rl;
+        use semantic_memory::routing::QueryProfile;
 
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = query_allows_superseded(&query);
         let search_k = if allow_superseded { k } else { (k * 4).max(20) };
-        let router = RetrievalRouter {
-            decoder_enabled: true,
-            discord_enabled: true,
-            corpus_density: 0.5,
-            ..Default::default()
-        };
 
-        let decision = router.route_query(&query);
+        // Load persisted RL routing policy (or default if none saved yet)
+        let store = &self.bridge.store;
+        let policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.load_routing_policy())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+        let profile = QueryProfile::from_query(&query);
+        let decision = route_with_rl(&policy, &profile);
         let contras = contradictions.unwrap_or_default();
         let plan = plan_execution(&decision, contras.clone());
 
@@ -2502,7 +2582,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(RecordOutcomeParams { query, outcome }): Parameters<RecordOutcomeParams>,
     ) -> Result<String, ErrorData> {
-        use semantic_memory::rl_routing::{record_routing_outcome, RoutingOutcome, RoutingPolicy};
+        use semantic_memory::rl_routing::{record_routing_outcome, RoutingOutcome};
         use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
         let outcome_enum = match outcome.to_lowercase().as_str() {
@@ -2521,8 +2601,19 @@ impl SemanticMemoryServer {
         let router = RetrievalRouter::default();
         let decision = router.route(&profile);
 
-        let mut policy = RoutingPolicy::default();
+        let store = &self.bridge.store;
+        // Load persisted policy (or default if none saved yet)
+        let mut policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.load_routing_policy())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
         record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
+        // Save updated policy
+        let _ = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.save_routing_policy(&policy))
+        });
 
         json_to_string(&serde_json::json!({
             "ok": true,
@@ -2543,7 +2634,7 @@ impl SemanticMemoryServer {
                 "baseline": policy.baseline,
                 "weights": policy.weights,
             },
-            "message": "Routing outcome recorded and policy updated",
+            "message": "Routing outcome recorded and policy updated (persisted to DB)",
         }))
     }
 
@@ -2770,6 +2861,447 @@ impl SemanticMemoryServer {
             "rationale": rationale,
             "can_promote": disposition == "promote",
         }))
+    }
+
+    // ─── Search receipt tools (GAP #6-7) ────────────────────────────
+
+    #[tool(
+        description = "Load a durable search receipt by receipt/request ID. Returns the stored receipt with evaluation time, retrieval family, result IDs, and digests.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_get_search_receipt(
+        &self,
+        Parameters(GetSearchReceiptParams { receipt_id }): Parameters<GetSearchReceiptParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.get_search_receipt(&receipt_id))
+        });
+        match result {
+            Ok(Some(receipt)) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "receipt": {
+                    "receipt_id": receipt.receipt_id,
+                    "trace_id": receipt.trace_id,
+                    "search_profile": receipt.search_profile,
+                    "evaluation_time": receipt.evaluation_time,
+                    "result_ids": receipt.result_ids,
+                    "query_embedding_digest": receipt.query_embedding_digest,
+                    "query_text_digest": receipt.query_text_digest,
+                    "query_input_digest": receipt.query_input_digest,
+                    "filter_digest": receipt.filter_digest,
+                    "redaction_state": receipt.redaction_state,
+                    "approximate": receipt.approximate,
+                    "attempt_family_id": receipt.attempt_family_id,
+                    "budget_id": receipt.budget_id,
+                },
+            })),
+            Ok(None) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "found": false,
+                "receipt_id": receipt_id,
+                "message": "No receipt found with that ID",
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("get_search_receipt error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Replay a durable search receipt with caller-supplied query text and filters. Compares original results to replay results, reporting matches, missing IDs, and added IDs.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_replay_search_receipt(
+        &self,
+        Parameters(ReplaySearchReceiptParams { receipt_id, query, top_k, namespaces }): Parameters<ReplaySearchReceiptParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let k = top_k.map(|v| v as usize);
+        let ns_slice: Option<Vec<&str>> = namespaces
+            .as_ref()
+            .map(|v| v.iter().map(|s| s.as_str()).collect());
+
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.replay_search_receipt(
+                &receipt_id,
+                &query,
+                k,
+                ns_slice.as_deref(),
+                None,
+            ))
+        });
+        match result {
+            Ok(report) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "receipt_id": report.receipt_id,
+                "replay_receipt_id": report.replay_receipt_id,
+                "query_embedding_digest_matches": report.query_embedding_digest_matches,
+                "result_ids_match": report.result_ids_match,
+                "missing_result_ids": report.missing_result_ids,
+                "added_result_ids": report.added_result_ids,
+                "original_receipt": {
+                    "receipt_id": report.original_receipt.receipt_id,
+                    "result_ids": report.original_receipt.result_ids,
+                    "search_profile": report.original_receipt.search_profile,
+                    "evaluation_time": report.original_receipt.evaluation_time,
+                },
+                "replay_receipt": {
+                    "receipt_id": report.replay_receipt.receipt_id,
+                    "result_ids": report.replay_receipt.result_ids,
+                    "search_profile": report.replay_receipt.search_profile,
+                    "evaluation_time": report.replay_receipt.evaluation_time,
+                },
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("replay_search_receipt error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    // ─── Reconcile tool (GAP #8) ────────────────────────────────────
+
+    #[tool(
+        description = "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS indexes), re_embed (re-embed all content). Returns an integrity report after the action.",
+        annotations(idempotent_hint = true)
+    )]
+    fn sm_reconcile(
+        &self,
+        Parameters(ReconcileParams { action }): Parameters<ReconcileParams>,
+    ) -> Result<String, ErrorData> {
+        let action_enum = match action.to_lowercase().as_str() {
+            "report_only" | "report-only" => semantic_memory::ReconcileAction::ReportOnly,
+            "rebuild_fts" | "rebuild-fts" => semantic_memory::ReconcileAction::RebuildFts,
+            "re_embed" | "re-embed" | "reembed" => semantic_memory::ReconcileAction::ReEmbed,
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    format!("action must be 'report_only', 'rebuild_fts', or 're_embed', got '{action}'"),
+                    None,
+                ));
+            }
+        };
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.reconcile(action_enum))
+        });
+        match result {
+            Ok(report) => json_to_string(&serde_json::json!({
+                "ok": report.ok,
+                "schema_version": report.schema_version,
+                "fact_count": report.fact_count,
+                "chunk_count": report.chunk_count,
+                "message_count": report.message_count,
+                "facts_missing_embeddings": report.facts_missing_embeddings,
+                "chunks_missing_embeddings": report.chunks_missing_embeddings,
+                "issues": report.issues,
+                "issue_count": report.issues.len(),
+                "action": action,
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("reconcile error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    // ─── Maintenance tools (GAP #9) ─────────────────────────────────
+
+    #[tool(
+        description = "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take a moment.",
+        annotations(idempotent_hint = true)
+    )]
+    fn sm_vacuum(&self) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.vacuum())
+        });
+        match result {
+            Ok(()) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "message": "Database vacuumed successfully",
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("vacuum error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns the count of items re-embedded.",
+        annotations(idempotent_hint = true)
+    )]
+    fn sm_reembed_all(&self) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.reembed_all())
+        });
+        match result {
+            Ok(count) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "reembedded_count": count,
+                "message": format!("Re-embedded {count} items"),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("reembed_all error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Check if embeddings need re-generation after a model change. Returns true if the embedding model or dimensions have changed since the last embedding was stored.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_embeddings_are_dirty(
+        &self,
+        Parameters(_params): Parameters<EmbeddingsAreDirtyParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.embeddings_are_dirty())
+        });
+        match result {
+            Ok(dirty) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "dirty": dirty,
+                "message": if dirty { "Embeddings are dirty and need re-generation. Call sm_reembed_all." } else { "Embeddings are up to date" },
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("embeddings_are_dirty error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    // ─── Projection query tools (GAP #10) ───────────────────────────
+
+    #[tool(
+        description = "Query imported claim projection rows. Filters by scope, text, valid-time, and claim state. Returns claim version rows with full provenance.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_query_claim_versions(
+        &self,
+        Parameters(params): Parameters<ProjectionQueryParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let query = build_projection_query(params);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_claim_versions(query))
+        });
+        match result {
+            Ok(rows) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "results": serde_json::to_value(&rows).unwrap_or_else(|_| serde_json::json!([])),
+                "count": rows.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("query_claim_versions error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Query imported relation projection rows. Filters by scope, text, valid-time, and subject entity. Returns relation version rows with full provenance.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_query_relation_versions(
+        &self,
+        Parameters(params): Parameters<ProjectionQueryParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let query = build_projection_query(params);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_relation_versions(query))
+        });
+        match result {
+            Ok(rows) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
+                "count": rows.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("query_relation_versions error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Query imported episode projection rows. Filters by scope and text. Returns episode rows with cause/effect and outcome data.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_query_episodes(
+        &self,
+        Parameters(params): Parameters<ProjectionQueryParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let query = build_projection_query(params);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_episodes(query))
+        });
+        match result {
+            Ok(rows) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
+                "count": rows.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("query_episodes error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Query imported entity-alias rows. Filters by scope, canonical entity, and text. Returns alias rows with merge and review state.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_query_entity_aliases(
+        &self,
+        Parameters(params): Parameters<ProjectionQueryParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let query = build_projection_query(params);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_entity_aliases(query))
+        });
+        match result {
+            Ok(rows) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
+                "count": rows.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("query_entity_aliases error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Query imported evidence-reference rows. Filters by scope, claim, and claim version. Returns evidence reference rows with fetch handles and source authority.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_query_evidence_refs(
+        &self,
+        Parameters(params): Parameters<ProjectionQueryParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let query = build_projection_query(params);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_evidence_refs(query))
+        });
+        match result {
+            Ok(rows) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
+                "count": rows.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("query_evidence_refs error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    // ─── Import tools (GAP #11) ─────────────────────────────────────
+
+    #[tool(
+        description = "Import a projection envelope atomically. All records are committed in a single transaction or the entire import is rolled back. Pass the envelope as a JSON string.",
+        annotations(idempotent_hint = true)
+    )]
+    #[allow(deprecated)]
+    fn sm_import_envelope(
+        &self,
+        Parameters(ImportEnvelopeParams { envelope_json }): Parameters<ImportEnvelopeParams>,
+    ) -> Result<String, ErrorData> {
+        let envelope: semantic_memory::projection_import::ImportEnvelope =
+            serde_json::from_str(&envelope_json).map_err(|e| {
+                ErrorData::invalid_params(
+                    format!("Failed to parse envelope JSON: {e}"),
+                    None,
+                )
+            })?;
+        envelope.validate().map_err(|e| {
+            ErrorData::invalid_params(format!("Envelope validation failed: {e}"), None)
+        })?;
+        let store = &self.bridge.store;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.import_envelope(&envelope))
+        });
+        match result {
+            Ok(receipt) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "envelope_id": receipt.envelope_id,
+                "was_duplicate": receipt.was_duplicate,
+                "imported_count": receipt.record_count,
+                "receipt_id": receipt.envelope_id,
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("import_envelope error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "Check whether an envelope has already been imported. Returns import receipts for the given envelope ID.",
+        annotations(read_only_hint = true)
+    )]
+    #[allow(deprecated)]
+    fn sm_import_status(
+        &self,
+        Parameters(ImportStatusParams { envelope_id }): Parameters<ImportStatusParams>,
+    ) -> Result<String, ErrorData> {
+        use semantic_memory::projection_import::EnvelopeId;
+        let store = &self.bridge.store;
+        let env_id = EnvelopeId::new(&envelope_id);
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.import_status(&env_id))
+        });
+        match result {
+            Ok(receipts) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "envelope_id": envelope_id,
+                "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
+                "count": receipts.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("import_status error: {e}"),
+                None,
+            )),
+        }
+    }
+
+    #[tool(
+        description = "List recent imports, optionally filtered by namespace. Returns import receipt records.",
+        annotations(read_only_hint = true)
+    )]
+    #[allow(deprecated)]
+    fn sm_list_imports(
+        &self,
+        Parameters(ListImportsParams { namespace, limit }): Parameters<ListImportsParams>,
+    ) -> Result<String, ErrorData> {
+        let store = &self.bridge.store;
+        let lim = limit.unwrap_or(20) as usize;
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.list_imports(namespace.as_deref(), lim))
+        });
+        match result {
+            Ok(receipts) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
+                "count": receipts.len(),
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("list_imports error: {e}"),
+                None,
+            )),
+        }
     }
 }
 

@@ -64,9 +64,12 @@ full = [
 claim-integration = ["dep:claim-ledger"]
 # llm-output-parser: robust JSON parsing for Ollama responses
 llm-parser = ["dep:llm-output-parser"]
+# HNSW backend (optional alternative to usearch). Enables compact-hnsw endpoint.
+hnsw = ["semantic-memory/hnsw"]
 
 [dependencies]
 semantic-memory = { version = "0.5.7", path = "../semantic-memory", default-features = false }
+stack-ids = { version = "0.1.1", path = "../stack-ids" }
 claim-ledger = { version = "0.1.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }

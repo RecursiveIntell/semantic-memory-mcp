@@ -148,8 +148,14 @@ fn handle_connection(
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
-        ("POST", "/record-outcome") => handle_record_outcome(&body_str),
+        ("POST", "/record-outcome") => handle_record_outcome(&body_str, &bridge, &handle),
         ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
+        ("POST", "/discord") => handle_discord(&body_str, &bridge, &handle),
+        ("POST", "/maintenance/check") => handle_maintenance_check(&bridge, &handle),
+        ("POST", "/maintenance/vacuum") => handle_maintenance_vacuum(&bridge, &handle),
+        ("POST", "/maintenance/reembed") => handle_maintenance_reembed(&bridge, &handle),
+        ("POST", "/maintenance/reconcile") => handle_maintenance_reconcile(&body_str, &bridge, &handle),
+        ("POST", "/maintenance/compact-hnsw") => handle_maintenance_compact_hnsw(&bridge, &handle),
         _ => (
             "404 Not Found",
             serde_json::json!({"error": "not found", "path": path}),
@@ -271,17 +277,21 @@ fn handle_search(
     }
 }
 
-/// Handle /search-routed: routing-aware search for complex queries.
+/// Handle /search-routed: routing-aware search with full pipeline.
 ///
-/// Accepts a `query_class` field (A/B/C/D/E) from the Python classifier:
-/// - D (SYNTHESIS): increases top_k to gather more candidates
-/// - C (CONTRADICTION): uses exact search profile
-/// - A/B/E: identical to /search (early return, no overhead)
+/// Uses the library's routing system to profile the query and decide which
+/// retrieval stages to activate. For class C/D queries with contradictions,
+/// runs factor graph belief propagation and decoder syndrome detection.
+/// When discord is enabled, runs second-order retrieval via graph neighborhood.
+/// Optionally groups results by community.
 fn handle_search_routed(
     body: &str,
     bridge: &MemoryBridge,
     handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
+    use semantic_memory::integration::plan_execution;
+    use semantic_memory::routing::RetrievalRouter;
+
     let params: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
@@ -298,6 +308,11 @@ fn handle_search_routed(
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let contradictions: Vec<(String, String)> = params
+        .get("contradictions")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let group_by_community = params.get("group_by_community").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -305,6 +320,17 @@ fn handle_search_routed(
             serde_json::json!({"ok": false, "error": "missing 'query' field"}),
         );
     }
+
+    // Use the routing system to profile the query
+    let router = RetrievalRouter {
+        decoder_enabled: true,
+        discord_enabled: true,
+        corpus_density: 0.5,
+        ..Default::default()
+    };
+    let decision = router.route_query(query);
+    let contras = contradictions.clone();
+    let plan = plan_execution(&decision, contras.clone());
 
     // Class D (SYNTHESIS): retrieve more candidates to support comprehensive answers
     let top_k = if query_class == "D" {
@@ -367,14 +393,232 @@ fn handle_search_routed(
                 })
                 .collect();
 
+            let mut factor_graph_payload = serde_json::json!({"enabled": false});
+            let mut decoder_executed = false;
+            let mut discord_executed = false;
+            let mut discord_results_payload: Vec<serde_json::Value> = Vec::new();
+
+            // Factor graph belief propagation for class C/D with contradictions
+            if decision.decoder {
+                #[cfg(feature = "full")]
+                {
+                    use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
+
+                    let graph_edges = block_in_place(|| {
+                        handle.block_on(store.list_all_graph_edges())
+                    });
+
+                    if let Ok(edges) = graph_edges {
+                        let raw_edges: Vec<(
+                            String,
+                            String,
+                            semantic_memory::GraphEdgeType,
+                            f64,
+                            Option<String>,
+                        )> = edges
+                            .iter()
+                            .map(|edge| {
+                                let parsed_type = edge
+                                    .edge_type_parsed
+                                    .clone()
+                                    .or_else(|| serde_json::from_str(&edge.edge_type).ok())
+                                    .unwrap_or(semantic_memory::GraphEdgeType::Entity {
+                                        relation: "unknown".to_string(),
+                                    });
+                                (
+                                    edge.source.clone(),
+                                    edge.target.clone(),
+                                    parsed_type,
+                                    edge.weight,
+                                    edge.metadata.clone(),
+                                )
+                            })
+                            .collect();
+
+                        let nodes: Vec<(String, f64)> = results
+                            .iter()
+                            .map(|r| (r.source.result_id(), r.score))
+                            .collect();
+                        let factors = factors_from_edges(&raw_edges);
+                        let graph =
+                            FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
+                        let propagated = graph.propagate();
+                        let top_beliefs = propagated.top_k(top_k);
+
+                        factor_graph_payload = serde_json::json!({
+                            "enabled": true,
+                            "top_k_beliefs": top_beliefs
+                                .into_iter()
+                                .map(|(item_id, belief)| serde_json::json!({
+                                    "item_id": item_id,
+                                    "belief": belief,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "iterations": propagated.iterations,
+                            "converged": propagated.converged,
+                            "elapsed_ms": propagated.elapsed_ms,
+                            "factor_counts": {
+                                "semantic": propagated.factor_counts.semantic,
+                                "temporal": propagated.factor_counts.temporal,
+                                "causal": propagated.factor_counts.causal,
+                                "entity": propagated.factor_counts.entity,
+                                "total": propagated.factor_counts.total(),
+                            },
+                        });
+                        decoder_executed = true;
+                    }
+                }
+
+                // Decoder syndrome detection for contradictions
+                if !plan.contradictions.is_empty() {
+                    use semantic_memory::decoder::{compute_correction, detect_syndromes};
+                    let result_scores: Vec<(String, f64)> = results
+                        .iter()
+                        .map(|r| (r.source.result_id(), r.score))
+                        .collect();
+                    let syndromes = detect_syndromes(&result_scores, &plan.contradictions);
+                    let _ = compute_correction(&syndromes, 10.0);
+                    decoder_executed = true;
+                }
+            }
+
+            // Discord second-order retrieval
+            if plan.use_discord {
+                use semantic_memory::discord::DiscordScorer;
+                let direct_ids: Vec<String> = results.iter().map(|r| r.source.result_id()).collect();
+                let existing_ids: std::collections::HashSet<String> =
+                    direct_ids.iter().cloned().collect();
+                let edges_result = block_in_place(|| {
+                    handle.block_on(store.list_graph_edges_for_neighborhood(
+                        direct_ids.clone(),
+                        2,
+                        200,
+                    ))
+                });
+                if let Ok(raw_edges) = edges_result {
+                    let edge_refs: Vec<semantic_memory::discord::GraphEdgeRef> = raw_edges
+                        .iter()
+                        .map(|edge| {
+                            let parsed_type = edge
+                                .edge_type_parsed
+                                .clone()
+                                .or_else(|| serde_json::from_str(&edge.edge_type).ok())
+                                .unwrap_or(semantic_memory::GraphEdgeType::Entity {
+                                    relation: "unknown".to_string(),
+                                });
+                            let type_str = match parsed_type {
+                                semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
+                                semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
+                                semantic_memory::GraphEdgeType::Causal { .. } => "causal",
+                                semantic_memory::GraphEdgeType::Entity { .. } => "entity",
+                            };
+                            semantic_memory::discord::GraphEdgeRef {
+                                source: edge.source.clone(),
+                                target: edge.target.clone(),
+                                edge_type: type_str.to_string(),
+                                weight: edge.weight,
+                            }
+                        })
+                        .collect();
+                    let scorer = DiscordScorer::with_defaults();
+                    let discord_hits = scorer.score(&direct_ids, &edge_refs);
+                    for hit in &discord_hits {
+                        if !existing_ids.contains(&hit.item_id) {
+                            // Fetch the fact's content directly from the DB.
+                            let (content, namespace) = {
+                                let fact_result = handle.block_on(
+                                    store.get_fact(&hit.item_id)
+                                );
+                                match fact_result {
+                                    Ok(Some(fact)) => (fact.content, fact.namespace),
+                                    _ => (String::new(), String::new()),
+                                }
+                            };
+                            discord_results_payload.push(serde_json::json!({
+                                "result_id": hit.item_id,
+                                "content": content,
+                                "namespace": namespace,
+                                "discord_score": hit.discord_score,
+                                "anchor_ids": hit.anchor_ids,
+                                "relationship_types": hit.relationship_types,
+                            }));
+                        }
+                    }
+                    discord_executed = true;
+                }
+            }
+
+            // Community grouping (opt-in)
+            let grouped_results_payload: serde_json::Value = if group_by_community {
+                let seed_ids: Vec<String> = results.iter().map(|r| r.source.result_id()).collect();
+                let edges_result = block_in_place(|| {
+                    handle.block_on(store.list_graph_edges_for_neighborhood(
+                        seed_ids.clone(),
+                        2,
+                        200,
+                    ))
+                });
+                let edges: Vec<(String, String)> = match edges_result {
+                    Ok(raw_edges) => raw_edges
+                        .iter()
+                        .map(|edge| (edge.source.clone(), edge.target.clone()))
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                if !edges.is_empty() {
+                    use semantic_memory::community::detect_communities;
+                    let communities = detect_communities(&edges, 1.0, 42);
+                    let mut member_to_comm: std::collections::HashMap<String, String> =
+                        std::collections::HashMap::new();
+                    for c in &communities {
+                        for m in &c.members {
+                            member_to_comm.insert(m.clone(), c.id.clone());
+                        }
+                    }
+                    let mut groups: std::collections::HashMap<
+                        String,
+                        Vec<serde_json::Value>,
+                    > = std::collections::HashMap::new();
+                    let mut ungrouped: Vec<serde_json::Value> = Vec::new();
+                    for r in &json_results {
+                        if let Some(rid) = r.get("result_id").and_then(|v| v.as_str()) {
+                            match member_to_comm.get(rid).cloned() {
+                                Some(cid) => {
+                                    groups.entry(cid).or_default().push(r.clone())
+                                }
+                                None => ungrouped.push(r.clone()),
+                            }
+                        }
+                    }
+                    let mut map = serde_json::Map::new();
+                    for (cid, items) in groups {
+                        map.insert(
+                            format!("community_{cid}"),
+                            serde_json::json!(items),
+                        );
+                    }
+                    if !ungrouped.is_empty() {
+                        map.insert(
+                            "ungrouped".to_string(),
+                            serde_json::json!(ungrouped),
+                        );
+                    }
+                    serde_json::Value::Object(map)
+                } else {
+                    serde_json::Value::Null
+                }
+            } else {
+                serde_json::Value::Null
+            };
+
             // Query provenance: declare which retrieval stages contributed
             let provenance = serde_json::json!({
                 "stages_fired": {
                     "bm25": results.iter().any(|r| r.bm25_rank.is_some()),
                     "vector": results.iter().any(|r| r.vector_rank.is_some()),
                     "late_interaction": true,
-                    "discord": false,
-                    "decoder": false,
+                    "discord": discord_executed,
+                    "decoder": decoder_executed,
                 },
                 "result_count": results.len(),
                 "view": "routed",
@@ -394,6 +638,23 @@ fn handle_search_routed(
                     "provenance": provenance,
                     "query_class": query_class,
                     "routed": true,
+                    "routing_decision": {
+                        "bm25_coarse": decision.bm25_coarse,
+                        "vector_medium": decision.vector_medium,
+                        "rerank_fine": decision.rerank_fine,
+                        "graph_expansion": decision.graph_expansion,
+                        "decoder": decision.decoder,
+                        "discord": decision.discord,
+                        "no_retrieval": decision.no_retrieval,
+                        "reasoning": decision.reasoning,
+                    },
+                    "decoder_planned": plan.use_decoder,
+                    "decoder_executed": decoder_executed,
+                    "discord_planned": plan.use_discord,
+                    "discord_executed": discord_executed,
+                    "discord_results": discord_results_payload,
+                    "factor_graph": factor_graph_payload,
+                    "grouped_results": grouped_results_payload,
                 }),
             )
         }
@@ -519,7 +780,14 @@ fn handle_add_fact(
 }
 
 /// Handle /record-outcome: record a search outcome for RL routing feedback.
-fn handle_record_outcome(body: &str) -> (&'static str, serde_json::Value) {
+fn handle_record_outcome(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    use semantic_memory::rl_routing::{record_routing_outcome, RoutingOutcome};
+    use semantic_memory::routing::{QueryProfile, RetrievalRouter};
+
     let params: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
@@ -532,65 +800,438 @@ fn handle_record_outcome(body: &str) -> (&'static str, serde_json::Value) {
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
     let outcome = params.get("outcome").and_then(|v| v.as_str()).unwrap_or("neutral");
-    let query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let _query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
 
-    eprintln!(
-        "[record-outcome] query_class={} outcome={} query={:?}",
-        query_class, outcome, &query[..query.len().min(80)]
-    );
+    if query.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "missing 'query' field"}),
+        );
+    }
+
+    let outcome_enum = match outcome.to_lowercase().as_str() {
+        "good" => RoutingOutcome::Good,
+        "bad" => RoutingOutcome::Bad,
+        "neutral" => RoutingOutcome::Neutral,
+        _ => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": "outcome must be 'good', 'bad', or 'neutral'"}),
+            )
+        }
+    };
+
+    let profile = QueryProfile::from_query(query);
+    let router = RetrievalRouter::default();
+    let decision = router.route(&profile);
+
+    let store = &bridge.store;
+    // Load persisted policy (or default if none saved yet)
+    let mut policy = block_in_place(|| handle.block_on(store.load_routing_policy()))
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
+    // Save updated policy
+    let _ = block_in_place(|| handle.block_on(store.save_routing_policy(&policy)));
 
     (
         "200 OK",
-        serde_json::json!({"ok": true, "recorded": true, "outcome": outcome, "query_class": query_class}),
+        serde_json::json!({
+            "ok": true,
+            "recorded": true,
+            "outcome": outcome,
+            "routing_decision": {
+                "bm25_coarse": decision.bm25_coarse,
+                "vector_medium": decision.vector_medium,
+                "rerank_fine": decision.rerank_fine,
+                "graph_expansion": decision.graph_expansion,
+                "decoder": decision.decoder,
+                "discord": decision.discord,
+                "no_retrieval": decision.no_retrieval,
+                "reasoning": decision.reasoning,
+            },
+            "policy_state": {
+                "trained_examples": policy.trained_examples,
+                "baseline": policy.baseline,
+            },
+        }),
     )
 }
 
-/// Handle GET /verify-integrity: check DB integrity (WAL checkpoint, FTS index, vector index).
+/// Handle GET /verify-integrity: check DB integrity using real library checks.
 fn handle_verify_integrity(
     bridge: &MemoryBridge,
     handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
     let store = &bridge.store;
-    let stats = block_in_place(|| handle.block_on(store.stats()));
+    let result = block_in_place(|| {
+        handle.block_on(store.verify_integrity(semantic_memory::VerifyMode::Quick))
+    });
 
-    match stats {
-        Ok(s) => {
-            let facts = s.total_facts;
-            let chunks = s.total_chunks;
-            let docs = s.total_documents;
-            let db_size = s.database_size_bytes;
-
-            let checks = serde_json::json!({
-                "facts_counted": facts > 0,
-                "chunks_present": chunks > 0,
-                "documents_present": docs > 0,
-                "db_size_reasonable": db_size > 1024,
-                "facts_to_chunks_ratio_ok": chunks >= facts,
-            });
-
-            let all_pass = checks.as_object()
-                .map(|m| m.values().all(|v| v.as_bool().unwrap_or(false)))
-                .unwrap_or(false);
-
-            (
-                "200 OK",
-                serde_json::json!({
-                    "ok": true,
-                    "integrity": all_pass,
-                    "checks": checks,
-                    "stats": {
-                        "facts": facts,
-                        "chunks": chunks,
-                        "documents": docs,
-                        "db_size_bytes": db_size,
-                    },
-                    "message": if all_pass { "All integrity checks passed" } else { "Some integrity checks failed" },
-                }),
-            )
-        }
+    match result {
+        Ok(report) => (
+            "200 OK",
+            serde_json::json!({
+                "ok": report.ok,
+                "integrity": report.ok,
+                "schema_version": report.schema_version,
+                "fact_count": report.fact_count,
+                "chunk_count": report.chunk_count,
+                "message_count": report.message_count,
+                "facts_missing_embeddings": report.facts_missing_embeddings,
+                "chunks_missing_embeddings": report.chunks_missing_embeddings,
+                "issues": report.issues,
+                "issue_count": report.issues.len(),
+                "message": if report.ok { "All integrity checks passed".to_string() } else { format!("{} integrity issues found", report.issues.len()) },
+            }),
+        ),
         Err(e) => (
             "500 Internal Server Error",
-            serde_json::json!({"ok": false, "integrity": false, "error": format!("stats error: {e}")}),
+            serde_json::json!({"ok": false, "integrity": false, "error": format!("verify_integrity error: {e}")}),
         ),
+    }
+}
+
+/// Handle POST /discord: second-order retrieval via graph neighborhood.
+///
+/// Accepts {"query": "...", "top_k": 5, "direct_ids": ["fact:uuid1", ...]}.
+/// If direct_ids not provided, runs a search first to get top_k results.
+fn handle_discord(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    use semantic_memory::discord::DiscordScorer;
+
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+
+    // Get direct_ids from params, or run a search to get them
+    let direct_ids: Vec<String> = match params.get("direct_ids").and_then(|v| v.as_array()) {
+        Some(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        None => {
+            // Need a query to search
+            if query.is_empty() {
+                return (
+                    "400 Bad Request",
+                    serde_json::json!({"ok": false, "error": "either 'direct_ids' or 'query' must be provided"}),
+                );
+            }
+            let store = &bridge.store;
+            let search_result = block_in_place(|| {
+                handle.block_on(store.search(query, Some(top_k), None, None))
+            });
+            match search_result {
+                Ok(results) => results.iter().map(|r| r.source.result_id()).collect(),
+                Err(e) => {
+                    return (
+                        "500 Internal Server Error",
+                        serde_json::json!({"ok": false, "error": format!("search error: {e}")}),
+                    )
+                }
+            }
+        }
+    };
+
+    if direct_ids.is_empty() {
+        return (
+            "200 OK",
+            serde_json::json!({"ok": true, "discord_results": [], "count": 0, "edges_loaded": 0}),
+        );
+    }
+
+    let store = &bridge.store;
+    // Load graph edges for the neighborhood
+    let edges_result = block_in_place(|| {
+        handle.block_on(store.list_graph_edges_for_neighborhood(
+            direct_ids.clone(),
+            2,
+            200,
+        ))
+    });
+
+    let edges: Vec<semantic_memory::discord::GraphEdgeRef> = match edges_result {
+        Ok(raw_edges) => raw_edges
+            .iter()
+            .map(|edge| {
+                let parsed_type = edge
+                    .edge_type_parsed
+                    .clone()
+                    .or_else(|| serde_json::from_str(&edge.edge_type).ok())
+                    .unwrap_or(semantic_memory::GraphEdgeType::Entity {
+                        relation: "unknown".to_string(),
+                    });
+                let type_str = match parsed_type {
+                    semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
+                    semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
+                    semantic_memory::GraphEdgeType::Causal { .. } => "causal",
+                    semantic_memory::GraphEdgeType::Entity { .. } => "entity",
+                };
+                semantic_memory::discord::GraphEdgeRef {
+                    source: edge.source.clone(),
+                    target: edge.target.clone(),
+                    edge_type: type_str.to_string(),
+                    weight: edge.weight,
+                }
+            })
+            .collect(),
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("failed to load graph edges: {e}")}),
+            )
+        }
+    };
+
+    let edges_loaded = edges.len();
+    let scorer = DiscordScorer::with_defaults();
+    let discord_hits = scorer.score(&direct_ids, &edges);
+
+    // Filter out items already in direct_ids
+    let existing: std::collections::HashSet<String> = direct_ids.iter().cloned().collect();
+    let filtered_hits: Vec<serde_json::Value> = discord_hits
+        .iter()
+        .filter(|hit| !existing.contains(&hit.item_id))
+        .map(|hit| {
+            serde_json::json!({
+                "result_id": hit.item_id,
+                "discord_score": hit.discord_score,
+                "anchor_ids": hit.anchor_ids,
+                "relationship_types": hit.relationship_types,
+            })
+        })
+        .collect();
+
+    (
+        "200 OK",
+        serde_json::json!({
+            "ok": true,
+            "discord_results": filtered_hits,
+            "count": filtered_hits.len(),
+            "edges_loaded": edges_loaded,
+            "direct_ids": direct_ids,
+        }),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance endpoints — for hooks and cron jobs to trigger auto-management
+// without needing MCP tools to be visible (they're hidden in lean profile).
+// ---------------------------------------------------------------------------
+
+/// Handle POST /maintenance/check: returns embeddings_are_dirty + verify_integrity(Quick)
+/// in one call. This is the "health check" for auto-management.
+fn handle_maintenance_check(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let store = &bridge.store;
+    let embeddings_dirty = block_in_place(|| handle.block_on(store.embeddings_are_dirty()));
+    let embeddings_dirty = match embeddings_dirty {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("embeddings_are_dirty error: {e}")}),
+            )
+        }
+    };
+    let integrity_result = block_in_place(|| {
+        handle.block_on(store.verify_integrity(semantic_memory::VerifyMode::Quick))
+    });
+
+    match integrity_result {
+        Ok(report) => (
+            "200 OK",
+            serde_json::json!({
+                "ok": report.ok,
+                "embeddings_are_dirty": embeddings_dirty,
+                "integrity": {
+                    "ok": report.ok,
+                    "schema_version": report.schema_version,
+                    "fact_count": report.fact_count,
+                    "chunk_count": report.chunk_count,
+                    "message_count": report.message_count,
+                    "facts_missing_embeddings": report.facts_missing_embeddings,
+                    "chunks_missing_embeddings": report.chunks_missing_embeddings,
+                    "issues": report.issues,
+                    "issue_count": report.issues.len(),
+                },
+                "message": if report.ok && !embeddings_dirty {
+                    "All checks passed".to_string()
+                } else if report.ok && embeddings_dirty {
+                    "Integrity OK but embeddings need re-embedding".to_string()
+                } else {
+                    format!("{} integrity issues found", report.issues.len())
+                },
+            }),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({
+                "ok": false,
+                "embeddings_are_dirty": embeddings_dirty,
+                "error": format!("verify_integrity error: {e}"),
+            }),
+        ),
+    }
+}
+
+/// Handle POST /maintenance/vacuum: calls store.vacuum(). Returns ok.
+fn handle_maintenance_vacuum(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let store = &bridge.store;
+    let result = block_in_place(|| handle.block_on(store.vacuum()));
+
+    match result {
+        Ok(()) => (
+            "200 OK",
+            serde_json::json!({"ok": true, "action": "vacuum", "message": "Database vacuumed successfully"}),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("vacuum error: {e}")}),
+        ),
+    }
+}
+
+/// Handle POST /maintenance/reembed: calls store.reembed_all(). Returns count.
+/// This is expensive so the handler just calls it and returns the count.
+fn handle_maintenance_reembed(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let store = &bridge.store;
+    let result = block_in_place(|| handle.block_on(store.reembed_all()));
+
+    match result {
+        Ok(count) => (
+            "200 OK",
+            serde_json::json!({"ok": true, "action": "reembed", "reembedded_count": count, "message": format!("Re-embedded {count} items")}),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("reembed_all error: {e}")}),
+        ),
+    }
+}
+
+/// Handle POST /maintenance/reconcile: accepts {"action": "ReportOnly"|"RebuildFts"|"ReEmbed"}.
+/// Calls store.reconcile(action). Returns the IntegrityReport.
+fn handle_maintenance_reconcile(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let action_str = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("ReportOnly");
+
+    let action = match action_str {
+        "RebuildFts" => semantic_memory::ReconcileAction::RebuildFts,
+        "ReEmbed" => semantic_memory::ReconcileAction::ReEmbed,
+        _ => semantic_memory::ReconcileAction::ReportOnly,
+    };
+
+    let store = &bridge.store;
+    let result = block_in_place(|| handle.block_on(store.reconcile(action)));
+
+    match result {
+        Ok(report) => (
+            "200 OK",
+            serde_json::json!({
+                "ok": report.ok,
+                "action": "reconcile",
+                "reconcile_action": action_str,
+                "integrity": {
+                    "ok": report.ok,
+                    "schema_version": report.schema_version,
+                    "fact_count": report.fact_count,
+                    "chunk_count": report.chunk_count,
+                    "message_count": report.message_count,
+                    "facts_missing_embeddings": report.facts_missing_embeddings,
+                    "chunks_missing_embeddings": report.chunks_missing_embeddings,
+                    "issues": report.issues,
+                    "issue_count": report.issues.len(),
+                },
+                "message": if report.ok {
+                    "Reconciliation completed, no issues found".to_string()
+                } else {
+                    format!("Reconciliation completed with {} issues", report.issues.len())
+                },
+            }),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("reconcile error: {e}")}),
+        ),
+    }
+}
+
+/// Handle POST /maintenance/compact-hnsw: calls store.compact_hnsw(). Returns ok.
+///
+/// Only available when the `hnsw` feature is enabled. The default backend is
+/// usearch, so this endpoint returns a not-applicable response without the feature.
+fn handle_maintenance_compact_hnsw(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    #[cfg(feature = "hnsw")]
+    {
+        let store = &bridge.store;
+        let result = block_in_place(|| handle.block_on(store.compact_hnsw()));
+
+        return match result {
+            Ok(()) => (
+                "200 OK",
+                serde_json::json!({"ok": true, "action": "compact-hnsw", "message": "HNSW index compacted successfully"}),
+            ),
+            Err(e) => (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("compact_hnsw error: {e}")}),
+            ),
+        };
+    }
+
+    #[cfg(not(feature = "hnsw"))]
+    {
+        let _ = bridge;
+        let _ = handle;
+        (
+            "200 OK",
+            serde_json::json!({
+                "ok": true,
+                "action": "compact-hnsw",
+                "message": "HNSW compaction not applicable — usearch backend does not require compaction",
+                "skipped": true,
+            }),
+        )
     }
 }
