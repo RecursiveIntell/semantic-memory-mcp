@@ -148,6 +148,7 @@ fn handle_connection(
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
         ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
+        ("POST", "/add-edge") => handle_add_edge(&body_str, &bridge, &handle),
         ("POST", "/record-outcome") => handle_record_outcome(&body_str, &bridge, &handle),
         ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
         ("POST", "/discord") => handle_discord(&body_str, &bridge, &handle),
@@ -156,6 +157,7 @@ fn handle_connection(
         ("POST", "/maintenance/reembed") => handle_maintenance_reembed(&bridge, &handle),
         ("POST", "/maintenance/reconcile") => handle_maintenance_reconcile(&body_str, &bridge, &handle),
         ("POST", "/maintenance/compact-hnsw") => handle_maintenance_compact_hnsw(&bridge, &handle),
+        ("POST", "/maintenance/auto-edge") => handle_maintenance_auto_edge(&body_str, &bridge, &handle),
         _ => (
             "404 Not Found",
             serde_json::json!({"error": "not found", "path": path}),
@@ -533,7 +535,14 @@ fn handle_search_routed(
                                 );
                                 match fact_result {
                                     Ok(Some(fact)) => (fact.content, fact.namespace),
-                                    _ => (String::new(), String::new()),
+                                    Ok(None) => {
+                                        eprintln!("[discord] get_fact returned None for id={}", bare_id);
+                                        (String::new(), String::new())
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[discord] get_fact error for id={}: {}", bare_id, e);
+                                        (String::new(), String::new())
+                                    }
                                 }
                             };
                             discord_results_payload.push(serde_json::json!({
@@ -781,6 +790,72 @@ fn handle_add_fact(
     }
 }
 
+/// Handle /add-edge: add a graph edge between two facts.
+fn handle_add_edge(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let params: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
+            )
+        }
+    };
+
+    let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("");
+    let target = params.get("target").and_then(|v| v.as_str()).unwrap_or("");
+    let edge_type_str = params.get("edge_type").and_then(|v| v.as_str()).unwrap_or("semantic");
+    let weight = params.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let cosine_similarity = params.get("cosine_similarity").and_then(|v| v.as_f64());
+    let relation = params.get("relation").and_then(|v| v.as_str());
+
+    if source.is_empty() || target.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "missing 'source' or 'target'"}),
+        );
+    }
+
+    let edge_type = match edge_type_str {
+        "semantic" => semantic_memory::GraphEdgeType::Semantic {
+            cosine_similarity: cosine_similarity.unwrap_or(weight) as f32,
+        },
+        "temporal" => semantic_memory::GraphEdgeType::Temporal {
+            delta_secs: params.get("delta_secs").and_then(|v| v.as_u64()).unwrap_or(0),
+        },
+        "causal" => semantic_memory::GraphEdgeType::Causal {
+            confidence: cosine_similarity.unwrap_or(weight) as f32,
+            evidence_ids: Vec::new(),
+        },
+        "entity" => semantic_memory::GraphEdgeType::Entity {
+            relation: relation.unwrap_or("mentions").to_string(),
+        },
+        _ => semantic_memory::GraphEdgeType::Semantic {
+            cosine_similarity: cosine_similarity.unwrap_or(weight) as f32,
+        },
+    };
+
+    let store = &bridge.store;
+    let result = block_in_place(|| {
+        handle.block_on(store.add_graph_edge(source, target, edge_type, weight, None))
+    });
+
+    match result {
+        Ok(edge) => (
+            "200 OK",
+            serde_json::json!({"ok": true, "edge_id": edge.id}),
+        ),
+        Err(e) => (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("{e}")}),
+        ),
+    }
+}
+
 /// Handle /record-outcome: record a search outcome for RL routing feedback.
 fn handle_record_outcome(
     body: &str,
@@ -1009,8 +1084,19 @@ fn handle_discord(
         .iter()
         .filter(|hit| !existing.contains(&hit.item_id))
         .map(|hit| {
+            // Fetch the fact's content directly from the DB.
+            let bare_id = hit.item_id.strip_prefix("fact:").unwrap_or(&hit.item_id);
+            let (content, namespace) = {
+                let fact_result = handle.block_on(store.get_fact(bare_id));
+                match fact_result {
+                    Ok(Some(fact)) => (fact.content, fact.namespace),
+                    _ => (String::new(), String::new()),
+                }
+            };
             serde_json::json!({
                 "result_id": hit.item_id,
+                "content": content,
+                "namespace": namespace,
                 "discord_score": hit.discord_score,
                 "anchor_ids": hit.anchor_ids,
                 "relationship_types": hit.relationship_types,
@@ -1236,4 +1322,246 @@ fn handle_maintenance_compact_hnsw(
             }),
         )
     }
+}
+
+/// Handle POST /maintenance/auto-edge: automatically create entity edges
+/// between facts in DIFFERENT namespaces that share 2+ meaningful terms.
+///
+/// Accepts optional JSON body:
+///   - batch_size (default 500): facts per page when iterating
+///   - max_edges_per_fact (default 20): cap edges per source fact to prevent explosion
+///   - dry_run (default false): if true, report what would be created without creating edges
+///
+/// Returns a report with facts_processed, edges_created, edges_skipped, time_elapsed.
+fn handle_maintenance_auto_edge(
+    body: &str,
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    let start = std::time::Instant::now();
+
+    let params: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::json!({}));
+    let batch_size = params.get("batch_size").and_then(|v| v.as_u64()).unwrap_or(500) as usize;
+    let max_edges_per_fact =
+        params.get("max_edges_per_fact").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let dry_run = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let store = &bridge.store;
+
+    // Common English stopwords to filter out during term extraction.
+    const STOPWORDS: &[&str] = &[
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "her", "was", "one",
+        "our", "out", "has", "have", "had", "his", "how", "its", "may", "new", "now", "old",
+        "see", "him", "way", "who", "did", "yes", "yet", "say", "she", "too", "use", "via",
+        "any", "few", "get", "got", "let", "put", "run", "set", "try", "two", "bad", "big",
+        "far", "off", "own", "per", "sub", "top", "end", "add", "all", "also", "been",
+        "from", "into", "that", "this", "with", "will", "your", "they", "them", "were",
+        "what", "when", "where", "which", "while", "there", "their", "about", "after",
+        "before", "between", "because", "being", "would", "could", "should", "than",
+        "then", "these", "those", "only", "over", "under", "again", "more", "most", "some",
+        "such", "very", "just", "like", "even", "back", "both", "down", "here", "make",
+        "made", "each", "want", "need", "know", "same", "other", "many", "much", "last",
+        "first", "third", "next", "best", "main", "full", "only", "upon", "within",
+        "without", "through", "during", "above", "below", "upon", "against", "among",
+        "across", "behind", "beside", "beyond",
+    ];
+    let stopword_set: std::collections::HashSet<&str> = STOPWORDS.iter().copied().collect();
+
+    /// Extract meaningful terms from text: lowercase, split on non-alpha,
+    /// filter stopwords, min 3 chars, deduplicate.
+    fn extract_terms(text: &str, stopwords: &std::collections::HashSet<&str>) -> std::collections::HashSet<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .filter(|w| !stopwords.contains(*w))
+            .filter(|w| !w.chars().all(|c| c.is_ascii_digit()))
+            .map(|w| w.to_string())
+            .collect()
+    }
+
+    // 1. Get all namespaces that contain facts
+    let namespaces = match block_in_place(|| handle.block_on(store.list_fact_namespaces())) {
+        Ok(ns) => ns,
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("list_fact_namespaces error: {e}")}),
+            )
+        }
+    };
+
+    // 2. Page through all facts in each namespace, extract terms, store (id, namespace, terms)
+    struct FactInfo {
+        id: String,
+        namespace: String,
+        terms: std::collections::HashSet<String>,
+    }
+
+    let mut all_facts: Vec<FactInfo> = Vec::new();
+    for ns in &namespaces {
+        let mut offset = 0usize;
+        loop {
+            let batch = match block_in_place(|| {
+                handle.block_on(store.list_facts(ns, batch_size, offset))
+            }) {
+                Ok(facts) => facts,
+                Err(e) => {
+                    eprintln!("[auto-edge] list_facts error for ns={ns} offset={offset}: {e}");
+                    break;
+                }
+            };
+            if batch.is_empty() {
+                break;
+            }
+            for fact in &batch {
+                let terms = extract_terms(&fact.content, &stopword_set);
+                all_facts.push(FactInfo {
+                    id: fact.id.clone(),
+                    namespace: fact.namespace.clone(),
+                    terms,
+                });
+            }
+            offset += batch.len();
+            if batch.len() < batch_size {
+                break;
+            }
+        }
+    }
+
+    let facts_processed = all_facts.len();
+
+    // 3. Load existing edges to skip pairs that already have edges.
+    // Build a set of (source, target) pairs that already have entity edges.
+    let existing_edges: std::collections::HashSet<(String, String)> =
+        match block_in_place(|| handle.block_on(store.list_all_graph_edges())) {
+            Ok(edges) => edges
+                .iter()
+                .filter_map(|e| {
+                    let parsed = e.edge_type_parsed.clone().or_else(|| {
+                        serde_json::from_str::<semantic_memory::GraphEdgeType>(&e.edge_type)
+                            .ok()
+                    });
+                    match parsed {
+                        Some(semantic_memory::GraphEdgeType::Entity { .. }) => {
+                            Some((e.source.clone(), e.target.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect(),
+            Err(_) => std::collections::HashSet::new(),
+        };
+
+    // 4. For each pair of facts in DIFFERENT namespaces sharing 2+ terms, create entity edge.
+    // Rate-limit: max_edges_per_fact per source fact.
+    let mut edges_created: u64 = 0;
+    let mut edges_skipped: u64 = 0;
+    let mut edge_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    for i in 0..all_facts.len() {
+        let fact_i = &all_facts[i];
+        let src_id = format!("fact:{}", fact_i.id);
+
+        // Check if this fact has already hit its edge cap
+        if *edge_counts.get(&src_id).unwrap_or(&0) >= max_edges_per_fact as u64 {
+            continue;
+        }
+
+        for j in (i + 1)..all_facts.len() {
+            let fact_j = &all_facts[j];
+
+            // Only create edges between DIFFERENT namespaces
+            if fact_i.namespace == fact_j.namespace {
+                continue;
+            }
+
+            // Check shared terms (need 2+)
+            let shared: usize = fact_i.terms.intersection(&fact_j.terms).count();
+            if shared < 2 {
+                continue;
+            }
+
+            let tgt_id = format!("fact:{}", fact_j.id);
+
+            // Determine direction (smaller id first for consistency)
+            let (edge_source, edge_target) = if src_id <= tgt_id {
+                (src_id.clone(), tgt_id.clone())
+            } else {
+                (tgt_id.clone(), src_id.clone())
+            };
+
+            // Skip if edge already exists
+            if existing_edges.contains(&(edge_source.clone(), edge_target.clone())) {
+                edges_skipped += 1;
+                continue;
+            }
+
+            // Check edge cap for both facts
+            let count_src = *edge_counts.get(&src_id).unwrap_or(&0);
+            let count_tgt = *edge_counts.get(&tgt_id).unwrap_or(&0);
+            if count_src >= max_edges_per_fact as u64
+                || count_tgt >= max_edges_per_fact as u64
+            {
+                continue;
+            }
+
+            if dry_run {
+                edges_created += 1;
+                continue;
+            }
+
+            let relation = format!("shared_terms:{}", shared);
+            let edge_type = semantic_memory::GraphEdgeType::Entity {
+                relation: relation.clone(),
+            };
+            let weight = shared.min(10) as f64 / 10.0; // 0.2–1.0 based on overlap
+
+            let result = block_in_place(|| {
+                handle.block_on(store.add_graph_edge(
+                    &edge_source,
+                    &edge_target,
+                    edge_type,
+                    weight,
+                    None,
+                ))
+            });
+
+            match result {
+                Ok(_) => {
+                    edges_created += 1;
+                    *edge_counts.entry(src_id.clone()).or_insert(0) += 1;
+                    *edge_counts.entry(tgt_id.clone()).or_insert(0) += 1;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[auto-edge] add_graph_edge error: {e} for {edge_source} -> {edge_target}"
+                    );
+                }
+            }
+
+            // Re-check cap after creating edge
+            if *edge_counts.get(&src_id).unwrap_or(&0) >= max_edges_per_fact as u64 {
+                break;
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+
+    (
+        "200 OK",
+        serde_json::json!({
+            "ok": true,
+            "action": "auto-edge",
+            "dry_run": dry_run,
+            "facts_processed": facts_processed,
+            "namespaces_scanned": namespaces.len(),
+            "edges_created": edges_created,
+            "edges_skipped": edges_skipped,
+            "max_edges_per_fact": max_edges_per_fact,
+            "time_elapsed_ms": elapsed.as_millis(),
+            "time_elapsed_secs": (elapsed.as_millis() as f64) / 1000.0,
+        }),
+    )
 }
