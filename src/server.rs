@@ -494,10 +494,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    // DEPRECATED #[tool(
-    // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
-    // annotations(read_only_hint = true)
-    // )]
+    #[tool(
+        description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
+        annotations(read_only_hint = true)
+    )]
     #[allow(dead_code)]
     fn sm_search_explained(
         &self,
@@ -1061,11 +1061,10 @@ impl SemanticMemoryServer {
 
     // ── Conversation / session tools (v0.3.0) ────────────────────────
 
-    // DEPRECATED #[tool(
-    // description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
-    // annotations(idempotent_hint = true)
-    // )]
-    #[allow(dead_code)]
+    #[tool(
+        description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
+        annotations(idempotent_hint = true)
+    )]
     fn sm_create_session(
         &self,
         Parameters(CreateSessionParams { channel, metadata }): Parameters<CreateSessionParams>,
@@ -1088,10 +1087,9 @@ impl SemanticMemoryServer {
         }
     }
 
-    // DEPRECATED #[tool(
-    // description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
-    // )]
-    #[allow(dead_code)]
+    #[tool(
+        description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
+    )]
     fn sm_add_message(
         &self,
         Parameters(AddMessageParams {
@@ -1133,8 +1131,7 @@ impl SemanticMemoryServer {
         }
     }
 
-    // DEPRECATED #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
-    #[allow(dead_code)]
+    #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
     fn sm_list_sessions(
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
@@ -1164,11 +1161,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    // DEPRECATED #[tool(
-    // description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
-    // annotations(read_only_hint = true)
-    // )]
-    #[allow(dead_code)]
+    #[tool(
+        description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
+        annotations(read_only_hint = true)
+    )]
     fn sm_get_messages(
         &self,
         Parameters(GetMessagesParams {
