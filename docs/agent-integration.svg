@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 580" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <style>
+    .bg { fill: #0d1117; }
+    .title { fill: #f0f6fc; font-weight: 700; font-size: 16px; }
+    .subtitle { fill: #8b949e; font-size: 12px; }
+    .agent-card { fill: #161b22; stroke: #30363d; stroke-width: 1; rx: 8; }
+    .agent-name { fill: #f0f6fc; font-weight: 600; font-size: 13px; }
+    .agent-tag { fill: #8b949e; font-size: 10px; }
+    .mcp-card { fill: #0f2438; stroke: #1f6feb; stroke-width: 2; rx: 10; }
+    .mcp-title { fill: #58a6ff; font-weight: 700; font-size: 15px; }
+    .mcp-sub { fill: #8b949e; font-size: 10px; }
+    .lib-card { fill: #161b22; stroke: #39d0d8; stroke-width: 1.5; rx: 8; }
+    .lib-title { fill: #39d0d8; font-weight: 700; font-size: 14px; }
+    .lib-sub { fill: #8b949e; font-size: 10px; }
+    .arrow { stroke: #484f58; stroke-width: 1.5; fill: none; }
+    .arrow-hook { stroke: #1f6feb; stroke-width: 1.5; fill: none; stroke-dasharray: 4,3; }
+    .arrow-label { fill: #586069; font-size: 9px; }
+    .feature { fill: #7ee787; font-size: 10px; }
+    .tag-box { fill: #1c2331; stroke: #30363d; stroke-width: 0.75; rx: 3; }
+    .tag-text { fill: #7ee787; font-size: 9px; }
+  </style>
+  <rect class="bg" width="800" height="580" rx="8"/>
+
+  <text class="title" x="400" y="35" text-anchor="middle">Agent Integration Architecture</text>
+  <text class="subtitle" x="400" y="55" text-anchor="middle">Claude, Hermes, Codex connect via MCP — hooks enrich the loop</text>
+
+  <!-- Agent cards (left column) -->
+  <rect class="agent-card" x="20" y="90" width="180" height="110"/>
+  <text class="agent-name" x="110" y="115" text-anchor="middle">Claude Code / Desktop</text>
+  <rect class="tag-box" x="60" y="125" width="100" height="14"/>
+  <text class="tag-text" x="110" y="135" text-anchor="middle">48 tools (standard)</text>
+  <text class="agent-tag" x="110" y="158" text-anchor="middle">sm_search, sm_graph_path</text>
+  <text class="agent-tag" x="110" y="173" text-anchor="middle">sm_supersede_fact, sm_stats</text>
+
+  <rect class="agent-card" x="20" y="230" width="180" height="110"/>
+  <text class="agent-name" x="110" y="255" text-anchor="middle">Hermes Agent</text>
+  <rect class="tag-box" x="60" y="265" width="100" height="14"/>
+  <text class="tag-text" x="110" y="275" text-anchor="middle">33-48 tools</text>
+  <text class="agent-tag" x="110" y="298" text-anchor="middle">claude-kit plugin v0.6.0</text>
+  <text class="agent-tag" x="110" y="313" text-anchor="middle">Skills, hooks, slash cmds</text>
+
+  <rect class="agent-card" x="20" y="370" width="180" height="110"/>
+  <text class="agent-name" x="110" y="395" text-anchor="middle">Codex CLI</text>
+  <rect class="tag-box" x="60" y="405" width="100" height="14"/>
+  <text class="tag-text" x="110" y="415" text-anchor="middle">33 tools (lean)</text>
+  <text class="agent-tag" x="110" y="438" text-anchor="middle">Focused surface</text>
+  <text class="agent-tag" x="110" y="453" text-anchor="middle">Minimal overhead</text>
+
+  <!-- MCP Server (center) -->
+  <rect class="mcp-card" x="260" y="170" width="280" height="170"/>
+  <text class="mcp-title" x="400" y="200" text-anchor="middle">semantic-memory-mcp</text>
+  <text class="mcp-sub" x="400" y="218" text-anchor="middle">MCP Server · 61 tools · 18 HTTP endpoints</text>
+  <line x1="280" y1="230" x2="520" y2="230" stroke="#30363d" stroke-width="0.5"/>
+  <text class="feature" x="400" y="250" text-anchor="middle">··· Hybrid search (BM25 + vector + RRF)</text>
+  <text class="feature" x="400" y="267" text-anchor="middle">··· Knowledge graph (4 edge types)</text>
+  <text class="feature" x="400" y="284" text-anchor="middle">··· Contradiction detection + belief propagation</text>
+  <text class="feature" x="400" y="301" text-anchor="middle">··· Claims, evidence, proof-debt</text>
+  <text class="feature" x="400" y="318" text-anchor="middle">··· Conversation persistence</text>
+
+  <!-- semantic-memory library (right) -->
+  <rect class="lib-card" x="600" y="185" width="170" height="140"/>
+  <text class="lib-title" x="685" y="215" text-anchor="middle">semantic-memory</text>
+  <text class="lib-sub" x="685" y="233" text-anchor="middle">v0.5.8 · Rust library</text>
+  <line x1="615" y1="245" x2="755" y2="245" stroke="#30363d" stroke-width="0.5"/>
+  <text class="agent-tag" x="685" y="265" text-anchor="middle">SQLite + usearch HNSW</text>
+  <text class="agent-tag" x="685" y="282" text-anchor="middle">Candle embedder (no GPU)</text>
+  <text class="agent-tag" x="685" y="299" text-anchor="middle">Bitemporal · Provenance</text>
+
+  <!-- Arrows: agents -> MCP -->
+  <path class="arrow" d="M200,145 L260,210" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M200,285 L260,255" marker-end="url(#arrowhead)"/>
+  <path class="arrow" d="M200,425 L260,300" marker-end="url(#arrowhead)"/>
+
+  <!-- Arrow: MCP -> library -->
+  <path class="arrow" d="M540,255 L600,255" marker-end="url(#arrowhead)"/>
+  <text class="arrow-label" x="570" y="245" text-anchor="middle">lib</text>
+
+  <!-- Hooks (bottom) -->
+  <rect class="agent-card" x="260" y="380" width="510" height="60"/>
+  <text class="agent-name" x="515" y="400" text-anchor="middle">Hermes Hooks (recall, capture, auto-edge, conversation)</text>
+  <text class="agent-tag" x="515" y="418" text-anchor="middle">SessionStart → recall project-scoped facts · PreCompact → nudge capture · PostToolUse → auto-add edges · configurable per profile</text>
+
+  <!-- Hook arrows down -->
+  <path class="arrow-hook" d="M400,340 L400,380"/>
+
+  <!-- External -->
+  <rect class="agent-card" x="260" y="470" width="510" height="50"/>
+  <text class="agent-name" x="515" y="490" text-anchor="middle">HTTP API · warm server on :1738</text>
+  <text class="agent-tag" x="515" y="508" text-anchor="middle">/search /add /discord /query-orchestrated /maintenance/* — used by hooks, scripts, non-MCP clients</text>
+
+  <!-- Arrow marker defs -->
+  <defs>
+    <marker id="arrowhead" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+      <polygon points="0,0 6,2 0,4" fill="#484f58"/>
+    </marker>
+  </defs>
+</svg>

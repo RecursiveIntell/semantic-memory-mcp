@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 620" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <style>
+    .bg { fill: #0d1117; }
+    .title { fill: #f0f6fc; font-weight: 700; font-size: 16px; }
+    .subtitle { fill: #8b949e; font-size: 12px; }
+    .ring-lean { fill: none; stroke: #238636; stroke-width: 2; }
+    .ring-std { fill: none; stroke: #1f6feb; stroke-width: 2; }
+    .ring-full { fill: none; stroke: #8b949e; stroke-width: 2; }
+    .label { font-weight: 600; font-size: 13px; }
+    .label-lean { fill: #238636; }
+    .label-std { fill: #1f6feb; }
+    .label-full { fill: #8b949e; }
+    .tag { font-size: 11px; fill: #c9d1d9; }
+    .card { fill: #161b22; stroke: #30363d; stroke-width: 1; rx: 6; }
+    .item { fill: #8b949e; font-size: 10px; }
+    .arrow { fill: #484f58; }
+  </style>
+  <rect class="bg" width="720" height="620" rx="8"/>
+
+  <!-- Title -->
+  <text class="title" x="360" y="35" text-anchor="middle">Tool Profiles</text>
+  <text class="subtitle" x="360" y="55" text-anchor="middle">Concentric tiers — each profile adds capability without removing anything</text>
+
+  <!-- Concentric rings -->
+  <circle class="ring-full" cx="360" cy="300" r="180"/>
+  <circle class="ring-std" cx="360" cy="300" r="120"/>
+  <circle class="ring-lean" cx="360" cy="300" r="60"/>
+
+  <!-- Labels on rings -->
+  <text class="label label-full" x="360" y="114" text-anchor="middle">FULL · 61 tools</text>
+  <text class="tag" x="360" y="130" text-anchor="middle">Import/export, ledger verification, orchestration query</text>
+
+  <text class="label label-std" x="360" y="172" text-anchor="middle">STANDARD · 48 tools</text>
+  <text class="tag" x="360" y="188" text-anchor="middle">Topology, factor graph, decoder, lifecycle, bitemporal, conversation</text>
+
+  <text class="label label-lean" x="360" y="232" text-anchor="middle">LEAN · 33 tools</text>
+  <text class="tag" x="360" y="248" text-anchor="middle">Search, add, graph, claims, supersede, detect contradictions</text>
+
+  <!-- Core (center) -->
+  <circle cx="360" cy="300" r="30" fill="#0f2438" stroke="#1f6feb" stroke-width="1"/>
+  <text fill="#58a6ff" font-size="10" font-weight="600" x="360" y="297" text-anchor="middle">CORE</text>
+  <text fill="#58a6ff" font-size="10" font-weight="600" x="360" y="310" text-anchor="middle">ALWAYS</text>
+
+  <!-- Legend cards -->
+  <rect class="card" x="40" y="400" width="190" height="80"/>
+  <text class="label label-lean" x="60" y="420">LEAN — Daily agent</text>
+  <text class="item" x="60" y="437">·· 33 tools, low overhead</text>
+  <text class="item" x="60" y="452">·· Claude Code, Codex CLI</text>
+  <text class="item" x="60" y="467">·· Start here</text>
+
+  <rect class="card" x="265" y="400" width="190" height="80"/>
+  <text class="label label-std" x="285" y="420">STANDARD — Power user</text>
+  <text class="item" x="285" y="437">·· +15 tools for graph analysis</text>
+  <text class="item" x="285" y="452">·· Contradiction resolution</text>
+  <text class="item" x="285" y="467">·· Hermes Agent default</text>
+
+  <rect class="card" x="490" y="400" width="190" height="80"/>
+  <text class="label label-full" x="510" y="420">FULL — Maintenance</text>
+  <text class="item" x="510" y="437">·· +13 tools, all surfaces</text>
+  <text class="item" x="510" y="452">·· Import/export, ledgers</text>
+  <text class="item" x="510" y="467">·· Dev sessions &amp; audits</text>
+
+  <!-- Recommendation -->
+  <text class="subtitle" x="360" y="520" text-anchor="middle">Start in LEAN. Upgrade when you hit a wall. Same memory store, different tool count.</text>
+  <text class="item" fill="#484f58" x="360" y="540" text-anchor="middle">semantic-memory-mcp --tool-profile lean|standard|full</text>
+</svg>

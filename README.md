@@ -910,6 +910,8 @@ curl -s -X POST http://127.0.0.1:1738/add \
 
 ## Agent Integrations
 
+[![Agent Integration](docs/agent-integration.svg)](docs/agent-integration.svg)
+
 ### Hermes Agent (full native support)
 
 Hermes has first-class support via the `semantic-memory-claude-kit` plugin (v0.6.0).
@@ -1088,6 +1090,8 @@ than cold-spawning).
 | Disk full during write | SQLite returns SQLITE_FULL | Free space, run `sm_vacuum` to reclaim |
 
 ## Minimal vs Full Experience
+
+[![Tool Profiles](docs/tool-profiles.svg)](docs/tool-profiles.svg)
 
 ### Minimal (lean profile — 33 tools)
 
