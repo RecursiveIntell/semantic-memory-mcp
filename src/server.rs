@@ -68,12 +68,26 @@ impl SemanticMemoryServer {
             "sm_resolve_contradiction",
             "sm_verify_ledger",
             "sm_export_claim_bundle",
+            // Advanced graph tools (moved from lean to standard)
+            "sm_topology",
+            "sm_factor_graph",
+            "sm_decoder_analyze",
+            "sm_run_lifecycle",
+            // Conversation write tools (hook-called, not agent-called)
+            // Hidden in all profiles except full — the hook calls them via RPC bypass
+        ];
+
+        // Tools hidden in all profiles except full (import + conversation write)
+        let full_only_tools: &[&str] = &[
+            "sm_create_session",
+            "sm_add_message",
+            "sm_list_sessions",
         ];
 
         match tool_profile {
             "full" => { /* all tools visible */ }
             "standard" => {
-                // Hide import tools + admin orchestration/claim tools
+                // Hide import tools + admin orchestration/claim tools + conversation writes
                 for t in &admin_tools {
                     if t.starts_with("sm_import_")
                         || *t == "sm_list_imports"
@@ -88,10 +102,17 @@ impl SemanticMemoryServer {
                         router.disable_route(*t);
                     }
                 }
+                // Also hide conversation write tools (hook-called via RPC)
+                for t in full_only_tools {
+                    router.disable_route(*t);
+                }
             }
             _ => {
-                // "lean" (default) — hide all admin tools
+                // "lean" (default) — hide all admin tools + full-only tools
                 for t in &admin_tools {
+                    router.disable_route(*t);
+                }
+                for t in full_only_tools {
                     router.disable_route(*t);
                 }
             }
@@ -494,10 +515,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
-        annotations(read_only_hint = true)
-    )]
+    // #[tool( (DEPRECATED: sm_search_explained merged/removed per audit)
+    // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
+    // annotations(read_only_hint = true)
+    // )] (DEPRECATED: merged/removed per tool audit)
     #[allow(dead_code)]
     fn sm_search_explained(
         &self,
@@ -1236,10 +1257,10 @@ impl SemanticMemoryServer {
     // time. The `full` feature in Cargo.toml already enables the
     // semantic-memory sub-features these tools depend on.
 
-    #[tool(
-        description = "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vector, rerank, graph, decoder, discord) to activate.",
-        annotations(read_only_hint = true)
-    )]
+    // #[tool( (DEPRECATED: sm_route_query merged/removed per audit)
+    // description = "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vector, rerank, graph, decoder, discord) to activate.",
+    // annotations(read_only_hint = true)
+    // )] (DEPRECATED: merged/removed per tool audit)
     fn sm_route_query(
         &self,
         Parameters(RouteQueryParams { query }): Parameters<RouteQueryParams>,
@@ -2499,10 +2520,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
-        annotations(idempotent_hint = true)
-    )]
+    // #[tool( (DEPRECATED: sm_update_fact merged/removed per audit)
+    // description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
+    // annotations(idempotent_hint = true)
+    // )] (DEPRECATED: merged/removed per tool audit)
     fn sm_update_fact(
         &self,
         Parameters(UpdateFactParams { fact_id, content }): Parameters<UpdateFactParams>,
@@ -2528,9 +2549,9 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
-    )]
+    // #[tool( (DEPRECATED: sm_consolidate_facts merged/removed per audit)
+    // description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
+    // )] (DEPRECATED: merged/removed per tool audit)
     fn sm_consolidate_facts(
         &self,
         Parameters(ConsolidateFactsParams {
@@ -3340,10 +3361,10 @@ impl SemanticMemoryServer {
     // ─── Knowledge-runtime orchestration tools ──────────────────────
 
     #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Classify a query's intent mode (semantic, entity, temporal, mixed) without executing it. Returns mode, confidence, reason, and extracted entity/temporal mentions.",
-        annotations(read_only_hint = true)
-    )]
+    // #[tool( (DEPRECATED: sm_classify_query merged/removed per audit)
+    // description = "Classify a query's intent mode (semantic, entity, temporal, mixed) without executing it. Returns mode, confidence, reason, and extracted entity/temporal mentions.",
+    // annotations(read_only_hint = true)
+    // )] (DEPRECATED: merged/removed per tool audit)
     fn sm_classify_query(
         &self,
         Parameters(ClassifyQueryParams { query }): Parameters<ClassifyQueryParams>,
@@ -3369,10 +3390,10 @@ impl SemanticMemoryServer {
     }
 
     #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Plan a query's retrieval route without executing it. Returns the route plan with legs, strategies, and scope.",
-        annotations(read_only_hint = true)
-    )]
+    // #[tool( (DEPRECATED: sm_plan_query merged/removed per audit)
+    // description = "Plan a query's retrieval route without executing it. Returns the route plan with legs, strategies, and scope.",
+    // annotations(read_only_hint = true)
+    // )] (DEPRECATED: merged/removed per tool audit)
     fn sm_plan_query(
         &self,
         Parameters(PlanQueryParams {
