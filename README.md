@@ -80,10 +80,11 @@ Your agent gets a persistent knowledge base that:
   top_k and exactness profile based on query complexity class
   (A/B/C/D/E classification).
 - **Serves via HTTP** — `--http-port 1738` starts a warm HTTP server
-  alongside stdio MCP. 17 HTTP endpoints: /health, /search,
-  /search-routed, /rerank, /stats, /add, /add-edge, /delete-fact,
-  /record-outcome, /verify-integrity, /discord, /maintenance/check,
-  /maintenance/vacuum, /maintenance/reembed, /maintenance/reconcile,
+  alongside stdio MCP. 18 HTTP endpoints: /health, /search,
+  /search-routed, /query-orchestrated, /rerank, /stats, /add,
+  /add-edge, /delete-fact, /record-outcome, /verify-integrity,
+  /discord, /maintenance/check, /maintenance/vacuum,
+  /maintenance/reembed, /maintenance/reconcile,
   /maintenance/compact-hnsw, /maintenance/auto-edge. Hooks,
   benchmarks, and scripts query it directly without spawning new
   processes (4.9x faster).
@@ -338,8 +339,54 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes 38 MCP tools. Use `tools/list` as the source of
-truth for the available tool surface on your build.
+The server exposes up to 62 MCP tools (full profile), 52 (standard), or 41
+(lean). Use `tools/list` as the source of truth for the available tool surface
+on your build.
+
+### Tool profiles
+
+| Profile | Tools | Description |
+|---------|-------|-------------|
+| `lean` (default) | 41 | Daily-use tools: search, add, graph, claims. No admin. |
+| `standard` | 52 | + bitemporal query, projection health, proof-debt, contradiction resolution. No import. |
+| `full` | 62 | All tools including import, ledger verification, export bundle. |
+
+Pass `--tool-profile lean|standard|full` on the command line.
+
+### Knowledge Runtime tools (feature: `orchestration`)
+
+These tools provide intent classification, multi-leg route planning,
+provenance-aware result merge, and scope-aware entity resolution via
+`knowledge-runtime`.
+
+| Tool | Description |
+|------|-------------|
+| `sm_classify_query` | Classify query intent: semantic, entity, temporal, or mixed. |
+| `sm_plan_query` | Plan multi-leg retrieval routes for a query. |
+| `sm_query_orchestrated` | Full pipeline: classify -> plan -> execute -> merge with trace. |
+| `sm_query_temporal` | Bitemporal query with as-of-date filtering. |
+| `sm_entity_lookup` | Scope-aware entity resolution with fallback. |
+| `sm_projection_health` | Projection lifecycle health and staleness. |
+
+HTTP endpoint: `POST /query-orchestrated` — same as `sm_query_orchestrated`
+but accessible via HTTP for non-MCP clients.
+
+### Claim-Ledger tools (feature: `claim-integration`)
+
+| Tool | Description |
+|------|-------------|
+| `sm_create_claim` | Create a typed claim from a fact. |
+| `sm_add_evidence` | Add evidence to a claim. |
+| `sm_judge_support` | Judge support state: supported, unsupported, contested. |
+| `sm_verify_claim` | Verify a claim against risk class requirements. |
+| `sm_add_support_admission` | Admit support via operator, fixture, or external receipt. |
+| `sm_record_contradiction` | Record a contradiction between two claims. |
+| `sm_resolve_contradiction` | Resolve a recorded contradiction. |
+| `sm_supersede_claim` | Supersede an old claim with a new one. |
+| `sm_proof_debt_status` | Check proof-debt budget status and gate evaluation. |
+| `sm_evaluate_proof_debt_gate` | Evaluate proof-debt gate for a scope. |
+| `sm_verify_ledger` | Verify hash-chained ledger integrity. |
+| `sm_export_claim_bundle` | Export claims + evidence as a bundle with receipt. |
 
 ### Core tools (always available)
 

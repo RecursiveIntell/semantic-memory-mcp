@@ -621,6 +621,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "constraint-compiler"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "forge-memory-bridge",
+ "recursive-kernel-core",
+ "schemars 0.8.22",
+ "semantic-memory-forge",
+ "serde",
+ "serde_json",
+ "stack-ids",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2184,6 +2198,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-execution"
+version = "0.1.0"
+dependencies = [
+ "constraint-compiler",
+ "recursive-kernel-core",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "stack-ids",
+]
+
+[[package]]
+name = "kernel-oracles"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "constraint-compiler",
+ "forge-memory-bridge",
+ "kernel-execution",
+ "recursive-kernel-core",
+ "schemars 0.8.22",
+ "serde",
+ "stack-ids",
+]
+
+[[package]]
+name = "knowledge-runtime"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "constraint-compiler",
+ "forge-memory-bridge",
+ "kernel-execution",
+ "kernel-oracles",
+ "recursive-kernel-core",
+ "schemars 0.8.22",
+ "semantic-memory",
+ "serde",
+ "serde_json",
+ "stack-ids",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "konst"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3160,6 +3220,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
+name = "recursive-kernel-core"
+version = "0.1.0"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+ "stack-ids",
+]
+
+[[package]]
 name = "redb"
 version = "3.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3722,6 +3791,7 @@ dependencies = [
  "chrono",
  "claim-ledger",
  "clap",
+ "knowledge-runtime",
  "llm-output-parser",
  "reqwest 0.12.28",
  "rmcp",

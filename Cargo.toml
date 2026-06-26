@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -58,12 +58,23 @@ full = [
     "semantic-memory/rl-routing",
     "claim-integration",
     "llm-parser",
+    "orchestration",
 ]
 
-# Claim-ledger integration: sm_create_claim, sm_add_evidence, sm_judge_support
+# Claim-ledger integration: sm_create_claim, sm_add_evidence, sm_judge_support,
+# sm_verify_claim, sm_proof_debt_status, sm_record_contradiction, etc.
 claim-integration = ["dep:claim-ledger"]
-# llm-output-parser: robust JSON parsing for Ollama responses
+# llm-output-parser: robust JSON parsing for agent-submitted and LLM output
 llm-parser = ["dep:llm-output-parser"]
+# knowledge-runtime: intent classification, multi-leg route planning,
+# provenance-aware merge, scope-aware entity resolution, projection tracking.
+# Upgrades /search-routed and adds sm_classify_query, sm_plan_query,
+# sm_query_orchestrated, sm_query_temporal, sm_entity_lookup, sm_projection_health.
+orchestration = [
+    "dep:knowledge-runtime",
+    "semantic-memory/provenance",
+    "semantic-memory/temporal",
+]
 # HNSW backend (optional alternative to usearch). Enables compact-hnsw endpoint.
 hnsw = ["semantic-memory/hnsw"]
 
@@ -72,6 +83,7 @@ semantic-memory = { version = "0.5.8", path = "../semantic-memory", default-feat
 stack-ids = { version = "0.1.1", path = "../stack-ids" }
 claim-ledger = { version = "0.1.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
+knowledge-runtime = { version = "0.1.0", path = "../knowledge-runtime", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
 rmcp = { version = "1", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }

@@ -107,7 +107,10 @@ fn main() -> anyhow::Result<()> {
             );
         }
         EmbedderBackend::Ollama => {
-            let url = cli.embedding_url.as_deref().unwrap_or("http://localhost:11434");
+            let url = cli
+                .embedding_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
             eprintln!(
                 "  embedding: {} @ {} ({}d) — Ollama GPU-accelerated",
                 cli.embedding_model.as_deref().unwrap_or("nomic-embed-text"),
