@@ -30,12 +30,14 @@ use crate::tools::{
 pub struct SemanticMemoryServer {
     bridge: Arc<MemoryBridge>,
     tool_router: ToolRouter<Self>,
+    llm_url: String,
+    llm_model: String,
     #[cfg(feature = "orchestration")]
     runtime: Option<knowledge_runtime::KnowledgeRuntime>,
 }
 
 impl SemanticMemoryServer {
-    pub fn new(bridge: MemoryBridge, tool_profile: &str) -> Self {
+    pub fn new(bridge: MemoryBridge, tool_profile: &str, llm_url: String, llm_model: String) -> Self {
         let mut router = Self::tool_router();
 
         // Tools hidden in "lean" mode (maintenance + audit + bitemporal query + import)
@@ -144,6 +146,8 @@ impl SemanticMemoryServer {
         Self {
             bridge: Arc::new(bridge),
             tool_router: router,
+            llm_url,
+            llm_model,
             #[cfg(feature = "orchestration")]
             runtime,
         }
@@ -663,7 +667,7 @@ impl SemanticMemoryServer {
                         "Extract entities from this text as JSON. Format: {{\"entities\": [{{\"name\": \"...\", \"type\": \"person|project|concept|tool|version|path\"}}]}}\nText: {content}\nJSON:"
                     );
                     let body = serde_json::json!({
-                        "model": "granite4.1:3b",
+                        "model": self.llm_model.clone(),
                         "prompt": prompt,
                         "stream": false,
                         "options": {"temperature": 0, "num_predict": 200}
@@ -2398,7 +2402,7 @@ impl SemanticMemoryServer {
                             "Summarize these related facts in 1-2 sentences:\n{combined}\nSummary:"
                         );
                         let body = serde_json::json!({
-                            "model": "granite4.1:3b",
+                            "model": self.llm_model.clone(),
                             "prompt": prompt,
                             "stream": false,
                             "options": {"temperature": 0, "num_predict": 100}

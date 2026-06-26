@@ -28,7 +28,7 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
 fn server_constructs_with_claim_integration() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "full");
+    let _server = SemanticMemoryServer::new(bridge, "full", String::new(), String::new());
 }
 
 // ── Proof-debt budget tests ──────────────────────────────────────────
@@ -208,7 +208,7 @@ fn supersession_receipt_creates() {
 fn full_profile_allows_all_tools() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "full");
+    let _server = SemanticMemoryServer::new(bridge, "full", String::new(), String::new());
     // If this constructs without panic, all tools are registered
 }
 
@@ -216,7 +216,7 @@ fn full_profile_allows_all_tools() {
 fn standard_profile_hides_admin_tools() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "standard");
+    let _server = SemanticMemoryServer::new(bridge, "standard", String::new(), String::new());
     // Standard profile should hide admin tools but allow basic ones
 }
 
@@ -224,6 +224,6 @@ fn standard_profile_hides_admin_tools() {
 fn lean_profile_hides_all_admin_tools() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "lean");
+    let _server = SemanticMemoryServer::new(bridge, "lean", String::new(), String::new());
     // Lean profile hides all admin tools
 }

@@ -28,21 +28,21 @@ fn server_constructs_with_orchestration() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
     // This should succeed — runtime is constructed behind orchestration feature
-    let _server = SemanticMemoryServer::new(bridge, "full");
+    let _server = SemanticMemoryServer::new(bridge, "full", String::new(), String::new());
 }
 
 #[test]
 fn server_constructs_with_orchestration_lean() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "lean");
+    let _server = SemanticMemoryServer::new(bridge, "lean", String::new(), String::new());
 }
 
 #[test]
 fn server_constructs_with_orchestration_standard() {
     let dir = tempfile::tempdir().unwrap();
     let bridge = open_bridge(dir.path());
-    let _server = SemanticMemoryServer::new(bridge, "standard");
+    let _server = SemanticMemoryServer::new(bridge, "standard", String::new(), String::new());
 }
 
 // Test that the knowledge-runtime can be constructed from the adapter

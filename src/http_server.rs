@@ -259,7 +259,7 @@ fn handle_search(
                 .collect();
 
             let final_results: Vec<serde_json::Value> = if do_rerank && !json_results.is_empty() {
-                rerank_results(query, &json_results, "granite4.1:3b")
+                rerank_results(query, &json_results, Box::leak(std::env::var("SEMANTIC_MEMORY_LLM_MODEL").unwrap_or_else(|_| "granite4.1:3b".into()).into_boxed_str()))
                     .into_iter()
                     .take(top_k)
                     .collect()
@@ -879,7 +879,7 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
     let model = params
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("granite4.1:3b");
+        .unwrap_or(Box::leak(std::env::var("SEMANTIC_MEMORY_LLM_MODEL").unwrap_or_else(|_| "granite4.1:3b".into()).into_boxed_str()));
     let results = match params.get("results").and_then(|v| v.as_array()) {
         Some(r) => r.clone(),
         None => {
