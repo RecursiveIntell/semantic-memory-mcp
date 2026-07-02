@@ -19,29 +19,17 @@ use crate::tools::{
     AddGraphEdgeParams, CommunityParams, FactorGraphParams, InvalidateGraphEdgeParams,
     ListGraphEdgesParams, RecordOutcomeParams, TopologyParams,
 };
-use crate::tools::{
-    AddSupportAdmissionParams, ClassifyQueryParams, EntityLookupParams,
-    EvaluateProofDebtGateParams, ExportClaimBundleParams, PlanQueryParams, ProjectionHealthParams,
-    ProofDebtStatusParams, QueryOrchestratedParams, QueryTemporalKParams,
-    RecordContradictionParams, ResolveContradictionParams, SupersedeClaimParams,
-    VerifyLedgerParams,
-};
 
 pub struct SemanticMemoryServer {
     bridge: Arc<MemoryBridge>,
     tool_router: ToolRouter<Self>,
-    llm_url: String,
-    llm_model: String,
-    #[cfg(feature = "orchestration")]
-    runtime: Option<knowledge_runtime::KnowledgeRuntime>,
 }
 
 impl SemanticMemoryServer {
-    pub fn new(bridge: MemoryBridge, tool_profile: &str, llm_url: String, llm_model: String) -> Self {
+    pub fn new(bridge: MemoryBridge, tool_profile: &str) -> Self {
         let mut router = Self::tool_router();
 
         // Tools hidden in "lean" mode (maintenance + audit + bitemporal query + import)
-        // Plus new admin-gated orchestration and claim-ledger tools.
         let admin_tools = [
             // Maintenance
             "sm_reconcile",
@@ -61,60 +49,19 @@ impl SemanticMemoryServer {
             "sm_import_envelope",
             "sm_import_status",
             "sm_list_imports",
-            // Orchestration admin tools
-            "sm_query_temporal",
-            "sm_projection_health",
-            // Claim-ledger admin tools
-            "sm_proof_debt_status",
-            "sm_evaluate_proof_debt_gate",
-            "sm_resolve_contradiction",
-            "sm_verify_ledger",
-            "sm_export_claim_bundle",
-            // Advanced graph tools (moved from lean to standard)
-            "sm_topology",
-            "sm_factor_graph",
-            "sm_decoder_analyze",
-            "sm_run_lifecycle",
-            // Conversation write tools (hook-called, not agent-called)
-            // Hidden in all profiles except full — the hook calls them via RPC bypass
-        ];
-
-        // Tools hidden in all profiles except full (import + conversation write)
-        let full_only_tools: &[&str] = &[
-            "sm_create_session",
-            "sm_add_message",
-            "sm_list_sessions",
         ];
 
         match tool_profile {
             "full" => { /* all tools visible */ }
             "standard" => {
-                // Hide import tools + admin orchestration/claim tools + conversation writes
-                for t in &admin_tools {
-                    if t.starts_with("sm_import_")
-                        || *t == "sm_list_imports"
-                        || *t == "sm_query_temporal"
-                        || *t == "sm_projection_health"
-                        || *t == "sm_proof_debt_status"
-                        || *t == "sm_evaluate_proof_debt_gate"
-                        || *t == "sm_resolve_contradiction"
-                        || *t == "sm_verify_ledger"
-                        || *t == "sm_export_claim_bundle"
-                    {
-                        router.disable_route(*t);
-                    }
-                }
-                // Also hide conversation write tools (hook-called via RPC)
-                for t in full_only_tools {
+                // Hide import tools only
+                for t in &["sm_import_envelope", "sm_import_status", "sm_list_imports"] {
                     router.disable_route(*t);
                 }
             }
             _ => {
-                // "lean" (default) — hide all admin tools + full-only tools
+                // "lean" (default) — hide all admin tools
                 for t in &admin_tools {
-                    router.disable_route(*t);
-                }
-                for t in full_only_tools {
                     router.disable_route(*t);
                 }
             }
@@ -126,30 +73,9 @@ impl SemanticMemoryServer {
             router.list_all().len()
         );
 
-        // Construct knowledge-runtime when orchestration feature is on.
-        #[cfg(feature = "orchestration")]
-        let runtime = {
-            let adapter = knowledge_runtime::adapters::semantic_memory::SemanticMemoryAdapter::new(
-                bridge.store.clone(),
-            );
-            let config = knowledge_runtime::RuntimeConfig {
-                default_scope: knowledge_runtime::Scope::new("general"),
-                query: knowledge_runtime::config::QueryConfig::default(),
-                entity: knowledge_runtime::config::EntityConfig::default(),
-                projection: knowledge_runtime::config::ProjectionConfig::default(),
-                strict_temporal: false,
-                strict_scope: false,
-            };
-            knowledge_runtime::KnowledgeRuntime::new(config, adapter).ok()
-        };
-
         Self {
             bridge: Arc::new(bridge),
             tool_router: router,
-            llm_url,
-            llm_model,
-            #[cfg(feature = "orchestration")]
-            runtime,
         }
     }
 }
@@ -519,10 +445,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    // #[tool( (DEPRECATED: sm_search_explained merged/removed per audit)
-    // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
-    // annotations(read_only_hint = true)
-    // )] (DEPRECATED: merged/removed per tool audit)
+    // DEPRECATED #[tool(
+        // description = "Search with full score breakdown showing how BM25 and vector scores combine. Useful for debugging retrieval quality.",
+        // annotations(read_only_hint = true)
+    // )]
     #[allow(dead_code)]
     fn sm_search_explained(
         &self,
@@ -667,7 +593,7 @@ impl SemanticMemoryServer {
                         "Extract entities from this text as JSON. Format: {{\"entities\": [{{\"name\": \"...\", \"type\": \"person|project|concept|tool|version|path\"}}]}}\nText: {content}\nJSON:"
                     );
                     let body = serde_json::json!({
-                        "model": self.llm_model.clone(),
+                        "model": "granite4.1:3b",
                         "prompt": prompt,
                         "stream": false,
                         "options": {"temperature": 0, "num_predict": 200}
@@ -678,10 +604,11 @@ impl SemanticMemoryServer {
                         .send()
                     {
                         if let Ok(v) = resp.json::<serde_json::Value>() {
-                            if let Some(response_str) = v.get("response").and_then(|r| r.as_str()) {
+                            if let Some(response_str) =
+                                v.get("response").and_then(|r| r.as_str())
+                            {
                                 // Use boundary compiler for robust JSON parsing with duplicate-key rejection
-                                let parsed_result =
-                                    boundary_compiler::parse_with_dup_check(response_str.trim());
+                                let parsed_result = boundary_compiler::parse_with_dup_check(response_str.trim());
                                 if let Ok(parsed) = parsed_result {
                                     if let Some(entities) =
                                         parsed.get("entities").and_then(|e| e.as_array())
@@ -693,16 +620,17 @@ impl SemanticMemoryServer {
                                             {
                                                 let entity_node = format!("entity:{name}");
                                                 let _ = tokio::task::block_in_place(|| {
-                                                    Handle::current()
-                                                        .block_on(store.add_graph_edge(
-                                                        &fact_node,
-                                                        &entity_node,
-                                                        semantic_memory::GraphEdgeType::Entity {
-                                                            relation: "mentions".to_string(),
-                                                        },
-                                                        1.0,
-                                                        None,
-                                                    ))
+                                                    Handle::current().block_on(
+                                                        store.add_graph_edge(
+                                                            &fact_node,
+                                                            &entity_node,
+                                                            semantic_memory::GraphEdgeType::Entity {
+                                                                relation: "mentions".to_string(),
+                                                            },
+                                                            1.0,
+                                                            None,
+                                                        ),
+                                                    )
                                                 });
                                             }
                                         }
@@ -1086,10 +1014,11 @@ impl SemanticMemoryServer {
 
     // ── Conversation / session tools (v0.3.0) ────────────────────────
 
-    #[tool(
-        description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
-        annotations(idempotent_hint = true)
-    )]
+    // DEPRECATED #[tool(
+        // description = "Create a conversation session (container for messages). Returns session id. Use to persist history recallable via sm_search_conversations.",
+        // annotations(idempotent_hint = true)
+    // )]
+    #[allow(dead_code)]
     fn sm_create_session(
         &self,
         Parameters(CreateSessionParams { channel, metadata }): Parameters<CreateSessionParams>,
@@ -1112,9 +1041,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
-    )]
+    // DEPRECATED #[tool(
+        // description = "Append a message to a session. role: user|assistant|system|tool. Message is embedded and FTS-indexed. Returns message id."
+    // )]
+    #[allow(dead_code)]
     fn sm_add_message(
         &self,
         Parameters(AddMessageParams {
@@ -1156,7 +1086,8 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
+    // DEPRECATED #[tool(description = "List recent conversation sessions (newest first) with message counts.", annotations(read_only_hint = true))]
+    #[allow(dead_code)]
     fn sm_list_sessions(
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
@@ -1186,10 +1117,11 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
-        annotations(read_only_hint = true)
-    )]
+    // DEPRECATED #[tool(
+        // description = "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
+        // annotations(read_only_hint = true)
+    // )]
+    #[allow(dead_code)]
     fn sm_get_messages(
         &self,
         Parameters(GetMessagesParams {
@@ -1261,10 +1193,10 @@ impl SemanticMemoryServer {
     // time. The `full` feature in Cargo.toml already enables the
     // semantic-memory sub-features these tools depend on.
 
-    // #[tool( (DEPRECATED: sm_route_query merged/removed per audit)
-    // description = "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vector, rerank, graph, decoder, discord) to activate.",
-    // annotations(read_only_hint = true)
-    // )] (DEPRECATED: merged/removed per tool audit)
+    #[tool(
+        description = "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vector, rerank, graph, decoder, discord) to activate.",
+        annotations(read_only_hint = true)
+    )]
     fn sm_route_query(
         &self,
         Parameters(RouteQueryParams { query }): Parameters<RouteQueryParams>,
@@ -1315,11 +1247,12 @@ impl SemanticMemoryServer {
 
         // Load persisted RL routing policy (or default if none saved yet)
         let store = &self.bridge.store;
-        let policy =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.load_routing_policy()))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+        let policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.load_routing_policy())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
         let profile = QueryProfile::from_query(&query);
         let decision = route_with_rl(&policy, &profile);
         let contras = contradictions.unwrap_or_default();
@@ -1470,11 +1403,14 @@ impl SemanticMemoryServer {
 
                 if plan.use_discord {
                     use semantic_memory::discord::DiscordScorer;
-                    let direct_ids: Vec<String> =
-                        result_refs.iter().map(|r| r.source.result_id()).collect();
+                    let direct_ids: Vec<String> = result_refs
+                        .iter()
+                        .map(|r| r.source.result_id())
+                        .collect();
                     let existing_ids: std::collections::HashSet<String> =
                         direct_ids.iter().cloned().collect();
-                    if let Ok(edges) = load_neighborhood_edge_refs(&self.bridge.store, &direct_ids)
+                    if let Ok(edges) =
+                        load_neighborhood_edge_refs(&self.bridge.store, &direct_ids)
                     {
                         let scorer = DiscordScorer::with_defaults();
                         let discord_hits = scorer.score(&direct_ids, &edges);
@@ -1525,49 +1461,62 @@ impl SemanticMemoryServer {
                 }
 
                 // Community grouping (opt-in).
-                let grouped_results_payload: serde_json::Value = if group_by_community == Some(true)
-                {
-                    let seed_ids: Vec<String> = result_refs
-                        .iter()
-                        .take(k)
-                        .map(|r| r.source.result_id())
-                        .collect();
-                    let edges = load_neighborhood_edge_pairs(store, &seed_ids).unwrap_or_default();
-                    if !edges.is_empty() {
-                        use semantic_memory::community::detect_communities;
-                        let communities = detect_communities(&edges, 1.0, 42);
-                        let mut member_to_comm: std::collections::HashMap<String, String> =
-                            std::collections::HashMap::new();
-                        for c in &communities {
-                            for m in &c.members {
-                                member_to_comm.insert(m.clone(), c.id.clone());
-                            }
-                        }
-                        let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
-                            std::collections::HashMap::new();
-                        let mut ungrouped: Vec<serde_json::Value> = Vec::new();
-                        for r in &json_results {
-                            if let Some(rid) = r.get("result_id").and_then(|v| v.as_str()) {
-                                match member_to_comm.get(rid).cloned() {
-                                    Some(cid) => groups.entry(cid).or_default().push(r.clone()),
-                                    None => ungrouped.push(r.clone()),
+                let grouped_results_payload: serde_json::Value =
+                    if group_by_community == Some(true) {
+                        let seed_ids: Vec<String> = result_refs
+                            .iter()
+                            .take(k)
+                            .map(|r| r.source.result_id())
+                            .collect();
+                        let edges =
+                            load_neighborhood_edge_pairs(store, &seed_ids).unwrap_or_default();
+                        if !edges.is_empty() {
+                            use semantic_memory::community::detect_communities;
+                            let communities = detect_communities(&edges, 1.0, 42);
+                            let mut member_to_comm: std::collections::HashMap<String, String> =
+                                std::collections::HashMap::new();
+                            for c in &communities {
+                                for m in &c.members {
+                                    member_to_comm.insert(m.clone(), c.id.clone());
                                 }
                             }
+                            let mut groups: std::collections::HashMap<
+                                String,
+                                Vec<serde_json::Value>,
+                            > = std::collections::HashMap::new();
+                            let mut ungrouped: Vec<serde_json::Value> = Vec::new();
+                            for r in &json_results {
+                                if let Some(rid) =
+                                    r.get("result_id").and_then(|v| v.as_str())
+                                {
+                                    match member_to_comm.get(rid).cloned() {
+                                        Some(cid) => {
+                                            groups.entry(cid).or_default().push(r.clone())
+                                        }
+                                        None => ungrouped.push(r.clone()),
+                                    }
+                                }
+                            }
+                            let mut map = serde_json::Map::new();
+                            for (cid, items) in groups {
+                                map.insert(
+                                    format!("community_{cid}"),
+                                    serde_json::json!(items),
+                                );
+                            }
+                            if !ungrouped.is_empty() {
+                                map.insert(
+                                    "ungrouped".to_string(),
+                                    serde_json::json!(ungrouped),
+                                );
+                            }
+                            serde_json::Value::Object(map)
+                        } else {
+                            serde_json::Value::Null
                         }
-                        let mut map = serde_json::Map::new();
-                        for (cid, items) in groups {
-                            map.insert(format!("community_{cid}"), serde_json::json!(items));
-                        }
-                        if !ungrouped.is_empty() {
-                            map.insert("ungrouped".to_string(), serde_json::json!(ungrouped));
-                        }
-                        serde_json::Value::Object(map)
                     } else {
                         serde_json::Value::Null
-                    }
-                } else {
-                    serde_json::Value::Null
-                };
+                    };
 
                 // Task 7: Auto-call topology when routing returns Class D (SYNTHESIS) and >10 results.
                 let mut topology_payload = serde_json::json!({ "auto_called": false });
@@ -1709,9 +1658,7 @@ impl SemanticMemoryServer {
     )]
     fn sm_detect_contradictions(
         &self,
-        Parameters(DetectContradictionsParams { query, top_k }): Parameters<
-            DetectContradictionsParams,
-        >,
+        Parameters(DetectContradictionsParams { query, top_k }): Parameters<DetectContradictionsParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::contradiction_detect::{detect_contradictions, DetectorConfig};
 
@@ -2402,7 +2349,7 @@ impl SemanticMemoryServer {
                             "Summarize these related facts in 1-2 sentences:\n{combined}\nSummary:"
                         );
                         let body = serde_json::json!({
-                            "model": self.llm_model.clone(),
+                            "model": "granite4.1:3b",
                             "prompt": prompt,
                             "stream": false,
                             "options": {"temperature": 0, "num_predict": 100}
@@ -2469,13 +2416,9 @@ impl SemanticMemoryServer {
         &self,
         Parameters(DeleteFactParams { fact_id }): Parameters<DeleteFactParams>,
     ) -> Result<String, ErrorData> {
-        let bare = fact_id
-            .strip_prefix("fact:")
-            .unwrap_or(&fact_id)
-            .to_string();
+        let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
         let store = &self.bridge.store;
-        let result =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.delete_fact(&bare)));
+        let result = tokio::task::block_in_place(|| Handle::current().block_on(store.delete_fact(&bare)));
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
@@ -2483,10 +2426,7 @@ impl SemanticMemoryServer {
                 "fact_id": format!("fact:{bare}"),
                 "message": "Fact permanently deleted",
             })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("delete_fact error: {e}"),
-                None,
-            )),
+            Err(e) => Err(ErrorData::internal_error(format!("delete_fact error: {e}"), None)),
         }
     }
 
@@ -2499,9 +2439,7 @@ impl SemanticMemoryServer {
         Parameters(DeleteNamespaceParams { namespace }): Parameters<DeleteNamespaceParams>,
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.delete_namespace(&namespace))
-        });
+        let result = tokio::task::block_in_place(|| Handle::current().block_on(store.delete_namespace(&namespace)));
         match result {
             Ok(r) => json_to_string(&serde_json::json!({
                 "ok": true,
@@ -2517,68 +2455,45 @@ impl SemanticMemoryServer {
                 },
                 "message": "Namespace permanently deleted",
             })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("delete_namespace error: {e}"),
-                None,
-            )),
+            Err(e) => Err(ErrorData::internal_error(format!("delete_namespace error: {e}"), None)),
         }
     }
 
-    // #[tool( (DEPRECATED: sm_update_fact merged/removed per audit)
-    // description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
-    // annotations(idempotent_hint = true)
-    // )] (DEPRECATED: merged/removed per tool audit)
+    #[tool(
+        description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
+        annotations(idempotent_hint = true)
+    )]
     fn sm_update_fact(
         &self,
         Parameters(UpdateFactParams { fact_id, content }): Parameters<UpdateFactParams>,
     ) -> Result<String, ErrorData> {
-        let bare = fact_id
-            .strip_prefix("fact:")
-            .unwrap_or(&fact_id)
-            .to_string();
+        let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
         let store = &self.bridge.store;
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.update_fact(&bare, &content))
-        });
+        let result = tokio::task::block_in_place(|| Handle::current().block_on(store.update_fact(&bare, &content)));
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
                 "fact_id": format!("fact:{bare}"),
                 "message": "Fact content updated and re-embedded",
             })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("update_fact error: {e}"),
-                None,
-            )),
+            Err(e) => Err(ErrorData::internal_error(format!("update_fact error: {e}"), None)),
         }
     }
 
-    // #[tool( (DEPRECATED: sm_consolidate_facts merged/removed per audit)
-    // description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
-    // )] (DEPRECATED: merged/removed per tool audit)
+    #[tool(
+        description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
+    )]
     fn sm_consolidate_facts(
         &self,
-        Parameters(ConsolidateFactsParams {
-            keep_id,
-            supersede_id,
-            merged_content,
-        }): Parameters<ConsolidateFactsParams>,
+        Parameters(ConsolidateFactsParams { keep_id, supersede_id, merged_content }): Parameters<ConsolidateFactsParams>,
     ) -> Result<String, ErrorData> {
-        let keep_bare = keep_id
-            .strip_prefix("fact:")
-            .unwrap_or(&keep_id)
-            .to_string();
-        let sup_bare = supersede_id
-            .strip_prefix("fact:")
-            .unwrap_or(&supersede_id)
-            .to_string();
+        let keep_bare = keep_id.strip_prefix("fact:").unwrap_or(&keep_id).to_string();
+        let sup_bare = supersede_id.strip_prefix("fact:").unwrap_or(&supersede_id).to_string();
         let store = &self.bridge.store;
 
         // Get both facts to determine namespace and merge content
-        let keep_fact =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
-        let sup_fact =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
+        let keep_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
+        let sup_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
 
         let (namespace, final_content) = match (keep_fact, sup_fact) {
             (Ok(Some(k)), Ok(Some(s))) => {
@@ -2615,10 +2530,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.update_fact(&keep_bare, &final_content))
         });
         if let Err(e) = update_result {
-            return Err(ErrorData::internal_error(
-                format!("update keep fact error: {e}"),
-                None,
-            ));
+            return Err(ErrorData::internal_error(format!("update keep fact error: {e}"), None));
         }
 
         // Supersede the other fact: add a new fact with merged content and link with "supersedes" edge
@@ -2691,11 +2603,12 @@ impl SemanticMemoryServer {
 
         let store = &self.bridge.store;
         // Load persisted policy (or default if none saved yet)
-        let mut policy =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.load_routing_policy()))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+        let mut policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.load_routing_policy())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
         record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
         // Save updated policy
         let _ = tokio::task::block_in_place(|| {
@@ -2734,29 +2647,19 @@ impl SemanticMemoryServer {
     )]
     fn sm_create_claim(
         &self,
-        Parameters(CreateClaimParams {
-            fact_id,
-            source_span,
-        }): Parameters<CreateClaimParams>,
+        Parameters(CreateClaimParams { fact_id, source_span }): Parameters<CreateClaimParams>,
     ) -> Result<String, ErrorData> {
         use claim_ledger::Claim;
-        let bare = fact_id
-            .strip_prefix("fact:")
-            .unwrap_or(&fact_id)
-            .to_string();
+        let bare = fact_id.strip_prefix("fact:").unwrap_or(&fact_id).to_string();
         let store = &self.bridge.store;
 
         // Get the fact content
-        let fact =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&bare)));
+        let fact = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.get_fact(&bare))
+        });
         let fact = match fact {
             Ok(Some(f)) => f,
-            _ => {
-                return Err(ErrorData::internal_error(
-                    format!("fact not found: {fact_id}"),
-                    None,
-                ))
-            }
+            _ => return Err(ErrorData::internal_error(format!("fact not found: {fact_id}"), None)),
         };
 
         // Create a claim from the fact
@@ -2820,11 +2723,7 @@ impl SemanticMemoryServer {
     )]
     fn sm_judge_support(
         &self,
-        Parameters(JudgeSupportParams {
-            claim_id,
-            judgment,
-            rationale,
-        }): Parameters<JudgeSupportParams>,
+        Parameters(JudgeSupportParams { claim_id, judgment, rationale }): Parameters<JudgeSupportParams>,
     ) -> Result<String, ErrorData> {
         use claim_ledger::{SupportJudgment, SupportState};
         let state = match judgment.to_lowercase().as_str() {
@@ -2867,16 +2766,13 @@ impl SemanticMemoryServer {
     )]
     fn sm_search_as_of(
         &self,
-        Parameters(SearchAsOfParams {
-            query,
-            as_of_date,
-            top_k,
-            namespace,
-        }): Parameters<SearchAsOfParams>,
+        Parameters(SearchAsOfParams { query, as_of_date, top_k, namespace }): Parameters<SearchAsOfParams>,
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
         let k = top_k.unwrap_or(5);
-        let ns_slice: Option<Vec<&str>> = namespace.as_ref().map(|n| vec![n.as_str()]);
+        let ns_slice: Option<Vec<&str>> = namespace
+            .as_ref()
+            .map(|n| vec![n.as_str()]);
 
         // Parse the as-of date
         let _as_of = chrono::DateTime::parse_from_rfc3339(&as_of_date)
@@ -2889,8 +2785,7 @@ impl SemanticMemoryServer {
         // Search normally, then filter by date
         let results = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search(&query, Some(k * 2), ns_slice.as_deref(), None))
-        })
-        .map_err(|e| ErrorData::internal_error(format!("search error: {e}"), None))?;
+        }).map_err(|e| ErrorData::internal_error(format!("search error: {e}"), None))?;
 
         // Filter: only include results that existed as of the date
         // Since SearchResult doesn't carry updated_at directly, we return all
@@ -2927,76 +2822,28 @@ impl SemanticMemoryServer {
     )]
     fn sm_verify_claim(
         &self,
-        Parameters(VerifyClaimParams {
-            claim,
-            risk_class,
-            evidence_refs,
-            refutation_attempted,
-        }): Parameters<VerifyClaimParams>,
+        Parameters(VerifyClaimParams { claim, risk_class, evidence_refs, refutation_attempted }): Parameters<VerifyClaimParams>,
     ) -> Result<String, ErrorData> {
         let risk = risk_class.to_lowercase();
-        let has_evidence = evidence_refs
-            .as_ref()
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
+        let has_evidence = evidence_refs.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
         let refuted = refutation_attempted.unwrap_or(false);
 
         // Required checks by risk class
         let (needs_replay, needs_falsification, disposition, rationale) = match risk.as_str() {
-            "low" => (
-                false,
-                false,
-                "promote",
-                "Low risk: cheap checks only, claim can be promoted",
-            ),
-            "medium" => (
-                true,
-                false,
-                "promote",
-                "Medium risk: replay check required, claim can be promoted",
-            ),
-            "high" => (
-                true,
-                true,
-                if refuted {
-                    "quarantine"
-                } else if has_evidence {
-                    "promote"
-                } else {
-                    "defer"
-                },
-                if refuted {
-                    "High risk: refutation attempted, claim quarantined"
-                } else if has_evidence {
-                    "High risk: falsification passed with evidence, claim promoted"
-                } else {
-                    "High risk: no evidence provided, claim deferred"
-                },
-            ),
-            "critical" => (
-                true,
-                true,
-                if refuted {
-                    "quarantine"
-                } else if has_evidence && refutation_attempted == Some(true) {
-                    "promote"
-                } else {
-                    "defer"
-                },
-                if refuted {
-                    "Critical risk: refutation found, claim quarantined"
-                } else if has_evidence && refutation_attempted == Some(true) {
-                    "Critical risk: replay + falsification passed, claim promoted"
-                } else {
-                    "Critical risk: requires evidence AND refutation, claim deferred"
-                },
-            ),
-            _ => {
-                return Err(ErrorData::invalid_params(
-                    format!("Invalid risk_class '{risk}'. Must be: low, medium, high, or critical"),
-                    None,
-                ))
-            }
+            "low" => (false, false, "promote", "Low risk: cheap checks only, claim can be promoted"),
+            "medium" => (true, false, "promote", "Medium risk: replay check required, claim can be promoted"),
+            "high" => (true, true, if refuted { "quarantine" } else if has_evidence { "promote" } else { "defer" },
+                if refuted { "High risk: refutation attempted, claim quarantined" }
+                else if has_evidence { "High risk: falsification passed with evidence, claim promoted" }
+                else { "High risk: no evidence provided, claim deferred" }),
+            "critical" => (true, true, if refuted { "quarantine" } else if has_evidence && refutation_attempted == Some(true) { "promote" } else { "defer" },
+                if refuted { "Critical risk: refutation found, claim quarantined" }
+                else if has_evidence && refutation_attempted == Some(true) { "Critical risk: replay + falsification passed, claim promoted" }
+                else { "Critical risk: requires evidence AND refutation, claim deferred" }),
+            _ => return Err(ErrorData::invalid_params(
+                format!("Invalid risk_class '{risk}'. Must be: low, medium, high, or critical"),
+                None,
+            )),
         };
 
         json_to_string(&serde_json::json!({
@@ -3068,12 +2915,7 @@ impl SemanticMemoryServer {
     )]
     fn sm_replay_search_receipt(
         &self,
-        Parameters(ReplaySearchReceiptParams {
-            receipt_id,
-            query,
-            top_k,
-            namespaces,
-        }): Parameters<ReplaySearchReceiptParams>,
+        Parameters(ReplaySearchReceiptParams { receipt_id, query, top_k, namespaces }): Parameters<ReplaySearchReceiptParams>,
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
         let k = top_k.map(|v| v as usize);
@@ -3172,7 +3014,9 @@ impl SemanticMemoryServer {
     )]
     fn sm_vacuum(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
-        let result = tokio::task::block_in_place(|| Handle::current().block_on(store.vacuum()));
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.vacuum())
+        });
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
@@ -3191,8 +3035,9 @@ impl SemanticMemoryServer {
     )]
     fn sm_reembed_all(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
-        let result =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.reembed_all()));
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.reembed_all())
+        });
         match result {
             Ok(count) => json_to_string(&serde_json::json!({
                 "ok": true,
@@ -3295,8 +3140,9 @@ impl SemanticMemoryServer {
     ) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
-        let result =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.query_episodes(query)));
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.query_episodes(query))
+        });
         match result {
             Ok(rows) => json_to_string(&serde_json::json!({
                 "ok": true,
@@ -3362,612 +3208,6 @@ impl SemanticMemoryServer {
         }
     }
 
-    // ─── Knowledge-runtime orchestration tools ──────────────────────
-
-    #[cfg(feature = "orchestration")]
-    // #[tool( (DEPRECATED: sm_classify_query merged/removed per audit)
-    // description = "Classify a query's intent mode (semantic, entity, temporal, mixed) without executing it. Returns mode, confidence, reason, and extracted entity/temporal mentions.",
-    // annotations(read_only_hint = true)
-    // )] (DEPRECATED: merged/removed per tool audit)
-    fn sm_classify_query(
-        &self,
-        Parameters(ClassifyQueryParams { query }): Parameters<ClassifyQueryParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        let result = runtime.classify(&query);
-        let mode_str = match &result.mode {
-            knowledge_runtime::QueryMode::SemanticLookup => "semantic",
-            knowledge_runtime::QueryMode::EntityLookup { .. } => "entity",
-            knowledge_runtime::QueryMode::TemporalLookup { .. } => "temporal",
-            knowledge_runtime::QueryMode::Mixed { .. } => "mixed",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "query": query,
-            "mode": mode_str,
-            "mode_kind": result.mode.kind(),
-            "confidence": result.confidence,
-            "reason": result.reason,
-        }))
-    }
-
-    #[cfg(feature = "orchestration")]
-    // #[tool( (DEPRECATED: sm_plan_query merged/removed per audit)
-    // description = "Plan a query's retrieval route without executing it. Returns the route plan with legs, strategies, and scope.",
-    // annotations(read_only_hint = true)
-    // )] (DEPRECATED: merged/removed per tool audit)
-    fn sm_plan_query(
-        &self,
-        Parameters(PlanQueryParams {
-            query,
-            namespace,
-            domain,
-            workspace_id,
-            repo_id,
-        }): Parameters<PlanQueryParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        let ns = namespace.as_deref().unwrap_or("general");
-        let mut scope = knowledge_runtime::Scope::new(ns);
-        if let Some(d) = &domain {
-            scope = scope.with_domain(d);
-        }
-        if let Some(w) = &workspace_id {
-            scope = scope.with_workspace(w);
-        }
-        if let Some(r) = &repo_id {
-            scope = scope.with_repo(r);
-        }
-        let plan = runtime.plan(&query, Some(&scope));
-        let plan_json = serde_json::to_value(&plan).unwrap_or_else(|_| serde_json::json!({}));
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "query": query,
-            "plan": plan_json,
-        }))
-    }
-
-    #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Execute a query through the full orchestration pipeline: classify, plan, execute, merge. Returns results with optional trace.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_query_orchestrated(
-        &self,
-        Parameters(QueryOrchestratedParams {
-            query,
-            namespace,
-            domain,
-            workspace_id,
-            repo_id,
-            top_k,
-            trace,
-        }): Parameters<QueryOrchestratedParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        let ns = namespace.as_deref().unwrap_or("general");
-        let mut scope = knowledge_runtime::Scope::new(ns);
-        if let Some(d) = &domain {
-            scope = scope.with_domain(d);
-        }
-        if let Some(w) = &workspace_id {
-            scope = scope.with_workspace(w);
-        }
-        if let Some(r) = &repo_id {
-            scope = scope.with_repo(r);
-        }
-        let include_trace = trace.unwrap_or(false);
-        let (results, query_trace) = tokio::task::block_in_place(|| {
-            Handle::current().block_on(runtime.query_with_trace(&query, Some(&scope), None))
-        })
-        .map_err(|e| ErrorData::internal_error(format!("orchestrated query error: {e}"), None))?;
-        let k = top_k.unwrap_or(10);
-        let json_results: Vec<serde_json::Value> = results
-            .iter()
-            .take(k)
-            .map(|r| {
-                serde_json::json!({
-                    "result_id": r.source.result_id(),
-                    "content": r.content,
-                    "score": r.score,
-                    "cosine_similarity": r.cosine_similarity,
-                })
-            })
-            .collect();
-        let trace_json = if include_trace {
-            serde_json::to_value(&query_trace).unwrap_or_else(|_| serde_json::json!(null))
-        } else {
-            serde_json::json!(null)
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "query": query,
-            "results": json_results,
-            "count": json_results.len(),
-            "trace": trace_json,
-        }))
-    }
-
-    #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Execute a temporal query with explicit bitemporal semantics (valid_at + recorded_at_or_before). Returns results with temporal trace.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_query_temporal(
-        &self,
-        Parameters(QueryTemporalKParams {
-            query,
-            as_of_date,
-            namespace,
-            domain,
-            workspace_id,
-            repo_id,
-            top_k,
-        }): Parameters<QueryTemporalKParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        // Validate date format
-        chrono::DateTime::parse_from_rfc3339(&as_of_date).map_err(|e| {
-            ErrorData::invalid_params(
-                format!("Invalid as_of_date '{as_of_date}': {e}. Use ISO 8601 format."),
-                None,
-            )
-        })?;
-        let ns = namespace.as_deref().unwrap_or("general");
-        let mut scope = knowledge_runtime::Scope::new(ns);
-        if let Some(d) = &domain {
-            scope = scope.with_domain(d);
-        }
-        if let Some(w) = &workspace_id {
-            scope = scope.with_workspace(w);
-        }
-        if let Some(r) = &repo_id {
-            scope = scope.with_repo(r);
-        }
-        let k = top_k.unwrap_or(5);
-        let (results, query_trace) = tokio::task::block_in_place(|| {
-            Handle::current().block_on(runtime.query_temporal_with_trace(
-                &query,
-                Some(&scope),
-                None,
-                &as_of_date,
-                &as_of_date,
-            ))
-        })
-        .map_err(|e| ErrorData::internal_error(format!("temporal query error: {e}"), None))?;
-        let json_results: Vec<serde_json::Value> = results
-            .iter()
-            .take(k)
-            .map(|r| {
-                serde_json::json!({
-                    "result_id": r.source.result_id(),
-                    "content": r.content,
-                    "score": r.score,
-                })
-            })
-            .collect();
-        let trace_json =
-            serde_json::to_value(&query_trace).unwrap_or_else(|_| serde_json::json!(null));
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "query": query,
-            "as_of_date": as_of_date,
-            "results": json_results,
-            "count": json_results.len(),
-            "trace": trace_json,
-        }))
-    }
-
-    #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Resolve an entity mention against the runtime's scope-aware entity registry. Returns resolved entity, match quality, and alternative candidates.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_entity_lookup(
-        &self,
-        Parameters(EntityLookupParams {
-            mention,
-            namespace,
-            domain,
-        }): Parameters<EntityLookupParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        let ns = namespace.as_deref().unwrap_or("general");
-        let mut scope = knowledge_runtime::ScopeKey::namespace_only(ns);
-        if let Some(d) = &domain {
-            scope.domain = Some(d.clone());
-        }
-        let result = runtime.entity_registry().resolve(&mention, &scope);
-        let quality_str = match result.quality {
-            knowledge_runtime::MatchQuality::ExactCanonical => "exact_canonical",
-            knowledge_runtime::MatchQuality::ExactAlias => "exact_alias",
-            knowledge_runtime::MatchQuality::ScopedFallback => "scoped_fallback",
-            knowledge_runtime::MatchQuality::Unresolved => "unresolved",
-        };
-        let entity_json = result
-            .entity
-            .as_ref()
-            .map(|e| serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!(null)))
-            .unwrap_or(serde_json::json!(null));
-        let alternatives_json: Vec<serde_json::Value> = result
-            .alternatives
-            .iter()
-            .map(|e| serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!(null)))
-            .collect();
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "mention": mention,
-            "quality": quality_str,
-            "entity": entity_json,
-            "alternatives": alternatives_json,
-            "queried_scope": result.queried_scope.to_string(),
-        }))
-    }
-
-    #[cfg(feature = "orchestration")]
-    #[tool(
-        description = "Check the health of a projection by namespace and optional kind. Returns health status (healthy, stale, missing, etc.).",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_projection_health(
-        &self,
-        Parameters(ProjectionHealthParams {
-            namespace,
-            projection_kind,
-        }): Parameters<ProjectionHealthParams>,
-    ) -> Result<String, ErrorData> {
-        let runtime = self.runtime.as_ref().ok_or_else(|| {
-            ErrorData::internal_error("orchestration runtime not available", None)
-        })?;
-        let kind = match projection_kind.as_deref().unwrap_or("entity") {
-            "entity" => knowledge_runtime::ProjectionKind::Entity,
-            "temporal" => knowledge_runtime::ProjectionKind::Temporal,
-            "route_stats" => knowledge_runtime::ProjectionKind::RouteStats,
-            other => knowledge_runtime::ProjectionKind::Custom(other.to_string()),
-        };
-        let scope_key = knowledge_runtime::ScopeKey::namespace_only(&namespace);
-        let proj_id = knowledge_runtime::ProjectionId::new(kind, &namespace, scope_key);
-        let health = runtime.projection_health(&proj_id);
-        let health_str = match &health {
-            knowledge_runtime::ProjectionHealth::Healthy => "healthy",
-            knowledge_runtime::ProjectionHealth::Stale => "stale",
-            knowledge_runtime::ProjectionHealth::Missing => "missing",
-            knowledge_runtime::ProjectionHealth::Rebuilding => "rebuilding",
-            knowledge_runtime::ProjectionHealth::ImportLagging => "import_lagging",
-            knowledge_runtime::ProjectionHealth::ImportFailed => "import_failed",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "namespace": namespace,
-            "projection_id": proj_id.to_string(),
-            "health": health_str,
-        }))
-    }
-
-    // ─── Claim-ledger completion tools ──────────────────────────────
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Get proof-debt budget status for a scope. Returns summary with budget, consumed, available, gate decision, and exhaustion state.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_proof_debt_status(
-        &self,
-        Parameters(ProofDebtStatusParams { scope }): Parameters<ProofDebtStatusParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::{ProofDebtBudgetV1, ProofDebtSummaryV1};
-        let budget = ProofDebtBudgetV1::new(&scope, 1_000_000);
-        let summary = ProofDebtSummaryV1::from_budget(&budget);
-        let gate_decision = match summary.gate_decision {
-            claim_ledger::ProofDebtGateDecision::Proceed => "proceed",
-            claim_ledger::ProofDebtGateDecision::Warn => "warn",
-            claim_ledger::ProofDebtGateDecision::Degrade => "degrade",
-            claim_ledger::ProofDebtGateDecision::Retract => "retract",
-            claim_ledger::ProofDebtGateDecision::Waived => "waived",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "scope": scope,
-            "budget_id": summary.budget_id,
-            "budget_micros": summary.budget_micros,
-            "consumed_micros": summary.consumed_micros,
-            "available_micros": summary.available_micros,
-            "consumed_pct": summary.consumed_pct,
-            "exhausted": summary.exhausted,
-            "gate_decision": gate_decision,
-            "gate_summary": summary.gate_summary,
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Evaluate a proof-debt budget gate for a scope. Returns the gate decision (proceed, warn, degrade, retract) with details.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_evaluate_proof_debt_gate(
-        &self,
-        Parameters(EvaluateProofDebtGateParams {
-            scope,
-            budget_micros,
-        }): Parameters<EvaluateProofDebtGateParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::{evaluate_proof_debt_gate, ProofDebtBudgetV1};
-        let micros = budget_micros.unwrap_or(1_000_000);
-        let budget = ProofDebtBudgetV1::new(&scope, micros);
-        let gate = evaluate_proof_debt_gate(&budget);
-        let decision_str = match gate.decision {
-            claim_ledger::ProofDebtGateDecision::Proceed => "proceed",
-            claim_ledger::ProofDebtGateDecision::Warn => "warn",
-            claim_ledger::ProofDebtGateDecision::Degrade => "degrade",
-            claim_ledger::ProofDebtGateDecision::Retract => "retract",
-            claim_ledger::ProofDebtGateDecision::Waived => "waived",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "scope": scope,
-            "budget_id": gate.budget_id,
-            "decision": decision_str,
-            "consumed_pct": gate.consumed_pct,
-            "exhausted": gate.exhausted,
-            "summary": gate.summary,
-            "allows_proceed": gate.decision.allows_proceed(),
-            "blocks": gate.decision.blocks(),
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Record a support admission for a claim. Creates a SupportAdmissionReceipt with method, rationale, and operator reference.",
-        annotations(idempotent_hint = true)
-    )]
-    fn sm_add_support_admission(
-        &self,
-        Parameters(AddSupportAdmissionParams {
-            claim_id,
-            method,
-            rationale,
-            operator_id,
-        }): Parameters<AddSupportAdmissionParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::{SupportAdmissionMethod, SupportAdmissionReceipt, SupportState};
-        let method_enum = match method.to_lowercase().as_str() {
-            "operator_admitted" => SupportAdmissionMethod::OperatorAdmitted,
-            "test_fixture_admitted" => SupportAdmissionMethod::TestFixtureAdmitted,
-            "external_receipt_admitted" => SupportAdmissionMethod::ExternalReceiptAdmitted,
-            _ => {
-                return Err(ErrorData::invalid_params(
-                    format!(
-                        "Invalid method '{method}'. Must be: operator_admitted, test_fixture_admitted, or external_receipt_admitted"
-                    ),
-                    None,
-                ));
-            }
-        };
-        let prev_ref = format!("sj_prev_{}", &claim_id);
-        let new_ref = format!("sj_new_{}", &claim_id);
-        let mut receipt = SupportAdmissionReceipt::new(
-            &claim_id,
-            &prev_ref,
-            &new_ref,
-            method_enum,
-            SupportState::Supported,
-            &rationale,
-        );
-        receipt.operator_ref = operator_id;
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "support_admission_receipt_id": receipt.support_admission_receipt_id,
-            "claim_id": receipt.claim_id,
-            "method": method,
-            "admitted_support_state": "supported",
-            "rationale": receipt.rationale,
-            "operator_ref": receipt.operator_ref,
-            "recorded_time": receipt.recorded_time.to_rfc3339(),
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Record a contradiction between two claims. Creates a ContradictionRecord with Open status, detection method, and optional evidence.",
-        annotations(idempotent_hint = true)
-    )]
-    fn sm_record_contradiction(
-        &self,
-        Parameters(RecordContradictionParams {
-            claim_a_id,
-            claim_b_id,
-            detection_method,
-            evidence,
-        }): Parameters<RecordContradictionParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::ContradictionRecord;
-        let mut record = ContradictionRecord::new(
-            &claim_a_id,
-            &claim_b_id,
-            &detection_method,
-            &detection_method,
-        );
-        if let Some(ev) = &evidence {
-            record.rationale = ev.clone();
-        }
-        let status_str = match record.status {
-            claim_ledger::ContradictionStatus::Candidate => "candidate",
-            claim_ledger::ContradictionStatus::UnderReview => "under_review",
-            claim_ledger::ContradictionStatus::Unresolved => "unresolved",
-            claim_ledger::ContradictionStatus::Confirmed => "confirmed",
-            claim_ledger::ContradictionStatus::Rejected => "rejected",
-            claim_ledger::ContradictionStatus::Superseded => "superseded",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "contradiction_id": record.contradiction_id,
-            "claim_refs": record.claim_refs,
-            "pattern": record.pattern,
-            "rationale": record.rationale,
-            "status": status_str,
-            "created_recorded_time": record.created_recorded_time.to_rfc3339(),
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Resolve a contradiction with a resolution outcome (confirmed, rejected, superseded). Creates a ContradictionResolutionReceipt.",
-        annotations(idempotent_hint = true)
-    )]
-    fn sm_resolve_contradiction(
-        &self,
-        Parameters(ResolveContradictionParams {
-            contradiction_id,
-            resolution,
-            rationale,
-            superseding_claim_id,
-        }): Parameters<ResolveContradictionParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::{ContradictionResolution, ContradictionResolutionReceipt};
-        let resolution_enum = match resolution.to_lowercase().as_str() {
-            "confirmed" => ContradictionResolution::Confirmed,
-            "rejected" => ContradictionResolution::Rejected,
-            "superseded" => ContradictionResolution::Superseded,
-            _ => {
-                return Err(ErrorData::invalid_params(
-                    format!(
-                        "Invalid resolution '{resolution}'. Must be: confirmed, rejected, or superseded"
-                    ),
-                    None,
-                ));
-            }
-        };
-        let receipt = ContradictionResolutionReceipt::new(
-            &contradiction_id,
-            "open",
-            resolution_enum,
-            &rationale,
-        );
-        let resolution_str = match receipt.resolution {
-            ContradictionResolution::Confirmed => "confirmed",
-            ContradictionResolution::Rejected => "rejected",
-            ContradictionResolution::Superseded => "superseded",
-        };
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "contradiction_resolution_receipt_id": receipt.contradiction_resolution_receipt_id,
-            "contradiction_id": receipt.contradiction_id,
-            "resolution": resolution_str,
-            "rationale": receipt.rationale,
-            "superseding_claim_id": superseding_claim_id,
-            "recorded_time": receipt.recorded_time.to_rfc3339(),
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Verify a claim ledger's hash chain integrity. Accepts JSONL text of ledger entries, parses and verifies the chain. Returns valid flag, entry count, and first break if any.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_verify_ledger(
-        &self,
-        Parameters(VerifyLedgerParams { entries_jsonl }): Parameters<VerifyLedgerParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::{parse_ledger_entries, verify_ledger};
-        let entries = parse_ledger_entries(&entries_jsonl);
-        let entry_count = entries.len();
-        let verification = verify_ledger(&entries);
-        let first_break = verification.errors.first().cloned();
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "verified": verification.valid,
-            "entry_count": entry_count,
-            "last_sequence": verification.last_sequence,
-            "last_entry_digest": verification.last_entry_digest,
-            "error_count": verification.errors.len(),
-            "first_break": first_break,
-            "errors": verification.errors,
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Export a bundle of claims with optional evidence and contradictions. Creates an ExportReceipt for deterministic verification.",
-        annotations(read_only_hint = true)
-    )]
-    fn sm_export_claim_bundle(
-        &self,
-        Parameters(ExportClaimBundleParams {
-            claim_ids,
-            include_evidence,
-            include_contradictions,
-        }): Parameters<ExportClaimBundleParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::ExportReceipt;
-        let inc_ev = include_evidence.unwrap_or(true);
-        let inc_contra = include_contradictions.unwrap_or(true);
-        let input_refs: Vec<String> = claim_ids.clone();
-        let mut receipt = ExportReceipt::new(
-            "bundle_export",
-            input_refs.clone(),
-            claim_ledger::ids::ulid(),
-        );
-        receipt.mark_success();
-        // Build a minimal bundle structure
-        let bundle = serde_json::json!({
-            "claim_ids": claim_ids,
-            "include_evidence": inc_ev,
-            "include_contradictions": inc_contra,
-            "export_receipt_id": receipt.export_receipt_id,
-        });
-        let bundle_str = serde_json::to_string(&bundle)
-            .map_err(|e| ErrorData::internal_error(format!("serialization error: {e}"), None))?;
-        let digest = claim_ledger::ids::sha256_text(&bundle_str);
-        receipt.bind_output(format!("bundle:{}", receipt.export_receipt_id), digest);
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "export_receipt_id": receipt.export_receipt_id,
-            "operation": receipt.operation,
-            "input_refs": receipt.input_refs,
-            "output_ref": receipt.output_ref,
-            "output_digest": receipt.output_digest,
-            "status": receipt.status,
-            "digest_semantics": receipt.digest_semantics,
-            "recorded_time": receipt.recorded_time.to_rfc3339(),
-            "bundle": bundle,
-        }))
-    }
-
-    #[cfg(feature = "claim-integration")]
-    #[tool(
-        description = "Record a supersession of an old claim by a new claim. Creates a SupersessionReceipt with rationale.",
-        annotations(idempotent_hint = true)
-    )]
-    fn sm_supersede_claim(
-        &self,
-        Parameters(SupersedeClaimParams {
-            old_claim_id,
-            new_claim_id,
-            rationale,
-        }): Parameters<SupersedeClaimParams>,
-    ) -> Result<String, ErrorData> {
-        use claim_ledger::SupersessionReceipt;
-        let receipt = SupersessionReceipt::new(&old_claim_id, &new_claim_id, &rationale);
-        json_to_string(&serde_json::json!({
-            "ok": true,
-            "supersession_receipt_id": receipt.supersession_receipt_id,
-            "superseded_ref": receipt.superseded_ref,
-            "superseding_ref": receipt.superseding_ref,
-            "rationale": receipt.rationale,
-            "recorded_time": receipt.recorded_time.to_rfc3339(),
-        }))
-    }
-
     // ─── Import tools (GAP #11) ─────────────────────────────────────
 
     #[tool(
@@ -3981,7 +3221,10 @@ impl SemanticMemoryServer {
     ) -> Result<String, ErrorData> {
         let envelope: semantic_memory::projection_import::ImportEnvelope =
             serde_json::from_str(&envelope_json).map_err(|e| {
-                ErrorData::invalid_params(format!("Failed to parse envelope JSON: {e}"), None)
+                ErrorData::invalid_params(
+                    format!("Failed to parse envelope JSON: {e}"),
+                    None,
+                )
             })?;
         envelope.validate().map_err(|e| {
             ErrorData::invalid_params(format!("Envelope validation failed: {e}"), None)

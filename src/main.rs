@@ -80,20 +80,10 @@ struct Cli {
     #[arg(long)]
     turbo_quant_projections: Option<usize>,
 
-    /// Tool profile: lean (33 tools, default), standard (48 tools), full (61 tools).
+    /// Tool profile: lean (33 tools, default), standard (39 tools), full (48 tools).
     /// Lean hides admin/audit/bitemporal/import tools for better agent efficiency.
     #[arg(long, default_value = "lean")]
     tool_profile: String,
-
-    /// LLM model for optional AI features (rerank, entity extraction, community summary).
-    /// Default: granite4.1:3b. Set to empty to disable LLM-dependent features.
-    #[arg(long, default_value = "granite4.1:3b")]
-    llm_model: String,
-
-    /// LLM provider URL for optional AI features (Ollama-compatible API).
-    /// Default: http://localhost:11434. Set to empty to disable.
-    #[arg(long, default_value = "http://localhost:11434")]
-    llm_url: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -117,10 +107,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         EmbedderBackend::Ollama => {
-            let url = cli
-                .embedding_url
-                .as_deref()
-                .unwrap_or("http://localhost:11434");
+            let url = cli.embedding_url.as_deref().unwrap_or("http://localhost:11434");
             eprintln!(
                 "  embedding: {} @ {} ({}d) — Ollama GPU-accelerated",
                 cli.embedding_model.as_deref().unwrap_or("nomic-embed-text"),
@@ -168,7 +155,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     // Create the MCP server
-    let server = server::SemanticMemoryServer::new(bridge.clone(), &cli.tool_profile, cli.llm_url.clone(), cli.llm_model.clone());
+    let server = server::SemanticMemoryServer::new(bridge.clone(), &cli.tool_profile);
 
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.

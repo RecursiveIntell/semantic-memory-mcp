@@ -31,7 +31,7 @@ Your agent gets a persistent knowledge base that:
 
 - **Searches by meaning, not just keywords** — hybrid BM25 + vector
   similarity + Reciprocal Rank Fusion, with the full score breakdown
-  exposed via `sm_search` with `"explain": true`.
+  returned directly by `sm_search`.
 - **Tracks evidence confidence** — every item can carry algebraic
   provenance (semiring confidence scores with support counts).
 - **Detects and corrects contradictions** — syndrome detection and
@@ -58,10 +58,9 @@ Your agent gets a persistent knowledge base that:
 - **Detects communities** — Leiden-inspired community detection with
   within-community contradiction scanning and compression-aware
   recommendations.
-- **Self-edits memory** — `sm_supersede_fact` replaces stale facts
-  with corrected versions, creating durable supersession edges
-  so old facts remain auditable but no longer appear in search.
-  Handles both corrections and duplicate consolidation in one tool.
+- **Self-edits memory** — `sm_update_fact` modifies facts in-place
+  with re-embedding. `sm_consolidate_facts` merges duplicates with
+  automatic supersession edges.
 - **Learns from outcomes** — `sm_record_outcome` feeds good/bad/neutral
   signals to the RL routing policy, improving retrieval decisions over
   time.
@@ -80,40 +79,14 @@ Your agent gets a persistent knowledge base that:
 - **Routes adaptively** — `POST /search-routed` endpoint adjusts
   top_k and exactness profile based on query complexity class
   (A/B/C/D/E classification).
-- **Persists conversations** — `sm_create_session` and `sm_add_message`
-  capture agent conversations to the knowledge base. `sm_search_conversations`
-  retrieves past discussions by semantic similarity.
 - **Serves via HTTP** — `--http-port 1738` starts a warm HTTP server
-  alongside stdio MCP. 18 HTTP endpoints: /health, /search,
-  /search-routed, /query-orchestrated, /rerank, /stats, /add,
-  /add-edge, /delete-fact, /record-outcome, /verify-integrity,
-  /discord, /maintenance/check, /maintenance/vacuum,
-  /maintenance/reembed, /maintenance/reconcile,
-  /maintenance/compact-hnsw, /maintenance/auto-edge. Hooks,
-  benchmarks, and scripts query it directly without spawning new
-  processes (4.9x faster).
+  alongside stdio MCP. Hooks, benchmarks, and scripts query it
+  directly without spawning new processes (4.9x faster).
 - **Compresses result content** — `compress_results` in SearchConfig
   shortens search result content to first sentence + key terms,
   reducing token cost by 30-50%.
 - **Does 2-stage search** — Matryoshka multi-resolution: 64d truncated
   embeddings for fast candidate generation, 768d exact rerank.
-- **Auto-creates graph edges** — `POST /maintenance/auto-edge` scans
-  all facts across namespaces and creates entity edges between related
-  items. Quality filtering with 300+ stopwords, only proper nouns,
-  camelCase, and 5+ character words. Skips social media namespaces.
-  Supports rebuild mode (invalidates old edges first). Runs
-  automatically via cron (daily 4am) and primer hook (session start).
-- **Hard-deletes facts** — `POST /delete-fact` removes a single fact
-  and its FTS/vector entries by ID. Irreversible — prefer
-  `sm_supersede_fact` for corrections. Useful for KB hygiene and
-  removing junk facts.
-- **Adds edges via HTTP** — `POST /add-edge` creates a typed graph edge
-  between two nodes via the HTTP server. Same semantics as the
-  `sm_add_graph_edge` MCP tool but accessible from scripts and hooks.
-- **Enriches discord results** — `/discord` and `/search-routed` now
-  return fact content and namespace for graph neighbors via `get_fact`
-  enrichment. Previously discord results only had IDs — now you get
-  the full content of each second-order result.
 
 The combination of hybrid retrieval, provenance-weighted belief
 propagation, typed graph edges, and autonomous lifecycle management
@@ -133,44 +106,10 @@ automatically. No need to clone any repos.
 
 ### Option 2: Build from source
 
-The MCP server depends on [semantic-memory](https://github.com/RecursiveIntell/semantic-memory),
-which in turn depends on several crates from the same stack. All of
-them are published on crates.io, so `cargo build` from the standalone
-repo will resolve them from the registry.
-
-```bash
-git clone https://github.com/RecursiveIntell/semantic-memory-mcp.git
-cd semantic-memory-mcp
-cargo build --release
-# Binary: target/release/semantic-memory-mcp
-```
-
-If you prefer to build the full stack from source (all repos
-cloned as siblings), see the [dependency table](#dependencies)
-below for the complete list.
-
-### Dependencies
-
-The MCP server depends on one crate: `semantic-memory`. That crate
-in turn depends on several stack crates. All are on both crates.io
-and GitHub:
-
-| Crate | crates.io | GitHub | Purpose |
-|-------|-----------|--------|---------|
-|| [semantic-memory](https://github.com/RecursiveIntell/semantic-memory) | [0.5.8](https://crates.io/crates/semantic-memory) | [GitHub](https://github.com/RecursiveIntell/semantic-memory) | Core search engine, storage, graph, reasoning |
-| [stack-ids](https://github.com/RecursiveIntell/stack-ids) | [0.1.1](https://crates.io/crates/stack-ids) | [GitHub](https://github.com/RecursiveIntell/stack-ids) | Typed IDs, scopes, trace context, BLAKE3 digests |
-| [bitemporal-runtime](https://github.com/RecursiveIntell/bitemporal-runtime) | [0.1.0](https://crates.io/crates/bitemporal-runtime) | [GitHub](https://github.com/RecursiveIntell/bitemporal-runtime) | Bitemporal truth (valid_time / recorded_time) |
-| [boundary-compiler](https://github.com/RecursiveIntell/boundary-compiler) | [0.1.0](https://crates.io/crates/boundary-compiler) | [GitHub](https://github.com/RecursiveIntell/boundary-compiler) | RFC 8785 JSON Canonicalization (JCS) |
-| [forge-memory-bridge](https://github.com/RecursiveIntell/forge-memory-bridge) | [0.1.1](https://crates.io/crates/forge-memory-bridge) | [GitHub](https://github.com/RecursiveIntell/forge-memory-bridge) | Projection import transforms |
-
-All of these are published on crates.io. If you install via
-`cargo install semantic-memory-mcp`, cargo resolves them
-automatically — you do not need to clone anything.
-
-### Building the full stack from source
-
-If you want to modify the underlying library alongside the MCP
-server, clone all repos as siblings:
+The source checkout is meant for full-stack development with sibling
+path dependencies. Clone `semantic-memory-mcp` alongside
+`semantic-memory` and the supporting RecursiveIntell crates, then build
+from the MCP repo.
 
 ```bash
 mkdir semantic-memory-stack && cd semantic-memory-stack
@@ -182,18 +121,40 @@ git clone https://github.com/RecursiveIntell/bitemporal-runtime.git
 git clone https://github.com/RecursiveIntell/boundary-compiler.git
 git clone https://github.com/RecursiveIntell/forge-memory-bridge.git
 
-# The path deps in semantic-memory/Cargo.toml use ../stack-ids, ../bitemporal-runtime, etc.
-# With all repos cloned as siblings, these paths resolve correctly.
-
 cd semantic-memory-mcp
 cargo build --release
+# Binary: target/release/semantic-memory-mcp
 ```
 
-The `semantic-memory/Cargo.toml` has `path = "../stack-ids"` (and
-similar) with version requirements alongside. Cargo prefers the
-path dep when it exists, falls back to crates.io when it doesn't.
-So you can clone just `semantic-memory-mcp` for a standalone build,
-or clone all siblings for full-stack development.
+For normal users, `cargo install semantic-memory-mcp` is simpler because
+it resolves published registry crates automatically.
+
+### Dependencies
+
+The MCP server depends on one crate: `semantic-memory`. That crate
+in turn depends on several stack crates. All are on both crates.io
+and GitHub:
+
+| Crate | crates.io | GitHub | Purpose |
+|-------|-----------|--------|---------|
+| [semantic-memory](https://github.com/RecursiveIntell/semantic-memory) | [0.5.8](https://crates.io/crates/semantic-memory) | [GitHub](https://github.com/RecursiveIntell/semantic-memory) | Core search engine, storage, graph, reasoning |
+| [stack-ids](https://github.com/RecursiveIntell/stack-ids) | [0.1.1](https://crates.io/crates/stack-ids) | [GitHub](https://github.com/RecursiveIntell/stack-ids) | Typed IDs, scopes, trace context, BLAKE3 digests |
+| [bitemporal-runtime](https://github.com/RecursiveIntell/bitemporal-runtime) | [0.1.0](https://crates.io/crates/bitemporal-runtime) | [GitHub](https://github.com/RecursiveIntell/bitemporal-runtime) | Bitemporal truth (valid_time / recorded_time) |
+| [boundary-compiler](https://github.com/RecursiveIntell/boundary-compiler) | [0.1.0](https://crates.io/crates/boundary-compiler) | [GitHub](https://github.com/RecursiveIntell/boundary-compiler) | RFC 8785 JSON Canonicalization (JCS) |
+| [forge-memory-bridge](https://github.com/RecursiveIntell/forge-memory-bridge) | [0.1.1](https://crates.io/crates/forge-memory-bridge) | [GitHub](https://github.com/RecursiveIntell/forge-memory-bridge) | Projection import transforms |
+
+All of these are published on crates.io. If you install via
+`cargo install semantic-memory-mcp`, cargo resolves registry versions
+automatically — you do not need to clone anything. A source checkout
+uses sibling `path` dependencies when they are present, which is the
+recommended layout for full-stack development.
+
+### Building the full stack from source
+
+The `semantic-memory-mcp/Cargo.toml` and `semantic-memory/Cargo.toml`
+use sibling `path` dependencies for active development. Keep the stack
+repos cloned side-by-side so those paths resolve. If you only want to
+run the published server, prefer `cargo install semantic-memory-mcp`.
 
 ## Prerequisites
 
@@ -343,54 +304,9 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes up to 62 MCP tools (full profile), 52 (standard), or 41
-(lean). Use `tools/list` as the source of truth for the available tool surface
-on your build.
-
-### Tool profiles
-
-| Profile | Tools | Description |
-|---------|-------|-------------|
-| `lean` (default) | 33 | Daily-use tools: search, add, graph, claims. No admin, no heavy graph operations. |
-| `standard` | 48 | + bitemporal query, topology, factor graph, decoder, lifecycle, conversation tools. No import. |
-| `full` | 61 | All tools including import, ledger verification, export bundle, orchestration. |
-
-Pass `--tool-profile lean|standard|full` on the command line.
-
-### Knowledge Runtime tools (feature: `orchestration`)
-
-These tools provide intent classification, multi-leg route planning,
-provenance-aware result merge, and scope-aware entity resolution via
-`knowledge-runtime`.
-
-| Tool | Description |
-|------|-------------|
-| `sm_classify_query` | Classify query intent: semantic, entity, temporal, or mixed. |
-| `sm_plan_query` | Plan multi-leg retrieval routes for a query. |
-| `sm_query_orchestrated` | Full pipeline: classify -> plan -> execute -> merge with trace. |
-| `sm_query_temporal` | Bitemporal query with as-of-date filtering. |
-| `sm_entity_lookup` | Scope-aware entity resolution with fallback. |
-| `sm_projection_health` | Projection lifecycle health and staleness. |
-
-HTTP endpoint: `POST /query-orchestrated` — same as `sm_query_orchestrated`
-but accessible via HTTP for non-MCP clients.
-
-### Claim-Ledger tools (feature: `claim-integration`)
-
-| Tool | Description |
-|------|-------------|
-| `sm_create_claim` | Create a typed claim from a fact. |
-| `sm_add_evidence` | Add evidence to a claim. |
-| `sm_judge_support` | Judge support state: supported, unsupported, contested. |
-| `sm_verify_claim` | Verify a claim against risk class requirements. |
-| `sm_add_support_admission` | Admit support via operator, fixture, or external receipt. |
-| `sm_record_contradiction` | Record a contradiction between two claims. |
-| `sm_resolve_contradiction` | Resolve a recorded contradiction. |
-| `sm_supersede_claim` | Supersede an old claim with a new one. |
-| `sm_proof_debt_status` | Check proof-debt budget status and gate evaluation. |
-| `sm_evaluate_proof_debt_gate` | Evaluate proof-debt gate for a scope. |
-| `sm_verify_ledger` | Verify hash-chained ledger integrity. |
-| `sm_export_claim_bundle` | Export claims + evidence as a bundle with receipt. |
+The server exposes 33 MCP tools in the default `lean` profile, 39 in
+`standard`, and 48 in `full`. Use `tools/list` as the source of
+truth for the available tool surface on your build.
 
 ### Core tools (always available)
 
@@ -413,11 +329,13 @@ Returns ranked results with content, scores, and stable result IDs
 (`result_id` field) for downstream tool chaining (e.g., passing to
 `sm_graph_path` or `sm_set_provenance`).
 
-#### sm_search (explain mode)
+#### Search scoring
 
-Pass `"explain": true` to `sm_search` for the full per-signal score breakdown:
-BM25 score, vector score, recency score, RRF score, weights, and
-contribution percentages. Useful for debugging retrieval quality.
+`sm_search` returns the score fields needed to debug ranking: BM25,
+vector, recency, RRF, weights, and contribution percentages where the
+underlying store provides them. Superseded-result filtering is applied
+unless the query explicitly asks for stale, old, historical, or
+superseded facts.
 
 #### sm_add_fact
 
@@ -550,6 +468,17 @@ never deleted, only marked invalidated with a reason.
 ```
 
 ### Advanced tools (full feature)
+
+#### sm_route_query
+
+Profile a query and get an adaptive routing decision. Determines
+which retrieval stages (BM25, vector, rerank, graph, decoder,
+discord) should be activated for this query. Useful for
+understanding why certain stages fire or don't.
+
+```json
+{ "query": "what changed between v0.4 and v0.5" }
+```
 
 #### sm_search_with_routing
 
@@ -701,7 +630,7 @@ sm_discord_search(["fact:abc123-...", "fact:def456-..."])
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | yes | All features — the full 38-tool surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
+| `full` | yes | All features — the full 48-tool surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
 | `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
 | `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
 
@@ -797,362 +726,9 @@ stack, all published on crates.io:
   reported, but the decoder does not yet re-rank search results in the
   live search path. The factor graph analysis runs independently when
   the decoder stage is planned. This is a known gap, not a bug.
-- 
-
 - All state is local. There is no sync, no federation, no network
   calls beyond the one-time HuggingFace model download (cached after).
   This is a feature, not a limitation — local-first is the design goal.
-
-## Tutorials
-
-### Tutorial 1: Building a personal knowledge base from scratch
-
-Start the server, add facts, search them, and build graph connections.
-
-```bash
-# 1. Start the server (warm HTTP + stdio MCP)
-semantic-memory-mcp --memory-dir ~/kb --http-port 1738 &
-
-# 2. Add facts via HTTP
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Rust 1.75 stabilized async fn in traits","namespace":"rust","source":"https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html"}'
-
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Tokio is the most popular async runtime for Rust","namespace":"rust"}'
-
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"axum is built on top of Tokio and provides an ergonomic web framework","namespace":"rust"}'
-
-# 3. Search by meaning
-curl -s -X POST http://127.0.0.1:1738/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"which async frameworks use tokio","top_k":3}' | jq '.results[].content'
-
-# 4. Link related facts with graph edges
-curl -s -X POST http://127.0.0.1:1738/add-edge \
-  -H "Content-Type: application/json" \
-  -d '{"source":"fact:<tokio-id>","target":"fact:<axum-id>","edge_type":"entity","relation":"built_on_top_of"}'
-
-# 5. Find the path between two facts
-curl -s -X POST http://127.0.0.1:1738/discord \
-  -H "Content-Type: application/json" \
-  -d '{"direct_result_ids":["fact:<axum-id>"]}' | jq '.results[].content'
-```
-
-### Tutorial 2: Using the MCP server with an AI agent
-
-Configure your agent to use semantic-memory as a tool provider.
-
-**Hermes Agent** (`~/.hermes/config.yaml`):
-```yaml
-mcp_servers:
-  semantic_memory:
-    command: "semantic-memory-mcp"
-    args: ["--memory-dir", "/home/user/.hermes/semantic-memory", "--tool-profile", "lean", "--http-port", "1738"]
-```
-
-Your agent immediately gains 33 tools: `sm_search`, `sm_add_fact`, `sm_search_with_routing`,
-`sm_get_fact`, `sm_list_facts`, `sm_graph_path`, `sm_supersede_fact`, and more.
-
-Example prompt: "Search my knowledge base for everything about Rust async runtimes,
-then summarize what we've captured."
-
-The agent calls `sm_search(query="Rust async runtimes")`, gets ranked results with content,
-and synthesizes an answer from the returned facts.
-
-### Tutorial 3: Knowledge graph exploration
-
-Build a graph of connected knowledge and navigate it.
-
-```bash
-# Add facts with entity extraction (auto-creates entity edges)
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"Claude Code is an AI coding agent by Anthropic that integrates with semantic-memory","namespace":"tools","extract_entities":true}'
-
-# The server auto-creates edges like: fact → entity:Anthropic, fact → entity:semantic-memory
-
-# Find what's connected to semantic-memory
-curl -s -X POST http://127.0.0.1:1738/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"semantic-memory integrations","top_k":5}' | jq '.results[] | {content, result_id}'
-
-# Get the neighborhood of a result (second-order retrieval)
-curl -s -X POST http://127.0.0.1:1738/discord \
-  -H "Content-Type: application/json" \
-  -d '{"direct_result_ids":["result:<id-from-search>"]}' | jq '.results[] | .content'
-```
-
-### Tutorial 4: Contradiction detection and correction
-
-Detect when two facts disagree and resolve the conflict.
-
-```bash
-# Add two conflicting facts
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"semantic-memory has 61 tools","namespace":"internal"}'
-
-curl -s -X POST http://127.0.0.1:1738/add \
-  -H "Content-Type: application/json" \
-  -d '{"content":"semantic-memory has 61 tools in the full profile","namespace":"internal"}'
-
-# Detect contradictions (works via MCP tool sm_detect_contradictions)
-# The agent can call: sm_detect_contradictions(query="semantic-memory tool count")
-# Returns: contradiction detected between fact:X and fact:Y (numeric disagreement: 62 vs 61)
-
-# Fix by superseding the stale fact
-# sm_supersede_fact(old_fact_id="fact:<stale-id>", content="semantic-memory has 61 tools", reason="audited 2026-06-26")
-```
-
-## Agent Integrations
-
-[![Agent Integration](docs/agent-integration.svg)](docs/agent-integration.svg)
-
-### Hermes Agent (full native support)
-
-Hermes has first-class support via the `semantic-memory-claude-kit` plugin (v0.6.0).
-Install from the Claude Code marketplace or manually:
-
-```bash
-# The plugin includes:
-# - 3 skills: memory-capture, memory-curator, memory-maintenance
-# - 2 agents: memory-keeper, memory-indexer
-# - 4 hooks: SessionStart recall, PreCompact capture, PostToolUse auto-edge, PostLLMCall conversation capture
-# - Slash commands: /memory-setup, /memory-ingest, /memories
-hermes skills install semantic-memory-claude-kit
-```
-
-After installation, Hermes automatically:
-- Recalls relevant facts at session start (project-scoped, git-root aware)
-- Nudges to persist durable facts before context compaction
-- Captures conversations to the knowledge base
-- Auto-creates entity graph edges after fact writes
-
-### Claude Code / Claude Desktop
-
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "/home/user/kb", "--tool-profile", "standard"]
-    }
-  }
-}
-```
-
-Claude gains 48 tools. Best practices:
-- Use `sm_search` for general queries, `sm_search_with_routing` for complex ones
-- Use `sm_add_fact` to persist Claude's analysis
-- Use `sm_supersede_fact` when correcting previous analysis
-- Use `sm_graph_path` to trace how facts relate
-
-### Codex CLI (OpenAI)
-
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "/home/user/kb", "--tool-profile", "lean"]
-    }
-  }
-}
-```
-
-33 tools is ideal for Codex — keeps tool selection overhead low while providing
-the full core surface: search, add, graph, claims.
-
-### Cursor / Windsurf
-
-Add to Settings → MCP:
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "/home/user/kb", "--tool-profile", "lean"]
-    }
-  }
-}
-```
-
-### Programmatic usage (HTTP API)
-
-Non-MCP clients can use the HTTP API directly. 18 endpoints available:
-
-```python
-import requests
-
-BASE = "http://127.0.0.1:1738"
-
-# Search
-r = requests.post(f"{BASE}/search", json={"query": "Rust async", "top_k": 5})
-facts = r.json()["results"]
-
-# Add fact
-r = requests.post(f"{BASE}/add", json={
-    "content": "Learned from user: prefers terse CLI output",
-    "namespace": "preferences"
-})
-
-# Orchestrated query (classify → plan → execute → merge)
-r = requests.post(f"{BASE}/query-orchestrated", json={
-    "query": "what changed in the project last week",
-    "top_k": 10,
-    "trace": True
-})
-print(r.json()["trace"])  # See classification, route plan, merged results
-```
-
-## Benchmarks
-
-All benchmarks run on semantic-memory v0.5.8 with the Candle embedder (nomic-embed-text-v1.5,
-768d) on a single CPU core (AMD Ryzen, Linux 6.x).
-
-### Search performance
-
-| Operation | cold (ms) | warm (ms) | Notes |
-|-----------|-----------|-----------|-------|
-| `sm_search` (top_k=5, 1K facts) | 48 | 12 | Candle embedding + BM25 + RRF |
-| `sm_search` (top_k=5, 7K facts) | 62 | 18 | Scales sub-linearly with corpus size |
-| `sm_search_with_routing` (7K facts) | 85 | 25 | Adds routing profile + optional decoder/graph |
-| `sm_search_as_of` (7K facts) | 95 | 28 | Bitemporal filter adds ~10ms |
-| `sm_query_orchestrated` (7K facts) | 120 | 35 | Full classify→plan→execute→merge pipeline |
-
-### Write performance
-
-| Operation | time (ms) | Notes |
-|-----------|-----------|-------|
-| `sm_add_fact` | 35 | Embedding dominates (Candle CPU, 768d) |
-| `sm_add_fact` (with entity extraction) | 850 | LLM call via Ollama for entity extraction |
-| `sm_add_graph_edge` | 3 | SQLite INSERT, no embedding |
-| `sm_supersede_fact` | 42 | Adds replacement fact + creates supersession edge |
-| `sm_ingest_document` (5K words) | 180 | Auto-chunking, 8-12 chunks embedded |
-
-### HTTP endpoint latency (warm server)
-
-| Endpoint | p50 (ms) | p99 (ms) |
-|----------|----------|----------|
-| `/health` | 0.5 | 1.2 |
-| `/stats` | 1.0 | 2.5 |
-| `/search` | 18 | 45 |
-| `/add` | 35 | 80 |
-| `/discord` | 8 | 22 |
-| `/query-orchestrated` | 35 | 90 |
-| `/maintenance/auto-edge` | 250 | 1800 |
-
-The warm HTTP server eliminates cold-start overhead: hooks and scripts query the
-same embedder instance instead of spawning a new process per request (4.9x faster
-than cold-spawning).
-
-### Storage efficiency
-
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Per-fact overhead | ~380 bytes | SQLite row + FTS5 index entry |
-| Vector index (usearch, 7K facts) | 21 MB | HNSW graph + manifest |
-| Total DB (7K facts, 31K edges) | 246 MB | Includes chunks, documents, sessions |
-| Embedding dimensions | 768 | nomic-embed-text-v1.5 |
-| FTS5 index size | ~12% of total DB | Highly efficient for text search |
-
-## Failure-case analysis
-
-### What the system handles correctly
-
-| Scenario | Behavior |
-|----------|----------|
-| Corrupt SQLite database | `sm_vacuum` + `sm_reconcile` repair most issues. `sm_reembed_all` rebuilds vector index from facts. |
-| Missing embeddings | Integrity check (`POST /verify-integrity`) detects facts without vector entries. Re-embed on demand. |
-| Duplicate facts | `sm_supersede_fact` merges duplicates with a supersession edge. Search auto-filters superseded facts. |
-| Contradictory facts | `sm_detect_contradictions` finds numeric, negation, and value disagreements. `sm_supersede_fact` resolves. |
-| Stale facts (old dates) | Temporal decay weights in search scoring. Gap detector flags facts with dates >1 year old. |
-| Embedding model unavailable | Falls back to `mock` embedder (deterministic hash-based). Search still works via BM25-only mode. |
-| usearch index corruption | `sm_reembed_all` rebuilds the HNSW index from scratch. Takes ~13 minutes for 7K facts. |
-| Concurrent writes | SQLite WAL mode serializes writes. No deadlocks. Write throughput limited to ~25 facts/sec. |
-| Large result sets (>100 items) | `compress_results` option reduces content to first sentence + key terms, saving 30-50% tokens. |
-
-### Known limitations and failure modes
-
-| Scenario | What happens | Mitigation |
-|----------|-------------|------------|
-| 7K+ facts with full tool profile | Agent sees 61 tools — selection overhead increases | Use `--tool-profile lean` (33 tools) for daily use |
-| Embedding model download fails | Server starts but search is BM25-only | Pre-download model: set `HF_HOME` and warm cache |
-| Ollama unreachable (ollama embedder) | Falls back to mock embeddings | Use Candle embedder (default) — no external dependency |
-| HTTP server port conflict | Server exits with error | Change `--http-port` or disable HTTP with port 0 |
-| usearch HNSW build timeout | Large corpus rebuilds can take minutes | Run `--maintenance-interval` to schedule off-peak |
-| Factor graph on >100 connected nodes | Belief propagation may not converge within 50 iterations | Increase `max_iterations` or reduce node set |
-| Entity extraction on short facts | Ollama LLM call returns empty entity list | No edges created — fact still added successfully |
-| Disk full during write | SQLite returns SQLITE_FULL | Free space, run `sm_vacuum` to reclaim |
-
-## Minimal vs Full Experience
-
-[![Tool Profiles](docs/tool-profiles.svg)](docs/tool-profiles.svg)
-
-### Minimal (lean profile — 33 tools)
-
-Start here. This is what you get with the default `--tool-profile lean`:
-
-```
-semantic-memory-mcp --memory-dir ~/kb --tool-profile lean --http-port 1738
-```
-
-**What you can do:**
-- Add facts (`sm_add_fact`) and search them (`sm_search`, `sm_search_with_routing`)
-- Build a knowledge graph (`sm_add_graph_edge`, `sm_graph_path`, `sm_discord_search`)
-- Manage facts (`sm_get_fact`, `sm_list_facts`, `sm_list_namespaces`, `sm_supersede_fact`)
-- Work with claims (`sm_create_claim`, `sm_add_evidence`, `sm_judge_support`, `sm_verify_claim`)
-- Check system health (`sm_stats`, `sm_detect_contradictions`)
-- Ingest documents (`sm_ingest_document`)
-
-**What's hidden (and why):**
-- Maintenance tools (`sm_vacuum`, `sm_reconcile`, `sm_reembed_all`) — rarely needed, noisy in tool list
-- Audit tools (`sm_get_search_receipt`, `sm_replay_search_receipt`) — debugging only
-- Bitemporal query tools — specialized, adds 6 tools
-- Import tools — batch operations, not daily use
-- Heavy graph operations (`sm_topology`, `sm_factor_graph`, `sm_decoder_analyze`, `sm_run_lifecycle`) — niche
-- Conversation tools (`sm_create_session`, `sm_add_message`, `sm_list_sessions`) — handled by hooks, not needed in tool list
-
-**Result:** Your agent sees 33 focused tools instead of 61. Tool selection overhead drops by ~46%.
-The recall hook handles routing classification, so the routing introspection tools aren't needed.
-
-### Standard (48 tools)
-
-For power users who want graph analysis and lifecycle management:
-
-```
-semantic-memory-mcp --memory-dir ~/kb --tool-profile standard --http-port 1738
-```
-
-Adds: `sm_topology`, `sm_factor_graph`, `sm_decoder_analyze`, `sm_run_lifecycle`,
-bitemporal query tools (`sm_query_claim_versions`, `sm_query_relation_versions`,
-`sm_query_episodes`, `sm_query_entity_aliases`, `sm_query_evidence_refs`),
-conversation tools, proof-debt tools, and contradiction resolution.
-
-### Full (61 tools)
-
-Everything. Import, export, ledger verification, orchestration query, projection health.
-For debugging, development, and batch operations.
-
-```
-semantic-memory-mcp --memory-dir ~/kb --tool-profile full --http-port 1738
-```
-
-### Which profile should you use?
-
-| Profile | Best for | Tools | Agent overhead |
-|---------|----------|-------|---------------|
-| lean | Daily agent work, Claude Code, Codex CLI | 33 | Low — fast tool selection |
-| standard | Power users, graph analysis, debugging | 48 | Medium — occasional graph ops |
-| full | Development, batch ops, system auditing | 61 | High — use for maintenance sessions |
-
-**Recommendation:** Start with `lean`. Upgrade to `standard` when you need graph analysis.
-Use `full` for development and maintenance sessions. The profile is per-session — you can
-run different profiles against the same memory store.
 
 ## License
 
@@ -1161,7 +737,7 @@ Apache-2.0
 ## Links
 
 - [semantic-memory crate](https://crates.io/crates/semantic-memory)
-- [semantic-memory-mcp crate](https://crates.io/crates/semantic-memory-mcp)
-- [GitHub repository](https://github.com/RecursiveIntell/semantic-memory-mcp)
+- [GitHub repository](https://github.com/RecursiveIntell/Libraries/tree/main/semantic-memory-mcp)
 - [MCP Protocol](https://modelcontextprotocol.io/)
 - [rmcp Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)
+- [Ollama](https://ollama.ai/)

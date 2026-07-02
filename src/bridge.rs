@@ -153,8 +153,7 @@ impl MemoryBridge {
         {
             if config.turbo_quant_enabled {
                 use semantic_memory::DerivedVectorBackendPolicy;
-                search_config.derived_vector_backend =
-                    DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
+                search_config.derived_vector_backend = DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
                 if let Some(bits) = config.turbo_quant_bits {
                     search_config.turbo_quant_bits = bits;
                 }

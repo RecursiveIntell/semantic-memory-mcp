@@ -4,8 +4,8 @@
 //! the mock embedder (no model download, no Ollama, no network).
 //! Each test gets a fresh temp directory so there is no cross-test state.
 
-use semantic_memory::GraphEdgeType;
 use semantic_memory_mcp::bridge::{BridgeConfig, EmbedderBackend, MemoryBridge};
+use semantic_memory::GraphEdgeType;
 
 /// Open a MemoryBridge with the mock embedder in a temp directory.
 fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
@@ -160,8 +160,12 @@ mod lifecycle_tests {
         let results = rt
             .block_on(store.search("turbo-quant downloads", Some(10), None, None))
             .expect("search should succeed");
-        let has_old = results.iter().any(|r| r.content.contains("1000 downloads"));
-        let has_new = results.iter().any(|r| r.content.contains("4000 downloads"));
+        let _has_old = results
+            .iter()
+            .any(|r| r.content.contains("1000 downloads"));
+        let has_new = results
+            .iter()
+            .any(|r| r.content.contains("4000 downloads"));
         assert!(has_new, "new fact should appear in search");
         // Old fact may or may not be filtered depending on search filter logic,
         // but the edge should exist
@@ -232,7 +236,10 @@ mod lifecycle_tests {
         let edges = rt
             .block_on(store.list_graph_edges_for_node(&source))
             .expect("list_graph_edges should succeed");
-        assert!(!edges.is_empty(), "should have at least one edge from A");
+        assert!(
+            !edges.is_empty(),
+            "should have at least one edge from A"
+        );
         let found = edges.iter().any(|e| e.target == target);
         assert!(found, "should find the edge A->B");
     }
@@ -244,7 +251,9 @@ mod lifecycle_tests {
         add_fact(&bridge, "Fact for stats test.", "stats_ns");
         let store = &bridge.store;
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let stats = rt.block_on(store.stats()).expect("stats should succeed");
+        let stats = rt
+            .block_on(store.stats())
+            .expect("stats should succeed");
         assert!(
             stats.total_facts >= 1,
             "should have at least 1 fact, got: {}",
@@ -389,11 +398,7 @@ mod http_server_tests {
             "/add",
             r#"{"content": "Test fact for stats.", "namespace": "stats"}"#,
         );
-        assert!(
-            add_response.contains("200 OK"),
-            "add should succeed: {}",
-            add_body
-        );
+        assert!(add_response.contains("200 OK"), "add should succeed: {}", add_body);
 
         let (_, body) = http_post(port, "/stats", "{}");
         let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
