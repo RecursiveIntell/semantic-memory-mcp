@@ -48,7 +48,8 @@ search = [
     "semantic-memory/subtraction",
     "semantic-memory/compression-governor",
     "semantic-memory/routing",
-    "semantic-memory/integration",
+    "integration",
+    "subgraph-pruning",
     "semantic-memory/admin-ops",
     "semantic-memory/late-interaction",
     "semantic-memory/turbo-quant-codec",
@@ -58,6 +59,10 @@ search = [
     "llm-parser",
     "orchestration",
 ]
+# Local feature forwarding for cfg-gated integration reranking in server.rs.
+integration = ["semantic-memory/integration"]
+# Local feature forwarding for the sm_subgraph_prune implementation.
+subgraph-pruning = ["semantic-memory/subgraph-pruning"]
 # Local feature that forwards to semantic-memory's candle-embedder.
 # Used for cfg gates in bridge.rs.
 candle-embedder = ["semantic-memory/candle-embedder"]

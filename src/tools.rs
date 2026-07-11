@@ -48,6 +48,9 @@ pub struct SearchWitnessedParams {
     /// Retrieval stage selection. Defaults to the current hybrid behavior.
     #[serde(default)]
     pub retrieval_mode: Option<RetrievalModeParam>,
+    /// Replay input retention. Defaults to no_replay for privacy.
+    #[serde(default)]
+    pub replay_mode: Option<ReplayModeParam>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
@@ -56,6 +59,14 @@ pub enum RetrievalModeParam {
     Hybrid,
     FtsOnly,
     VectorOnly,
+}
+
+/// Opt-in retention policy for complete search replay.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayModeParam {
+    NoReplay,
+    StoreInputs,
 }
 
 /// Exact namespace/resource scope used by governed authority decisions.
@@ -215,6 +226,11 @@ pub struct DetectContradictionsParams {
     /// How many top results to scan (default 10)
     #[serde(default)]
     pub top_k: Option<u32>,
+    /// When true, record each detected contradiction pair to the claim-ledger
+    /// as a hash-chained ContradictionCandidate entry (requires the
+    /// `claim-integration` feature). Default false.
+    #[serde(default)]
+    pub record_to_ledger: Option<bool>,
 }
 
 /// Parameters for sm_search_with_routing
@@ -593,6 +609,68 @@ pub struct JudgeSupportParams {
     pub rationale: Option<String>,
 }
 
+/// Parameters for sm_compact_claim_ledger.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompactClaimLedgerParams {
+    /// Preview the verified compaction without writing. Defaults to true.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Compact only when the active tail exceeds this entry count (default 10,000).
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+    /// Compact only when the active tail exceeds this byte count (default 16 MiB).
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+    /// Minimum number of recent entries retained verbatim (default 256).
+    #[serde(default)]
+    pub retain_tail_entries: Option<usize>,
+    /// Number of prior verified generations/backups to retain (default 3).
+    #[serde(default)]
+    pub max_backups: Option<usize>,
+}
+
+/// Parameters for sm_search_proof_debt
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchProofDebtParams {
+    /// The search query string.
+    pub query: String,
+    /// Maximum number of results to return (default 5).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// Optional namespace filter (restrict search to these namespaces).
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+    /// Proof-debt budget in micros for the gate check (default 500_000, one full proof unit).
+    #[serde(default)]
+    pub budget_micros: Option<u64>,
+}
+
+/// Parameters for sm_benchmark_trust
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BenchmarkTrustParams {
+    /// Number of benchmark queries to run (default 10).
+    #[serde(default)]
+    pub query_count: Option<u32>,
+    /// Top-k for each search (default 5).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// Optional namespace filter.
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+}
+
+/// Parameters for sm_subgraph_prune
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubgraphPruneParams {
+    /// When true, only identify subgraphs and report priority without pruning.
+    /// Default: true (dry run).
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Maximum number of subgraphs to prune (default: 5).
+    #[serde(default)]
+    pub max_prune: Option<u32>,
+}
+
 // ─── Bitemporal search ─────────────────────────────────────────────────
 
 /// Parameters for sm_search_as_of
@@ -648,6 +726,13 @@ pub struct ReplaySearchReceiptParams {
     /// Optional namespace filter for replay.
     #[serde(default)]
     pub namespaces: Option<Vec<String>>,
+}
+
+/// Parameters for sm_replay_search using opt-in stored inputs.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReplayStoredSearchParams {
+    /// The receipt/request ID whose stored inputs should be replayed.
+    pub receipt_id: String,
 }
 
 // ─── Reconcile tool ───────────────────────────────────────────────────

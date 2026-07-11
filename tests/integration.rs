@@ -24,11 +24,12 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
 }
 
 #[test]
-fn autonomous_profiles_expose_only_witnessed_search() {
+fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
     for profile in ["lean", "standard"] {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(open_bridge(dir.path()), profile);
         assert!(server.exposes_tool("sm_search_witnessed"));
+        assert!(server.exposes_tool("sm_replay_search"));
         assert!(server.exposes_tool("sm_decide_assertion_authority"));
         assert!(server.exposes_tool("sm_decide_action_authority"));
         assert!(!server.exposes_tool("sm_search"));
@@ -37,6 +38,7 @@ fn autonomous_profiles_expose_only_witnessed_search() {
             vec![
                 "sm_decide_action_authority",
                 "sm_decide_assertion_authority",
+                "sm_replay_search",
                 "sm_search_witnessed",
             ]
         );
@@ -119,6 +121,7 @@ fn agent_profile_exposes_bounded_daily_memory_surface() {
             "sm_get_search_receipt",
             "sm_graph_path",
             "sm_list_namespaces",
+            "sm_replay_search",
             "sm_search_conversations",
             "sm_search_witnessed",
             "sm_set_provenance",

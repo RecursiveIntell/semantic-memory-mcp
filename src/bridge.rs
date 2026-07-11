@@ -43,8 +43,10 @@ impl std::str::FromStr for EmbedderBackend {
 #[derive(Clone)]
 pub struct MemoryBridge {
     pub store: MemoryStore,
+    pub memory_dir: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct BridgeConfig {
     /// MCP-005: renamed from db_path to memory_dir — this is a directory,
     /// not a SQLite file path. semantic-memory creates base_dir/memory.db
@@ -152,6 +154,7 @@ impl MemoryBridge {
             }
         }
 
+        let memory_dir = config.memory_dir.clone();
         let mem_config = MemoryConfig {
             base_dir: config.memory_dir,
             embedding: embedding_config,
@@ -161,7 +164,7 @@ impl MemoryBridge {
 
         let store = MemoryStore::open_with_embedder(mem_config, embedder)?;
 
-        Ok(Self { store })
+        Ok(Self { store, memory_dir })
     }
 
     /// Get the current tokio runtime handle.

@@ -12,20 +12,687 @@ use rmcp::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
 
 static WITNESS_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const ROUTING_POLICY_PERSIST_BATCH: usize = 10;
+
+#[derive(Default)]
+struct RoutingPolicyBatchState {
+    policy: Option<semantic_memory::rl_routing::RoutingPolicy>,
+    pending_outcomes: usize,
+}
 
 // Re-export the specific parameter types we use in tool signatures.
 use crate::tools::{
-    AddGraphEdgeParams, CommunityParams, FactorGraphParams, InvalidateGraphEdgeParams,
-    ListGraphEdgesParams, RecordOutcomeParams, TopologyParams,
+    AddGraphEdgeParams, BenchmarkTrustParams, CommunityParams, FactorGraphParams,
+    InvalidateGraphEdgeParams, ListGraphEdgesParams, RecordOutcomeParams, SearchProofDebtParams,
+    SubgraphPruneParams, TopologyParams,
 };
+
+/// Process-local index from semantic-memory facts to claim-ledger support
+/// judgments, consulted by search-time trust enrichment. Never a source of
+/// truth itself — the claim ledger is; this is a pure in-memory projection
+/// rebuilt from the ledger's hash-chained entries on every startup via
+/// `rebuild_from_ledger`, so there is nothing here to persist independently.
+#[cfg(feature = "claim-integration")]
+#[derive(Default)]
+struct ClaimTrustIndex {
+    enabled: bool,
+    fact_to_claim: HashMap<String, String>,
+    claim_support: HashMap<String, claim_ledger::SupportState>,
+    /// Reverse index from a claim's normalized content to its claim id, used
+    /// to auto-link newly added facts whose content matches an existing
+    /// claim without requiring an explicit sm_create_claim call.
+    content_to_claim: HashMap<String, String>,
+    /// Trigram → claim ids index over normalized claim content, used for
+    /// fuzzy (Jaccard-similarity) auto-linking when no exact match exists.
+    trigram_index: HashMap<String, Vec<String>>,
+    /// Sequence number of the last ledger entry folded into this index, so
+    /// `rebuild_from_ledger_incremental` only replays entries appended since
+    /// the last checkpoint instead of rescanning the whole ledger.
+    last_processed_sequence: u64,
+}
+
+#[cfg(feature = "claim-integration")]
+impl ClaimTrustIndex {
+    fn load_snapshot(&mut self, snapshot: &claim_ledger::LedgerSnapshot) {
+        self.fact_to_claim.clear();
+        self.claim_support.clear();
+        self.content_to_claim.clear();
+        self.trigram_index.clear();
+        for link in &snapshot.content_to_claim_links {
+            self.register_claim(link.claim_id.clone(), link.normalized_claim.clone());
+        }
+        for link in &snapshot.fact_to_claim_links {
+            self.link_fact(link.fact_id.clone(), link.claim_id.clone());
+        }
+        for support in &snapshot.claim_support {
+            self.record_judgment(support.claim_id.clone(), support.support_state);
+        }
+        self.last_processed_sequence = snapshot.last_compacted_sequence;
+        self.enabled = true;
+    }
+
+    fn disable(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Fold a single ledger entry into the index. The ledger is the source
+    /// of truth; this is the sole code path (used both at startup replay and
+    /// at write time) that projects `ClaimAdded`, `SupportJudgment`, and
+    /// `ContradictionCandidate` events into the process-local lookup cache.
+    fn apply_entry(&mut self, entry: &claim_ledger::LedgerEntry) {
+        use claim_ledger::{LedgerEvent, SupportState};
+        match &entry.event {
+            LedgerEvent::ClaimAdded {
+                claim_id,
+                source_id,
+                normalized_claim,
+                ..
+            } => {
+                if let Some(fact_id) = source_id.strip_prefix("semantic-memory:fact:") {
+                    self.link_fact(fact_id.to_string(), claim_id.clone());
+                }
+                self.register_claim(claim_id.clone(), normalized_claim.clone());
+            }
+            LedgerEvent::SupportJudgment {
+                claim_id,
+                support_state,
+                ..
+            } => {
+                self.record_judgment(claim_id.clone(), *support_state);
+            }
+            LedgerEvent::ContradictionCandidate { claim_refs, .. } => {
+                for claim_ref in claim_refs {
+                    self.record_judgment(claim_ref.clone(), SupportState::Contradicted);
+                }
+            }
+            _ => {}
+        }
+        self.last_processed_sequence = entry.sequence;
+    }
+
+    /// Rebuild (or catch up) the index from the claim ledger's entries,
+    /// replaying only entries with `sequence > last_processed_sequence`.
+    /// On a fresh index this processes the whole ledger once; called again
+    /// on an already-caught-up index it is O(new_entries).
+    fn rebuild_from_ledger_incremental(&mut self, entries: &[claim_ledger::LedgerEntry]) {
+        for entry in entries {
+            if entry.sequence > self.last_processed_sequence {
+                self.apply_entry(entry);
+            }
+        }
+    }
+
+    fn link_fact(&mut self, bare_fact_id: String, claim_id: String) {
+        self.fact_to_claim.insert(bare_fact_id, claim_id);
+    }
+
+    /// Record a claim's normalized content in the reverse and trigram
+    /// indexes so future facts with matching (or fuzzy-matching) content can
+    /// be auto-linked without an explicit sm_create_claim call.
+    fn register_claim(&mut self, claim_id: String, normalized_content: String) {
+        if normalized_content.is_empty() {
+            return;
+        }
+        for trigram in Self::trigrams(&normalized_content) {
+            self.trigram_index
+                .entry(trigram)
+                .or_default()
+                .push(claim_id.clone());
+        }
+        self.content_to_claim.insert(normalized_content, claim_id);
+    }
+
+    /// Character 3-grams of `text`, lowercased. Text shorter than 3 chars
+    /// yields the whole (lowercased) text as its only "trigram".
+    fn trigrams(text: &str) -> HashSet<String> {
+        let lower = text.to_lowercase();
+        let chars: Vec<char> = lower.chars().collect();
+        if chars.len() < 3 {
+            let mut set = HashSet::new();
+            if !lower.is_empty() {
+                set.insert(lower);
+            }
+            return set;
+        }
+        chars
+            .windows(3)
+            .map(|w| w.iter().collect::<String>())
+            .collect()
+    }
+
+    fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+        if a.is_empty() && b.is_empty() {
+            return 0.0;
+        }
+        let intersection = a.intersection(b).count();
+        let union = a.union(b).count();
+        if union == 0 {
+            0.0
+        } else {
+            intersection as f64 / union as f64
+        }
+    }
+
+    /// Best-effort: if `bare_fact_id` isn't already linked to a claim, look
+    /// for the best fuzzy (trigram-Jaccard) content match among known
+    /// claims, falling back to an exact normalized-text match. No-op if the
+    /// fact is already linked or no candidate reaches the similarity bar.
+    fn auto_link_content(&mut self, bare_fact_id: &str, content: &str) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        if self.fact_to_claim.contains_key(bare_fact_id) {
+            return None;
+        }
+        let normalized = claim_ledger::ids::normalize_text(content);
+        if normalized.is_empty() {
+            return None;
+        }
+
+        const SIMILARITY_THRESHOLD: f64 = 0.7;
+        let query_trigrams = Self::trigrams(&normalized);
+        let mut candidate_ids: HashSet<&String> = HashSet::new();
+        for trigram in &query_trigrams {
+            if let Some(ids) = self.trigram_index.get(trigram) {
+                candidate_ids.extend(ids.iter());
+            }
+        }
+
+        let mut best: Option<(String, f64)> = None;
+        for claim_id in &candidate_ids {
+            if let Some((existing_content, existing_claim_id)) = self
+                .content_to_claim
+                .iter()
+                .find(|(_, cid)| *cid == *claim_id)
+            {
+                let similarity = Self::jaccard(&query_trigrams, &Self::trigrams(existing_content));
+                if best.as_ref().map(|(_, s)| similarity > *s).unwrap_or(true) {
+                    best = Some((existing_claim_id.clone(), similarity));
+                }
+            }
+        }
+
+        let claim_id = match best {
+            Some((claim_id, similarity)) if similarity >= SIMILARITY_THRESHOLD => claim_id,
+            _ => self.content_to_claim.get(&normalized)?.clone(),
+        };
+        self.link_fact(bare_fact_id.to_string(), claim_id.clone());
+        Some(claim_id)
+    }
+
+    fn record_judgment(&mut self, claim_id: String, state: claim_ledger::SupportState) {
+        self.claim_support.insert(claim_id, state);
+    }
+
+    fn trust_for_fact(&self, bare_fact_id: &str) -> String {
+        if !self.enabled {
+            return "trust_enrichment_disabled".to_string();
+        }
+        let Some(claim_id) = self.fact_to_claim.get(bare_fact_id) else {
+            return "persisted_unjudged".to_string();
+        };
+        let Some(state) = self.claim_support.get(claim_id) else {
+            return "persisted_unjudged".to_string();
+        };
+        support_state_label(*state).to_string()
+    }
+
+    /// The claim linked to this fact (if any) and its recorded support
+    /// judgment (if any judgment has been made yet). Distinguishes "no claim
+    /// at all" (no proof debt to speak of) from "claim exists but unjudged"
+    /// (real proof debt, `SupportState::Unknown`).
+    fn claim_and_state_for_fact(
+        &self,
+        bare_fact_id: &str,
+    ) -> Option<(String, Option<claim_ledger::SupportState>)> {
+        if !self.enabled {
+            return None;
+        }
+        let claim_id = self.fact_to_claim.get(bare_fact_id)?;
+        Some((claim_id.clone(), self.claim_support.get(claim_id).copied()))
+    }
+}
+
+/// Map a claim's support judgment to the proof-debt obligations it incurs.
+/// Supported/PartiallySupported claims carry no debt. Unjudged, heuristic, or
+/// unsupported claims lack a source basis. Contradicted claims carry that
+/// same missing-source-basis debt plus a missing-repro debt, so the real
+/// claim-ledger weights (not a hardcoded number) rank them strictly worse.
+#[cfg(feature = "claim-integration")]
+fn proof_debts_for_support_state(
+    state: claim_ledger::SupportState,
+) -> Vec<claim_ledger::ProofDebt> {
+    use claim_ledger::{ProofDebt, SupportState};
+    match state {
+        SupportState::Supported | SupportState::PartiallySupported => Vec::new(),
+        SupportState::Unknown | SupportState::HeuristicOnly | SupportState::Unsupported => {
+            vec![ProofDebt::MissingSourceBasis]
+        }
+        SupportState::Contradicted => vec![ProofDebt::MissingSourceBasis, ProofDebt::MissingRepro],
+    }
+}
+
+#[cfg(feature = "claim-integration")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ClaimLedgerManifest {
+    format_version: String,
+    generation: String,
+    snapshot_path: String,
+    tail_path: String,
+    receipt_path: String,
+}
+
+#[cfg(feature = "claim-integration")]
+struct ClaimLedgerCompactionConfig {
+    dry_run: bool,
+    max_entries: usize,
+    max_bytes: u64,
+    retain_tail_entries: usize,
+    max_backups: usize,
+}
+
+/// Hash-chained claim-ledger store. Before the first compaction `path` is the
+/// legacy JSONL file. Afterwards an atomically replaced manifest selects one
+/// verified snapshot/retained-tail generation; the snapshot is a checkpoint,
+/// never an independent source of truth.
+#[cfg(feature = "claim-integration")]
+struct ClaimLedgerStore {
+    entries: Vec<claim_ledger::LedgerEntry>,
+    path: std::path::PathBuf,
+    legacy_path: std::path::PathBuf,
+    snapshot: Option<claim_ledger::LedgerSnapshot>,
+    receipt: Option<claim_ledger::CompactionReceipt>,
+    trust_enabled: bool,
+}
+
+#[cfg(feature = "claim-integration")]
+impl ClaimLedgerStore {
+    fn open(path: std::path::PathBuf) -> Self {
+        match Self::open_verified(&path) {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::error!(error = %error, "CRITICAL: claim ledger verification failed; trust enrichment disabled");
+                Self {
+                    entries: Vec::new(),
+                    path: path.clone(),
+                    legacy_path: path,
+                    snapshot: None,
+                    receipt: None,
+                    trust_enabled: false,
+                }
+            }
+        }
+    }
+
+    fn open_verified(legacy_path: &std::path::Path) -> Result<Self, String> {
+        let memory_dir = legacy_path
+            .parent()
+            .ok_or("claim ledger has no parent directory")?;
+        let manifest_path = memory_dir.join("claim_ledger.active_compaction.json");
+        if manifest_path.exists() {
+            let manifest: ClaimLedgerManifest = serde_json::from_slice(
+                &std::fs::read(&manifest_path)
+                    .map_err(|e| format!("failed to read compaction manifest: {e}"))?,
+            )
+            .map_err(|e| format!("invalid compaction manifest: {e}"))?;
+            if manifest.format_version != "claim-ledger.active-compaction.v1" {
+                return Err(format!(
+                    "unsupported compaction manifest format {}",
+                    manifest.format_version
+                ));
+            }
+            let snapshot_path = Self::resolve_relative(memory_dir, &manifest.snapshot_path)?;
+            let tail_path = Self::resolve_relative(memory_dir, &manifest.tail_path)?;
+            let receipt_path = Self::resolve_relative(memory_dir, &manifest.receipt_path)?;
+            let snapshot: claim_ledger::LedgerSnapshot = serde_json::from_slice(
+                &std::fs::read(&snapshot_path)
+                    .map_err(|e| format!("failed to read ledger snapshot: {e}"))?,
+            )
+            .map_err(|e| format!("invalid ledger snapshot: {e}"))?;
+            let receipt: claim_ledger::CompactionReceipt = serde_json::from_slice(
+                &std::fs::read(&receipt_path)
+                    .map_err(|e| format!("failed to read compaction receipt: {e}"))?,
+            )
+            .map_err(|e| format!("invalid compaction receipt: {e}"))?;
+            let tail_contents = std::fs::read_to_string(&tail_path)
+                .map_err(|e| format!("failed to read retained ledger tail: {e}"))?;
+            let entries = claim_ledger::parse_ledger_entries(&tail_contents)
+                .map_err(|e| format!("invalid retained ledger tail: {e}"))?;
+            let verification = claim_ledger::verify_compaction(&snapshot, &entries, &receipt)
+                .map_err(|e| e.to_string())?;
+            tracing::info!(
+                generation = %manifest.generation,
+                entries = verification.last_sequence,
+                "claim ledger snapshot and retained tail verified"
+            );
+            return Ok(Self {
+                entries,
+                path: tail_path,
+                legacy_path: legacy_path.to_path_buf(),
+                snapshot: Some(snapshot),
+                receipt: Some(receipt),
+                trust_enabled: true,
+            });
+        }
+
+        let contents = match std::fs::read_to_string(legacy_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(format!("failed to read claim ledger: {error}")),
+        };
+        let entries = claim_ledger::parse_ledger_entries(&contents)
+            .map_err(|e| format!("invalid claim ledger: {e}"))?;
+        let expected_head = match entries.last() {
+            None => claim_ledger::ExpectedLedgerHead::Empty,
+            Some(last) => claim_ledger::ExpectedLedgerHead::Entry {
+                sequence: last.sequence,
+                entry_digest: last.entry_digest.clone(),
+            },
+        };
+        let verification =
+            claim_ledger::verify_ledger(&entries, &expected_head).map_err(|e| e.to_string())?;
+        tracing::info!(
+            entries = verification.last_sequence,
+            "claim ledger verified"
+        );
+        Ok(Self {
+            entries,
+            path: legacy_path.to_path_buf(),
+            legacy_path: legacy_path.to_path_buf(),
+            snapshot: None,
+            receipt: None,
+            trust_enabled: true,
+        })
+    }
+
+    fn resolve_relative(
+        base: &std::path::Path,
+        relative: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        let path = std::path::Path::new(relative);
+        if path.is_absolute()
+            || path.components().any(|component| {
+                !matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(format!("unsafe path in compaction manifest: {relative}"));
+        }
+        Ok(base.join(path))
+    }
+
+    fn next_sequence(&self) -> u64 {
+        self.entries
+            .last()
+            .map(|entry| entry.sequence)
+            .or_else(|| {
+                self.snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.last_compacted_sequence)
+            })
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    fn last_digest(&self) -> Option<String> {
+        self.entries
+            .last()
+            .map(|entry| entry.entry_digest.clone())
+            .or_else(|| {
+                self.snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.last_compacted_entry_digest.clone())
+            })
+    }
+
+    /// Append a new entry to the in-memory chain and the backing file.
+    /// Returns the entry's digest on success.
+    fn append(&mut self, entry: claim_ledger::LedgerEntry) -> Result<String, String> {
+        if !self.trust_enabled {
+            return Err("claim ledger is disabled after verification failure".into());
+        }
+        if entry.sequence != self.next_sequence()
+            || entry.previous_entry_digest != self.last_digest()
+        {
+            return Err("claim ledger append does not continue the verified head".into());
+        }
+        let line = claim_ledger::serialize_entry(&entry).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|e| format!("failed to open claim ledger file: {e}"))?;
+        writeln!(file, "{line}").map_err(|e| format!("failed to write claim ledger entry: {e}"))?;
+        file.sync_data()
+            .map_err(|e| format!("failed to fsync claim ledger entry: {e}"))?;
+        let digest = entry.entry_digest.clone();
+        self.entries.push(entry);
+        Ok(digest)
+    }
+
+    fn compact(
+        &mut self,
+        config: ClaimLedgerCompactionConfig,
+    ) -> Result<serde_json::Value, String> {
+        if !self.trust_enabled {
+            return Err("claim ledger trust is disabled; refusing compaction".into());
+        }
+        let current_bytes = std::fs::metadata(&self.path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let threshold_exceeded =
+            self.entries.len() > config.max_entries || current_bytes > config.max_bytes;
+        if !threshold_exceeded {
+            return Ok(serde_json::json!({
+                "ok": true,
+                "dry_run": config.dry_run,
+                "compacted": false,
+                "reason": "threshold_not_exceeded",
+                "entries": self.entries.len(),
+                "bytes": current_bytes,
+                "max_entries": config.max_entries,
+                "max_bytes": config.max_bytes,
+            }));
+        }
+
+        let compacted = claim_ledger::compact_ledger_from_snapshot(
+            self.snapshot.as_ref(),
+            &self.entries,
+            &claim_ledger::CompactionPolicy {
+                retain_tail_entries: config.retain_tail_entries,
+                unprojectable_events: claim_ledger::UnprojectableEventPolicy::Retain,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let compacted_entries = self
+            .entries
+            .len()
+            .saturating_sub(compacted.retained_tail.len());
+        let result = serde_json::json!({
+            "ok": true,
+            "dry_run": config.dry_run,
+            "compacted": !config.dry_run && compacted_entries > 0,
+            "entries_before": self.entries.len(),
+            "bytes_before": current_bytes,
+            "entries_checkpointed": compacted_entries,
+            "retained_tail_entries": compacted.retained_tail.len(),
+            "snapshot_sequence": compacted.snapshot.last_compacted_sequence,
+            "snapshot_digest": compacted.snapshot.snapshot_digest,
+            "receipt": compacted.receipt,
+        });
+        if config.dry_run || compacted_entries == 0 {
+            return Ok(result);
+        }
+
+        let memory_dir = self
+            .legacy_path
+            .parent()
+            .ok_or("claim ledger has no parent directory")?;
+        let generation = compacted.receipt.receipt_digest[..16].to_string();
+        let generations_dir = memory_dir.join("claim_ledger_generations");
+        std::fs::create_dir_all(&generations_dir)
+            .map_err(|e| format!("failed to create ledger generation directory: {e}"))?;
+        let final_dir = generations_dir.join(&generation);
+        let temp_dir = generations_dir.join(format!(".tmp-{generation}"));
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir)
+                .map_err(|e| format!("failed to clear stale compaction temp directory: {e}"))?;
+        }
+        std::fs::create_dir(&temp_dir)
+            .map_err(|e| format!("failed to create compaction temp directory: {e}"))?;
+
+        let snapshot_bytes = serde_json::to_vec_pretty(&compacted.snapshot)
+            .map_err(|e| format!("failed to serialize ledger snapshot: {e}"))?;
+        let receipt_bytes = serde_json::to_vec_pretty(&compacted.receipt)
+            .map_err(|e| format!("failed to serialize compaction receipt: {e}"))?;
+        let mut tail_bytes = Vec::new();
+        for entry in &compacted.retained_tail {
+            tail_bytes.extend_from_slice(
+                claim_ledger::serialize_entry(entry)
+                    .map_err(|e| e.to_string())?
+                    .as_bytes(),
+            );
+            tail_bytes.push(b'\n');
+        }
+        Self::write_synced(&temp_dir.join("snapshot.json"), &snapshot_bytes)?;
+        Self::write_synced(&temp_dir.join("tail.jsonl"), &tail_bytes)?;
+        Self::write_synced(&temp_dir.join("receipt.json"), &receipt_bytes)?;
+        Self::sync_directory(&temp_dir)?;
+        std::fs::rename(&temp_dir, &final_dir)
+            .map_err(|e| format!("failed to publish ledger generation: {e}"))?;
+        Self::sync_directory(&generations_dir)?;
+
+        let manifest = ClaimLedgerManifest {
+            format_version: "claim-ledger.active-compaction.v1".into(),
+            generation: generation.clone(),
+            snapshot_path: format!("claim_ledger_generations/{generation}/snapshot.json"),
+            tail_path: format!("claim_ledger_generations/{generation}/tail.jsonl"),
+            receipt_path: format!("claim_ledger_generations/{generation}/receipt.json"),
+        };
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| format!("failed to serialize compaction manifest: {e}"))?;
+        let manifest_path = memory_dir.join("claim_ledger.active_compaction.json");
+        let manifest_temp = memory_dir.join(format!(".claim_ledger.manifest.{generation}.tmp"));
+        Self::write_synced(&manifest_temp, &manifest_bytes)?;
+        std::fs::rename(&manifest_temp, &manifest_path)
+            .map_err(|e| format!("failed to atomically activate compaction: {e}"))?;
+        Self::sync_directory(memory_dir)?;
+
+        let previous_path = self.path.clone();
+        self.path = final_dir.join("tail.jsonl");
+        self.entries = compacted.retained_tail;
+        self.snapshot = Some(compacted.snapshot);
+        self.receipt = Some(compacted.receipt);
+
+        if previous_path == self.legacy_path && previous_path.exists() {
+            let backups_dir = memory_dir.join("claim_ledger_backups");
+            if std::fs::create_dir_all(&backups_dir).is_ok() {
+                let backup_path = backups_dir.join(format!("{generation}-pre-compaction.jsonl"));
+                if let Err(error) = std::fs::rename(&previous_path, &backup_path) {
+                    tracing::error!(error = %error, "failed to rotate legacy claim ledger backup");
+                }
+            }
+        }
+        Self::rotate_backups(memory_dir, &generation, config.max_backups);
+        Ok(result)
+    }
+
+    fn write_synced(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+        file.write_all(bytes)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("failed to fsync {}: {e}", path.display()))
+    }
+
+    fn sync_directory(path: &std::path::Path) -> Result<(), String> {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| format!("failed to fsync directory {}: {e}", path.display()))
+    }
+
+    fn rotate_backups(memory_dir: &std::path::Path, active: &str, max_backups: usize) {
+        let generations_dir = memory_dir.join("claim_ledger_generations");
+        let mut generations: Vec<_> = std::fs::read_dir(&generations_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+            .filter(|entry| entry.file_name() != active)
+            .collect();
+        generations.sort_by_key(|entry| {
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+        let remove_count = generations.len().saturating_sub(max_backups);
+        for entry in generations.into_iter().take(remove_count) {
+            if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                tracing::error!(error = %error, "failed to remove old claim-ledger generation");
+            }
+        }
+
+        let backups_dir = memory_dir.join("claim_ledger_backups");
+        let mut backups: Vec<_> = std::fs::read_dir(&backups_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false)
+            })
+            .collect();
+        backups.sort_by_key(|entry| {
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        });
+        let remove_count = backups.len().saturating_sub(max_backups);
+        for entry in backups.into_iter().take(remove_count) {
+            if let Err(error) = std::fs::remove_file(entry.path()) {
+                tracing::error!(error = %error, "failed to remove old claim-ledger backup");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "claim-integration")]
+fn support_state_label(state: claim_ledger::SupportState) -> &'static str {
+    use claim_ledger::SupportState;
+    match state {
+        SupportState::Supported => "supported",
+        SupportState::PartiallySupported => "partially_supported",
+        SupportState::Unsupported => "unsupported",
+        SupportState::Contradicted => "contradicted",
+        SupportState::HeuristicOnly => "heuristic_only",
+        SupportState::Unknown => "persisted_unjudged",
+    }
+}
 
 pub struct SemanticMemoryServer {
     bridge: Arc<MemoryBridge>,
     tool_router: ToolRouter<Self>,
+    routing_policy_batch: Mutex<RoutingPolicyBatchState>,
+    #[cfg(feature = "claim-integration")]
+    claim_trust: Mutex<ClaimTrustIndex>,
+    #[cfg(feature = "claim-integration")]
+    claim_ledger_store: Mutex<ClaimLedgerStore>,
 }
 
 impl SemanticMemoryServer {
@@ -50,6 +717,7 @@ impl SemanticMemoryServer {
                     "sm_graph_path",
                     "sm_list_namespaces",
                     "sm_search_conversations",
+                    "sm_replay_search",
                     "sm_search_witnessed",
                     "sm_set_provenance",
                     "sm_stats",
@@ -82,6 +750,7 @@ impl SemanticMemoryServer {
                     if !matches!(
                         name.as_str(),
                         "sm_search_witnessed"
+                            | "sm_replay_search"
                             | "sm_decide_assertion_authority"
                             | "sm_decide_action_authority"
                     ) {
@@ -97,9 +766,30 @@ impl SemanticMemoryServer {
             router.list_all().len()
         );
 
+        #[cfg(feature = "claim-integration")]
+        let claim_ledger_store =
+            ClaimLedgerStore::open(bridge.memory_dir.join("claim_ledger.jsonl"));
+        #[cfg(feature = "claim-integration")]
+        let mut claim_trust = ClaimTrustIndex::default();
+        #[cfg(feature = "claim-integration")]
+        if claim_ledger_store.trust_enabled {
+            claim_trust.enabled = true;
+            if let Some(snapshot) = &claim_ledger_store.snapshot {
+                claim_trust.load_snapshot(snapshot);
+            }
+            claim_trust.rebuild_from_ledger_incremental(&claim_ledger_store.entries);
+        } else {
+            claim_trust.disable();
+        }
+
         Self {
             bridge: Arc::new(bridge),
             tool_router: router,
+            routing_policy_batch: Mutex::new(RoutingPolicyBatchState::default()),
+            #[cfg(feature = "claim-integration")]
+            claim_trust: Mutex::new(claim_trust),
+            #[cfg(feature = "claim-integration")]
+            claim_ledger_store: Mutex::new(claim_ledger_store),
         }
     }
 
@@ -496,6 +1186,27 @@ fn json_to_string(value: &serde_json::Value) -> Result<String, ErrorData> {
         .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))
 }
 
+/// Generate a receipt ID for MCP mutation operations.
+/// Format: `mcp-receipt:<tool_name>:<uuid>` — traceable to the tool that produced it.
+fn mcp_receipt_id(tool_name: &str) -> String {
+    format!("mcp-receipt:{tool_name}:{}", uuid::Uuid::new_v4())
+}
+
+/// Current UTC timestamp in ISO 8601 format for receipt recording.
+fn mcp_now_iso() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// Build a receipt envelope for a mutation tool response.
+/// Every material MCP mutation must include this in its JSON output.
+fn mcp_receipt(tool_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "receipt_id": mcp_receipt_id(tool_name),
+        "recorded_at": mcp_now_iso(),
+        "tool": tool_name,
+    })
+}
+
 /// Convert only a persisted fact into an autonomous-injection-safe witnessed hit.
 ///
 /// The search index's source is not sufficient provenance: hydrate the fact row
@@ -619,8 +1330,65 @@ impl SemanticMemoryServer {
         }
     }
 
+    /// Best-effort claim-ledger trust lookup for a bare fact id. Falls back to
+    /// "persisted_unjudged" whenever claim-integration is disabled, no claim
+    /// exists for the fact, or no support judgment has been recorded yet.
+    #[cfg(feature = "claim-integration")]
+    fn trust_for_fact(&self, bare_fact_id: &str) -> String {
+        self.claim_trust
+            .lock()
+            .unwrap()
+            .trust_for_fact(bare_fact_id)
+    }
+
+    #[cfg(not(feature = "claim-integration"))]
+    fn trust_for_fact(&self, _bare_fact_id: &str) -> String {
+        "persisted_unjudged".to_string()
+    }
+
+    /// Best-effort: link `bare_fact_id` to an existing claim whose normalized
+    /// content matches `content`, if one exists and the fact isn't already
+    /// linked. Never fails the caller — this is a convenience wiring, not a
+    /// truth-store operation.
+    #[cfg(feature = "claim-integration")]
+    fn auto_link_fact_to_claims(&self, bare_fact_id: &str, content: &str) {
+        self.claim_trust
+            .lock()
+            .unwrap()
+            .auto_link_content(bare_fact_id, content);
+    }
+
+    #[cfg(not(feature = "claim-integration"))]
+    fn auto_link_fact_to_claims(&self, _bare_fact_id: &str, _content: &str) {}
+
+    /// Overwrites the "trust" field of each search result (keyed off its
+    /// "memory_id" of the form "fact:<id>") with the claim-ledger support
+    /// state, when one has been recorded. Also attempts to auto-link any
+    /// still-unjudged result whose content now matches a claim created since
+    /// the fact was added. Never fails the search.
+    fn enrich_results_with_trust(&self, results: &mut [serde_json::Value]) {
+        for result in results.iter_mut() {
+            let bare_fact_id = result
+                .get("memory_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.strip_prefix("fact:").unwrap_or(s).to_string());
+            let Some(bare_fact_id) = bare_fact_id else {
+                continue;
+            };
+            if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
+                self.auto_link_fact_to_claims(&bare_fact_id, content);
+            }
+            if let Some(obj) = result.as_object_mut() {
+                obj.insert(
+                    "trust".to_string(),
+                    serde_json::Value::String(self.trust_for_fact(&bare_fact_id)),
+                );
+            }
+        }
+    }
+
     #[tool(
-        description = "Mandatory witnessed hybrid retrieval. Bypasses cache, verifies durable receipt persistence, defaults to Current state, and explicitly reports unavailable authority/replay data.",
+        description = "Mandatory witnessed retrieval. Bypasses cache, verifies durable receipt persistence, defaults to Current state, and supports privacy-preserving opt-in storage for complete replay.",
         annotations(read_only_hint = true)
     )]
     fn sm_search_witnessed(
@@ -631,9 +1399,10 @@ impl SemanticMemoryServer {
             namespaces,
             request_id,
             retrieval_mode,
+            replay_mode,
         }): Parameters<SearchWitnessedParams>,
     ) -> Result<String, ErrorData> {
-        use semantic_memory::{ExactnessProfile, ReceiptMode, SearchContext};
+        use semantic_memory::{ExactnessProfile, ReceiptMode, ReplayMode, SearchContext};
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let request_id = request_id.unwrap_or_else(|| {
             format!(
@@ -663,6 +1432,10 @@ impl SemanticMemoryServer {
             .map(|v| v.iter().map(String::as_str).collect());
         let mut context = SearchContext::default_now();
         context.receipt_mode = ReceiptMode::ReturnReceipt;
+        context.replay_mode = match replay_mode.unwrap_or(ReplayModeParam::NoReplay) {
+            ReplayModeParam::NoReplay => ReplayMode::NoReplay,
+            ReplayModeParam::StoreInputs => ReplayMode::StoreInputs,
+        };
         context.exactness_profile = ExactnessProfile::PreferExact;
         context.request_id = Some(request_id.clone());
         context.query_text_digest = Some(query_digest.clone());
@@ -732,6 +1505,16 @@ impl SemanticMemoryServer {
                 None,
             ));
         }
+        let complete_replay_available = tokio::task::block_in_place(|| {
+            Handle::current().block_on(
+                self.bridge
+                    .store
+                    .search_replay_inputs_available(&receipt.receipt_id),
+            )
+        })
+        .map_err(|e| {
+            ErrorData::internal_error(format!("replay input verification failed: {e}"), None)
+        })?;
         let stats =
             tokio::task::block_in_place(|| Handle::current().block_on(self.bridge.store.stats()))
                 .map_err(|e| {
@@ -746,6 +1529,68 @@ impl SemanticMemoryServer {
                 results.push(hit);
             }
         }
+        // T2.6: Enrich search results with claim-ledger support state.
+        // Best-effort: falls back to "persisted_unjudged" when no claim exists.
+        self.enrich_results_with_trust(&mut results);
+
+        // P1.3: Factor graph reranking (opt-in via integration feature).
+        // When graph edges exist in the store, build a factor graph with
+        // search scores as initial beliefs, run belief propagation, and
+        // rerank results by refined beliefs. Items connected by multiple
+        // relationship types get compounded confidence.
+        #[cfg(feature = "integration")]
+        {
+            use semantic_memory::factor_graph::{
+                factors_from_edges, FactorGraph, FactorGraphConfig,
+            };
+            let result_nodes: Vec<(String, f64)> = results
+                .iter()
+                .filter_map(|result| {
+                    let id = result
+                        .get("memory_id")
+                        .and_then(|value| value.as_str())?
+                        .to_string();
+                    let score = result
+                        .get("score")
+                        .and_then(|value| value.as_f64())
+                        .unwrap_or(0.5);
+                    Some((id, score))
+                })
+                .collect();
+            if !result_nodes.is_empty() {
+                let seed_ids: Vec<String> = result_nodes
+                    .iter()
+                    .map(|(item_id, _)| item_id.clone())
+                    .collect();
+                let edge_tuples = load_neighborhood_factor_edges(&self.bridge.store, &seed_ids)?;
+                if !edge_tuples.is_empty() {
+                    let factors = factors_from_edges(&edge_tuples);
+                    let factor_graph =
+                        FactorGraph::new(&result_nodes, factors, FactorGraphConfig::default());
+                    let result_beliefs = factor_graph.propagate();
+                    let reranked = result_beliefs.top_k(result_nodes.len());
+                    // Reorder results by factor graph beliefs (higher = better).
+                    results.sort_by(|a, b| {
+                        let a_id = a.get("memory_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let b_id = b.get("memory_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let a_belief = reranked
+                            .iter()
+                            .find(|(id, _)| id == a_id)
+                            .map(|(_, b)| *b)
+                            .unwrap_or(0.0);
+                        let b_belief = reranked
+                            .iter()
+                            .find(|(id, _)| id == b_id)
+                            .map(|(_, b)| *b)
+                            .unwrap_or(0.0);
+                        b_belief
+                            .partial_cmp(&a_belief)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+            }
+        }
+
         let ordered_results: Vec<_> = results.iter().map(|r| serde_json::json!({"result_id": r["result_id"], "result_digest": digest(&r.to_string())})).collect();
         let exactness = if receipt.approximate {
             "approximate_candidates"
@@ -774,10 +1619,226 @@ impl SemanticMemoryServer {
                 "selected_retrieval": {"outcome": "Applied", "degradation": null, "mode": retrieval_mode_name},
                 "receipt_persistence": {"outcome": "Applied", "degradation": null},
                 "cache": {"outcome": "Skipped", "degradation": "witnessed retrieval bypasses cache"},
-                "replay": {"outcome": "AnalysisOnly", "degradation": "complete replay inputs are not available"}
+                "replay": if complete_replay_available {
+                    serde_json::json!({"outcome": "Applied", "degradation": null})
+                } else {
+                    serde_json::json!({"outcome": "AnalysisOnly", "degradation": "complete replay inputs are not available"})
+                }
             },
-            "degradations": receipt.degradations, "complete_replay_available": false
+            "degradations": receipt.degradations,
+            "complete_replay_available": complete_replay_available
         }))
+    }
+
+    #[tool(
+        description = "Search with proof-debt analysis. Runs a standard search, then for each result checks the claim-ledger trust index for support state. Returns results plus a proof_debt summary with total debt weight, unsupported count, and gate decision.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_search_proof_debt(
+        &self,
+        Parameters(SearchProofDebtParams {
+            query,
+            top_k,
+            namespaces,
+            budget_micros,
+        }): Parameters<SearchProofDebtParams>,
+    ) -> Result<String, ErrorData> {
+        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let store = &self.bridge.store;
+        let ns: Option<Vec<&str>> = namespaces
+            .as_ref()
+            .map(|v| v.iter().map(String::as_str).collect());
+
+        let results = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.search(&query, Some(k), ns.as_deref(), None))
+        })
+        .map_err(|e| ErrorData::internal_error(format!("search failed: {e}"), None))?;
+
+        // T2.5/D3: Evaluate proof debt for search results using the real
+        // claim-ledger budget machinery. Results with no linked claim carry
+        // no debt (there is nothing to owe proof for). Results whose claim
+        // is unjudged, heuristic-only, unsupported, or contradicted incur
+        // the claim-ledger's real ProofDebt weights, and the aggregate is
+        // run through the real gate evaluator — no hardcoded weights.
+        #[cfg(feature = "claim-integration")]
+        {
+            use claim_ledger::{
+                budget_for_claim, evaluate_proof_debt_gate_with_config, total_proof_debt_weight,
+                ProofDebtBudgetConfig,
+            };
+            let budget = budget_micros.unwrap_or(500_000);
+            let idx = self.claim_trust.lock().unwrap();
+            let mut all_debts = Vec::new();
+            let mut unsupported_count = 0usize;
+            let mut per_result = Vec::new();
+
+            for r in &results {
+                let fact_id = r.source.result_id();
+                let bare_id = fact_id.strip_prefix("fact:").unwrap_or(&fact_id);
+                let trust = idx.trust_for_fact(bare_id);
+                let (claim_id, debts) = match idx.claim_and_state_for_fact(bare_id) {
+                    Some((claim_id, state)) => {
+                        let debts = proof_debts_for_support_state(
+                            state.unwrap_or(claim_ledger::SupportState::Unknown),
+                        );
+                        (Some(claim_id), debts)
+                    }
+                    None => (None, Vec::new()),
+                };
+                if !debts.is_empty() {
+                    unsupported_count += 1;
+                }
+                let debt_micros = total_proof_debt_weight(&debts);
+                all_debts.extend(debts);
+                per_result.push(serde_json::json!({
+                    "fact_id": fact_id,
+                    "claim_id": claim_id,
+                    "trust": trust,
+                    "debt_micros": debt_micros,
+                }));
+            }
+
+            let config = ProofDebtBudgetConfig::default();
+            let total_debt = total_proof_debt_weight(&all_debts);
+            let (proof_budget, debits) =
+                budget_for_claim("sm_search_proof_debt", &all_debts, budget);
+            let gate = evaluate_proof_debt_gate_with_config(&proof_budget, &config);
+
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "query": query,
+                "results": per_result,
+                "count": results.len(),
+                "proof_debt": {
+                    "total_debt_micros": total_debt,
+                    "unsupported_count": unsupported_count,
+                    "budget_micros": budget,
+                    "consumed_pct": gate.consumed_pct,
+                    "exhausted": gate.exhausted,
+                    "gate_decision": gate.decision,
+                    "gate_summary": gate.summary,
+                    "debit_count": debits.len(),
+                },
+                "receipt": mcp_receipt("sm_search_proof_debt"),
+            }))
+        }
+        #[cfg(not(feature = "claim-integration"))]
+        {
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "query": query,
+                "results": results.iter().map(|r| serde_json::json!({
+                    "fact_id": r.source.result_id(),
+                    "content": r.content,
+                    "trust": "persisted_unjudged",
+                })).collect::<Vec<_>>(),
+                "count": results.len(),
+                "proof_debt": {
+                    "total_debt_micros": 0,
+                    "unsupported_count": 0,
+                    "budget_micros": budget_micros.unwrap_or(500_000),
+                    "gate_decision": "Pass",
+                    "note": "claim-integration feature not enabled",
+                },
+                "receipt": mcp_receipt("sm_search_proof_debt"),
+            }))
+        }
+    }
+
+    #[tool(
+        description = "Benchmark trust quality across search results. Runs multiple queries and measures the trust distribution (supported/partially_supported/unsupported/contradicted/heuristic_only/persisted_unjudged) of returned results. Shows what fraction of retrieved facts have claim-ledger backing vs unjudged.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_benchmark_trust(
+        &self,
+        Parameters(BenchmarkTrustParams {
+            query_count,
+            top_k,
+            namespaces,
+        }): Parameters<BenchmarkTrustParams>,
+    ) -> Result<String, ErrorData> {
+        let n = query_count.map(|v| v as usize).unwrap_or(10);
+        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let store = &self.bridge.store;
+        let ns: Option<Vec<&str>> = namespaces
+            .as_ref()
+            .map(|v| v.iter().map(String::as_str).collect());
+
+        // Use recent facts as benchmark queries (search for their own content).
+        let facts =
+            tokio::task::block_in_place(|| Handle::current().block_on(store.list_facts("", n, 0)))
+                .map_err(|e| ErrorData::internal_error(format!("list_facts failed: {e}"), None))?;
+
+        #[cfg(feature = "claim-integration")]
+        {
+            let idx = self.claim_trust.lock().unwrap();
+            let mut trust_counts: HashMap<String, usize> = HashMap::new();
+            for label in &[
+                "supported",
+                "partially_supported",
+                "unsupported",
+                "contradicted",
+                "heuristic_only",
+                "persisted_unjudged",
+            ] {
+                trust_counts.insert(label.to_string(), 0);
+            }
+
+            let mut total_results = 0usize;
+            let mut per_query = Vec::new();
+
+            for fact in &facts {
+                let query = &fact.content;
+                let results = tokio::task::block_in_place(|| {
+                    Handle::current().block_on(store.search(query, Some(k), ns.as_deref(), None))
+                })
+                .unwrap_or_default();
+
+                let mut query_trust: HashMap<String, usize> = HashMap::new();
+                for r in &results {
+                    let bare_id = r.source.result_id();
+                    let bare = bare_id.strip_prefix("fact:").unwrap_or(&bare_id);
+                    let trust = idx.trust_for_fact(bare);
+                    *trust_counts.entry(trust.clone()).or_insert(0) += 1;
+                    *query_trust.entry(trust.clone()).or_insert(0) += 1;
+                    total_results += 1;
+                }
+                per_query.push(serde_json::json!({
+                    "query": query,
+                    "result_count": results.len(),
+                    "trust_distribution": query_trust,
+                }));
+            }
+
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "queries_run": facts.len(),
+                "top_k": k,
+                "total_results": total_results,
+                "trust_distribution": trust_counts,
+                "judged_pct": if total_results > 0 {
+                    let judged = trust_counts.get("supported").copied().unwrap_or(0)
+                        + trust_counts.get("partially_supported").copied().unwrap_or(0)
+                        + trust_counts.get("contradicted").copied().unwrap_or(0)
+                        + trust_counts.get("unsupported").copied().unwrap_or(0);
+                    (judged as f64 / total_results as f64) * 100.0
+                } else { 0.0 },
+                "per_query": per_query,
+                "receipt": mcp_receipt("sm_benchmark_trust"),
+            }))
+        }
+        #[cfg(not(feature = "claim-integration"))]
+        {
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "queries_run": facts.len(),
+                "top_k": k,
+                "trust_distribution": {"persisted_unjudged": facts.len()},
+                "judged_pct": 0.0,
+                "note": "claim-integration feature not enabled",
+                "receipt": mcp_receipt("sm_benchmark_trust"),
+            }))
+        }
     }
 
     #[tool(
@@ -1022,6 +2083,9 @@ impl SemanticMemoryServer {
                         None,
                     )
                 })?;
+                // D4: best-effort auto-link to an existing claim with matching
+                // normalized content. Never fails the whole operation.
+                self.auto_link_fact_to_claims(&id, &content);
                 // Optional entity extraction — best-effort, never fails the whole operation.
                 if extract_entities == Some(true) {
                     let prompt = format!(
@@ -1078,6 +2142,7 @@ impl SemanticMemoryServer {
                     "ok": true,
                     "fact_id": id,
                     "namespace": namespace,
+                    "receipt": mcp_receipt("sm_add_fact"),
                     "message": "Fact added successfully",
                 }))
             }
@@ -1114,6 +2179,7 @@ impl SemanticMemoryServer {
                 .unwrap_or(0);
                 json_to_string(&serde_json::json!({
                     "ok": true,
+                    "receipt": mcp_receipt("sm_ingest_document"),
                     "document_id": doc_id,
                     "title": title,
                     "chunk_count": chunk_count,
@@ -1445,6 +2511,7 @@ impl SemanticMemoryServer {
 
         json_to_string(&serde_json::json!({
             "ok": true,
+            "receipt": mcp_receipt("sm_supersede_fact"),
             "new_fact_id": new_id,
             "new_result_id": new_node,
             "old_fact_id": old_bare,
@@ -1475,7 +2542,7 @@ impl SemanticMemoryServer {
         });
         match result {
             Ok(id) => json_to_string(
-                &serde_json::json!({"ok": true, "session_id": id, "channel": channel}),
+                &serde_json::json!({"ok": true, "session_id": id, "channel": channel, "receipt": mcp_receipt("sm_create_session")}),
             ),
             Err(e) => Err(ErrorData::internal_error(
                 format!("create_session error: {e}"),
@@ -1520,7 +2587,7 @@ impl SemanticMemoryServer {
         });
         match result {
             Ok(id) => json_to_string(
-                &serde_json::json!({"ok": true, "message_id": id, "session_id": session_id}),
+                &serde_json::json!({"ok": true, "message_id": id, "session_id": session_id, "receipt": mcp_receipt("sm_add_message")}),
             ),
             Err(e) => Err(ErrorData::internal_error(
                 format!("add_message error: {e}"),
@@ -1645,7 +2712,8 @@ impl SemanticMemoryServer {
         &self,
         Parameters(RouteQueryParams { query }): Parameters<RouteQueryParams>,
     ) -> Result<String, ErrorData> {
-        use semantic_memory::routing::RetrievalRouter;
+        use semantic_memory::rl_routing::{is_trained, route_with_policy};
+        use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
         let router = RetrievalRouter {
             decoder_enabled: true,
@@ -1654,9 +2722,18 @@ impl SemanticMemoryServer {
             ..Default::default()
         };
 
-        let decision = router.route_query(&query);
+        let profile = QueryProfile::from_query(&query);
+        let policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(self.bridge.store.load_routing_policy())
+        })
+        .map_err(|e| ErrorData::internal_error(format!("load routing policy error: {e}"), None))?;
+        let (decision, routing_source) = match policy.as_ref().filter(|p| is_trained(p)) {
+            Some(policy) => (route_with_policy(policy, &profile), "trained_policy"),
+            None => (router.route(&profile), "heuristic"),
+        };
         json_to_string(&serde_json::json!({
             "ok": true,
+            "routing_source": routing_source,
             "bm25_coarse": decision.bm25_coarse,
             "vector_medium": decision.vector_medium,
             "rerank_fine": decision.rerank_fine,
@@ -1682,22 +2759,33 @@ impl SemanticMemoryServer {
         }): Parameters<SearchWithRoutingParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::integration::plan_execution;
-        use semantic_memory::rl_routing::route_with_rl;
-        use semantic_memory::routing::QueryProfile;
+        use semantic_memory::rl_routing::{is_trained, route_with_policy};
+        use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = query_allows_superseded(&query);
         let search_k = if allow_superseded { k } else { (k * 4).max(20) };
 
-        // Load persisted RL routing policy (or default if none saved yet)
+        let router = RetrievalRouter {
+            decoder_enabled: true,
+            discord_enabled: true,
+            corpus_density: 0.5,
+            ..Default::default()
+        };
+
+        // Select learned routing only after enough examples have been durably
+        // persisted. A missing or still-untrained policy uses heuristics.
         let store = &self.bridge.store;
         let policy =
             tokio::task::block_in_place(|| Handle::current().block_on(store.load_routing_policy()))
-                .ok()
-                .flatten()
-                .unwrap_or_default();
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("load routing policy error: {e}"), None)
+                })?;
         let profile = QueryProfile::from_query(&query);
-        let decision = route_with_rl(&policy, &profile);
+        let (decision, routing_source) = match policy.as_ref().filter(|p| is_trained(p)) {
+            Some(policy) => (route_with_policy(policy, &profile), "trained_policy"),
+            None => (router.route(&profile), "heuristic"),
+        };
         let contras = contradictions.unwrap_or_default();
         let plan = plan_execution(&decision, contras.clone());
 
@@ -2003,6 +3091,7 @@ impl SemanticMemoryServer {
                 json_to_string(&serde_json::json!({
                     "ok": true,
                     "routing_decision": {
+                        "source": routing_source,
                         "bm25_coarse": decision.bm25_coarse,
                         "vector_medium": decision.vector_medium,
                         "rerank_fine": decision.rerank_fine,
@@ -2085,9 +3174,11 @@ impl SemanticMemoryServer {
     )]
     fn sm_detect_contradictions(
         &self,
-        Parameters(DetectContradictionsParams { query, top_k }): Parameters<
-            DetectContradictionsParams,
-        >,
+        Parameters(DetectContradictionsParams {
+            query,
+            top_k,
+            record_to_ledger,
+        }): Parameters<DetectContradictionsParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::contradiction_detect::{detect_contradictions, DetectorConfig};
 
@@ -2105,6 +3196,77 @@ impl SemanticMemoryServer {
 
         let pairs = detect_contradictions(&items, &DetectorConfig::default());
 
+        // T2.4/D2: Optionally record detected contradictions as real,
+        // hash-chained claim-ledger entries (LedgerEvent::ContradictionCandidate)
+        // and update the in-process ClaimTrustIndex so search-time trust
+        // lookups reflect the conflict. The trust index is a lookup cache
+        // only — the ledger entries below are the durable record.
+        let (ledger_recorded, ledger_entries) = if record_to_ledger.unwrap_or(false) {
+            #[cfg(feature = "claim-integration")]
+            {
+                use claim_ledger::{LedgerEntryBuilder, SupportState};
+                let mut count = 0usize;
+                let mut entries = Vec::new();
+                for p in &pairs {
+                    let fact_a = p.a.strip_prefix("fact:").unwrap_or(&p.a).to_string();
+                    let fact_b = p.b.strip_prefix("fact:").unwrap_or(&p.b).to_string();
+                    {
+                        let mut idx = self.claim_trust.lock().unwrap();
+                        idx.record_judgment(fact_a.clone(), SupportState::Contradicted);
+                        idx.record_judgment(fact_b.clone(), SupportState::Contradicted);
+                    }
+
+                    let pattern = p
+                        .signals
+                        .iter()
+                        .map(|s| format!("{s:?}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let contradiction_id =
+                        claim_ledger::ids::contradiction_id(&fact_a, &fact_b, &pattern);
+
+                    let mut ledger = self.claim_ledger_store.lock().unwrap();
+                    let sequence = ledger.next_sequence();
+                    let previous_digest = ledger.last_digest();
+                    let append_result = LedgerEntryBuilder::new(sequence, previous_digest)
+                        .add_contradiction_candidate(
+                            &contradiction_id,
+                            vec![fact_a.clone(), fact_b.clone()],
+                            &pattern,
+                            &p.reason,
+                        )
+                        .map_err(|e| e.to_string())
+                        .and_then(|entry| ledger.append(entry));
+                    drop(ledger);
+
+                    match append_result {
+                        Ok(entry_hash) => {
+                            count += 1;
+                            entries.push(serde_json::json!({
+                                "contradiction_id": contradiction_id,
+                                "claim_refs": [fact_a, fact_b],
+                                "sequence": sequence,
+                                "entry_hash": entry_hash,
+                            }));
+                        }
+                        Err(e) => {
+                            return Err(ErrorData::internal_error(
+                                format!("failed to record contradiction to ledger: {e}"),
+                                None,
+                            ));
+                        }
+                    }
+                }
+                (count, entries)
+            }
+            #[cfg(not(feature = "claim-integration"))]
+            {
+                (0, Vec::new())
+            }
+        } else {
+            (0, Vec::new())
+        };
+
         json_to_string(&serde_json::json!({
             "ok": true,
             "query": query,
@@ -2117,6 +3279,9 @@ impl SemanticMemoryServer {
                 "reason": p.reason,
             })).collect::<Vec<_>>(),
             "count": pairs.len(),
+            "ledger_recorded": ledger_recorded,
+            "ledger_entries": ledger_entries,
+            "receipt": mcp_receipt("sm_detect_contradictions"),
         }))
     }
 
@@ -2511,6 +3676,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(edge) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_add_graph_edge"),
                 "id": edge.id,
                 "source": edge.source,
                 "target": edge.target,
@@ -2584,6 +3750,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_invalidate_graph_edge"),
                 "edge_id": edge_id,
                 "message": "Edge invalidated successfully",
             })),
@@ -2817,6 +3984,79 @@ impl SemanticMemoryServer {
     // a content-free tombstone receipt.
 
     #[tool(
+        description = "Identify and optionally prune reasoning subgraphs in the knowledge graph. Runs autonomous subgraph maintenance: identifies connected subgraphs, ranks by access frequency (least-accessed first), and optionally prunes. Dry-run by default. Returns identified subgraphs, pruning priority, and pruning receipts.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_subgraph_prune(
+        &self,
+        Parameters(SubgraphPruneParams { dry_run, max_prune }): Parameters<SubgraphPruneParams>,
+    ) -> Result<String, ErrorData> {
+        #[cfg(feature = "subgraph-pruning")]
+        {
+            use semantic_memory::integration::autonomous_subgraph_maintenance;
+            use semantic_memory::subgraph_pruning::AccessLog;
+
+            let dry = dry_run.unwrap_or(true);
+            let max = max_prune.map(|v| v as usize).unwrap_or(5);
+
+            // Load edges from store
+            let edges = load_stored_edge_pairs(&self.bridge.store)?;
+
+            // No access logs available — derive empty (all subgraphs treated as equally stale)
+            let access_logs: Vec<AccessLog> = Vec::new();
+
+            // Load contradictions from contradiction graph edges
+            let raw_edges = tokio::task::block_in_place(|| {
+                Handle::current().block_on(self.bridge.store.list_all_graph_edges())
+            })
+            .map_err(|e| ErrorData::internal_error(format!("load edges failed: {e}"), None))?;
+            let contradictions: Vec<(String, String)> = raw_edges
+                .iter()
+                .filter_map(|e| {
+                    let parsed = e
+                        .edge_type_parsed
+                        .clone()
+                        .or_else(|| serde_json::from_str(&e.edge_type).ok());
+                    match parsed {
+                        Some(semantic_memory::GraphEdgeType::Entity { relation })
+                            if relation == "contradicts" =>
+                        {
+                            Some((e.source.clone(), e.target.clone()))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect();
+
+            let prune_count = if dry { 0 } else { max };
+            let report =
+                autonomous_subgraph_maintenance(&edges, &access_logs, &contradictions, prune_count);
+
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "dry_run": dry,
+                "subgraphs_identified": report.subgraphs_identified,
+                "subgraphs_pruned": report.subgraphs_pruned,
+                "receipts": report.receipts.iter().map(|r| serde_json::json!({
+                    "subgraph_root": r.subgraph_root,
+                    "pruned_nodes": r.pruned_nodes,
+                })).collect::<Vec<_>>(),
+                "summary": report.summary,
+                "receipt_field": mcp_receipt("sm_subgraph_prune"),
+            }))
+        }
+        #[cfg(not(feature = "subgraph-pruning"))]
+        {
+            let _ = (dry_run, max_prune);
+            json_to_string(&serde_json::json!({
+                "ok": true,
+                "note": "subgraph-pruning feature not enabled",
+                "receipt": mcp_receipt("sm_subgraph_prune"),
+            }))
+        }
+    }
+
+    #[tool(
         description = "Forget a single fact by id through the governed dependency-closure path. Scrubs canonical content and derived FTS/vector/graph/cache/export/replay surfaces while retaining a content-free tombstone receipt. Prefer sm_supersede_fact for corrections.",
         annotations(destructive_hint = true)
     )]
@@ -2900,6 +4140,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(r) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_delete_namespace"),
                 "namespace": namespace,
                 "deleted": {
                     "facts": r.facts,
@@ -2938,6 +4179,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_update_fact"),
                 "fact_id": format!("fact:{bare}"),
                 "message": "Fact content updated and re-embedded",
             })),
@@ -3042,6 +4284,7 @@ impl SemanticMemoryServer {
                 });
                 json_to_string(&serde_json::json!({
                     "ok": true,
+                    "receipt": mcp_receipt("sm_consolidate_facts"),
                     "kept_fact_id": format!("fact:{}", keep_bare),
                     "superseded_fact_id": format!("fact:{}", sup_bare),
                     "new_fact_id": format!("fact:{}", nid),
@@ -3058,7 +4301,36 @@ impl SemanticMemoryServer {
     // ── RL routing feedback ────────────────────────────────────────────
 
     #[tool(
-        description = "MUTATING: record a caller-supplied proxy feedback label for retrieval routing. This is not a verified outcome. Persists an updated tabular routing policy.",
+        description = "Return the current persisted RL routing policy, including weights, training example count, and last update time.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_get_routing_policy(&self) -> Result<String, ErrorData> {
+        use semantic_memory::rl_routing::is_trained;
+
+        let policy = tokio::task::block_in_place(|| {
+            Handle::current().block_on(self.bridge.store.load_routing_policy())
+        })
+        .map_err(|e| ErrorData::internal_error(format!("load routing policy error: {e}"), None))?;
+
+        match policy {
+            Some(policy) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "policy": {
+                    "weights": policy.weights,
+                    "training_examples_count": policy.trained_examples,
+                    "trained": is_trained(&policy),
+                    "last_updated": policy.last_updated,
+                }
+            })),
+            None => json_to_string(&serde_json::json!({
+                "ok": true,
+                "policy": null,
+            })),
+        }
+    }
+
+    #[tool(
+        description = "MUTATING: record a caller-supplied proxy feedback label for retrieval routing. This is not a verified outcome. Persists the updated tabular routing policy every 10 outcomes.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3069,7 +4341,9 @@ impl SemanticMemoryServer {
         &self,
         Parameters(RecordOutcomeParams { query, outcome }): Parameters<RecordOutcomeParams>,
     ) -> Result<String, ErrorData> {
-        use semantic_memory::rl_routing::{record_routing_outcome, RoutingOutcome};
+        use semantic_memory::rl_routing::{
+            is_trained, record_routing_outcome, route_with_policy, RoutingOutcome,
+        };
         use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
         let outcome_enum = match outcome.to_lowercase().as_str() {
@@ -3086,27 +4360,47 @@ impl SemanticMemoryServer {
 
         let profile = QueryProfile::from_query(&query);
         let router = RetrievalRouter::default();
-        let decision = router.route(&profile);
-
         let store = &self.bridge.store;
-        // Load persisted policy (or default if none saved yet)
-        let mut policy =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.load_routing_policy()))
-                .map_err(|e| {
-                    ErrorData::internal_error(format!("load routing policy error: {e}"), None)
-                })?
-                .unwrap_or_default();
+        let mut batch = self
+            .routing_policy_batch
+            .lock()
+            .map_err(|_| ErrorData::internal_error("routing policy batch lock poisoned", None))?;
+        let mut policy = match batch.policy.take() {
+            Some(policy) => policy,
+            None => tokio::task::block_in_place(|| {
+                Handle::current().block_on(store.load_routing_policy())
+            })
+            .map_err(|e| {
+                ErrorData::internal_error(format!("load routing policy error: {e}"), None)
+            })?
+            .unwrap_or_default(),
+        };
+        let decision = if is_trained(&policy) {
+            route_with_policy(&policy, &profile)
+        } else {
+            router.route(&profile)
+        };
         record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
-        // Save updated policy
-        tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.save_routing_policy(&policy))
-        })
-        .map_err(|e| {
-            ErrorData::internal_error(format!("persist routing policy error: {e}"), None)
-        })?;
+        batch.pending_outcomes += 1;
+        let persisted = batch.pending_outcomes >= ROUTING_POLICY_PERSIST_BATCH;
+        if persisted {
+            if let Err(e) = tokio::task::block_in_place(|| {
+                Handle::current().block_on(store.save_routing_policy(&policy))
+            }) {
+                batch.policy = Some(policy);
+                return Err(ErrorData::internal_error(
+                    format!("persist routing policy error: {e}"),
+                    None,
+                ));
+            }
+            batch.pending_outcomes = 0;
+        }
+        let pending_outcomes = batch.pending_outcomes;
+        batch.policy = Some(policy.clone());
 
         json_to_string(&serde_json::json!({
             "ok": true,
+            "receipt": mcp_receipt("sm_record_outcome"),
             "mutating": true,
             "query": query,
             "feedback": {"kind": "ProxyLabel", "label": outcome},
@@ -3124,12 +4418,58 @@ impl SemanticMemoryServer {
                 "trained_examples": policy.trained_examples,
                 "baseline": policy.baseline,
                 "weights": policy.weights,
+                "last_updated": policy.last_updated,
+                "persisted": persisted,
+                "pending_outcomes": pending_outcomes,
             },
-            "message": "Routing outcome recorded and policy updated (persisted to DB)",
+            "message": if persisted {
+                "Routing outcome recorded and policy batch persisted to DB"
+            } else {
+                "Routing outcome recorded; policy persistence batch pending"
+            },
         }))
     }
 
     // ─── Claim-ledger integration ──────────────────────────────────────
+
+    #[cfg(feature = "claim-integration")]
+    #[tool(
+        description = "Verify and checkpoint the claim ledger when configured entry/byte thresholds are exceeded. Defaults to dry_run=true. A successful rotation atomically activates a digest-verified snapshot and retained tail, emits a compaction receipt bound to the prior ledger head, and keeps bounded backups.",
+        annotations(read_only_hint = false, destructive_hint = true)
+    )]
+    fn sm_compact_claim_ledger(
+        &self,
+        Parameters(CompactClaimLedgerParams {
+            dry_run,
+            max_entries,
+            max_bytes,
+            retain_tail_entries,
+            max_backups,
+        }): Parameters<CompactClaimLedgerParams>,
+    ) -> Result<String, ErrorData> {
+        let mut ledger = self.claim_ledger_store.lock().unwrap();
+        let result = ledger
+            .compact(ClaimLedgerCompactionConfig {
+                dry_run: dry_run.unwrap_or(true),
+                max_entries: max_entries.unwrap_or(10_000),
+                max_bytes: max_bytes.unwrap_or(16 * 1024 * 1024),
+                retain_tail_entries: retain_tail_entries.unwrap_or(256),
+                max_backups: max_backups.unwrap_or(3),
+            })
+            .map_err(|error| ErrorData::internal_error(error, None))?;
+        if result["compacted"].as_bool().unwrap_or(false) {
+            let mut index = self.claim_trust.lock().unwrap();
+            index.disable();
+            if ledger.trust_enabled {
+                index.enabled = true;
+                if let Some(snapshot) = &ledger.snapshot {
+                    index.load_snapshot(snapshot);
+                }
+                index.rebuild_from_ledger_incremental(&ledger.entries);
+            }
+        }
+        json_to_string(&result)
+    }
 
     #[cfg(feature = "claim-integration")]
     #[tool(
@@ -3171,8 +4511,32 @@ impl SemanticMemoryServer {
         let claim_id = claim.claim_id.clone();
         let normalized = &claim.normalized_claim;
 
+        {
+            let mut ledger = self.claim_ledger_store.lock().unwrap();
+            let sequence = ledger.next_sequence();
+            let previous_digest = ledger.last_digest();
+            let entry = claim_ledger::LedgerEntryBuilder::new(sequence, previous_digest)
+                .add_claim(&claim_id, &source_id, &span_id, normalized)
+                .map_err(|e| {
+                    ErrorData::internal_error(
+                        format!("failed to build claim ledger entry: {e}"),
+                        None,
+                    )
+                })?;
+            ledger.append(entry).map_err(|e| {
+                ErrorData::internal_error(format!("failed to record claim to ledger: {e}"), None)
+            })?;
+        }
+
+        {
+            let mut idx = self.claim_trust.lock().unwrap();
+            idx.link_fact(bare.clone(), claim_id.clone());
+            idx.register_claim(claim_id.clone(), normalized.clone());
+        }
+
         json_to_string(&serde_json::json!({
             "ok": true,
+            "receipt": mcp_receipt("sm_create_claim"),
             "claim_id": claim_id,
             "source_id": source_id,
             "span_id": span_id,
@@ -3210,6 +4574,7 @@ impl SemanticMemoryServer {
 
         json_to_string(&serde_json::json!({
             "ok": true,
+            "receipt": mcp_receipt("sm_add_evidence"),
             "evidence_bundle_id": bundle.evidence_bundle_id,
             "claim_id": claim_id,
             "evidence_count": bundle.evidence_links.len(),
@@ -3254,8 +4619,40 @@ impl SemanticMemoryServer {
             created_recorded_time: chrono::Utc::now(),
         };
 
+        {
+            let mut ledger = self.claim_ledger_store.lock().unwrap();
+            let sequence = ledger.next_sequence();
+            let previous_digest = ledger.last_digest();
+            let entry = claim_ledger::LedgerEntryBuilder::new(sequence, previous_digest)
+                .add_support_judgment(
+                    &j.support_judgment_id,
+                    &claim_id,
+                    &j.evidence_bundle_ref,
+                    state,
+                    &j.method,
+                )
+                .map_err(|e| {
+                    ErrorData::internal_error(
+                        format!("failed to build support judgment ledger entry: {e}"),
+                        None,
+                    )
+                })?;
+            ledger.append(entry).map_err(|e| {
+                ErrorData::internal_error(
+                    format!("failed to record support judgment to ledger: {e}"),
+                    None,
+                )
+            })?;
+        }
+
+        self.claim_trust
+            .lock()
+            .unwrap()
+            .record_judgment(claim_id.clone(), state);
+
         json_to_string(&serde_json::json!({
             "ok": true,
+            "receipt": mcp_receipt("sm_judge_support"),
             "support_judgment_id": j.support_judgment_id,
             "claim_id": claim_id,
             "state": judgment.to_lowercase(),
@@ -3525,6 +4922,40 @@ impl SemanticMemoryServer {
         }
     }
 
+    #[tool(
+        description = "Replay a durable search receipt using query text and filters retained by explicit opt-in. Returns the replay comparison report.",
+        annotations(read_only_hint = true)
+    )]
+    fn sm_replay_search(
+        &self,
+        Parameters(ReplayStoredSearchParams { receipt_id }): Parameters<ReplayStoredSearchParams>,
+    ) -> Result<String, ErrorData> {
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(
+                self.bridge
+                    .store
+                    .replay_search_from_stored_inputs(&receipt_id),
+            )
+        });
+        match result {
+            Ok(report) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "receipt_id": report.receipt_id,
+                "replay_receipt_id": report.replay_receipt_id,
+                "query_embedding_digest_matches": report.query_embedding_digest_matches,
+                "result_ids_match": report.result_ids_match,
+                "missing_result_ids": report.missing_result_ids,
+                "added_result_ids": report.added_result_ids,
+                "original_result_ids": report.original_receipt.result_ids,
+                "replay_result_ids": report.replay_receipt.result_ids,
+            })),
+            Err(e) => Err(ErrorData::internal_error(
+                format!("replay_search error: {e}"),
+                None,
+            )),
+        }
+    }
+
     // ─── Reconcile tool (GAP #8) ────────────────────────────────────
 
     #[tool(
@@ -3582,6 +5013,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(()) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_vacuum"),
                 "message": "Database vacuumed successfully",
             })),
             Err(e) => Err(ErrorData::internal_error(
@@ -3602,6 +5034,7 @@ impl SemanticMemoryServer {
         match result {
             Ok(count) => json_to_string(&serde_json::json!({
                 "ok": true,
+                "receipt": mcp_receipt("sm_reembed_all"),
                 "reembedded_count": count,
                 "message": format!("Re-embedded {count} items"),
             })),
@@ -4104,6 +5537,91 @@ mod correctness_contract_tests {
         })
     }
 
+    fn invoke_record_outcome(
+        runtime: &tokio::runtime::Runtime,
+        server: &SemanticMemoryServer,
+        query: &str,
+        outcome: &str,
+    ) -> serde_json::Value {
+        let body = runtime
+            .block_on(async {
+                tokio::task::block_in_place(|| {
+                    server.sm_record_outcome(Parameters(RecordOutcomeParams {
+                        query: query.to_string(),
+                        outcome: outcome.to_string(),
+                    }))
+                })
+            })
+            .expect("record routing outcome");
+        serde_json::from_str(&body).expect("routing outcome JSON")
+    }
+
+    #[test]
+    fn routing_feedback_batch_persists_and_survives_restart() {
+        use semantic_memory::rl_routing::{is_trained, route_with_policy};
+        use semantic_memory::routing::{QueryProfile, RetrievalRouter};
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().to_path_buf();
+        let make_config = || BridgeConfig {
+            memory_dir: memory_dir.clone(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let server = SemanticMemoryServer::new(MemoryBridge::open(make_config()).unwrap(), "full");
+        let query = "compare rust vs python performance";
+
+        for index in 0..ROUTING_POLICY_PERSIST_BATCH {
+            let receipt = invoke_record_outcome(&runtime, &server, query, "bad");
+            assert_eq!(
+                receipt["policy_state"]["persisted"],
+                index + 1 == ROUTING_POLICY_PERSIST_BATCH
+            );
+        }
+
+        let persisted = runtime
+            .block_on(server.bridge.store.load_routing_policy())
+            .unwrap()
+            .expect("batched routing policy persisted");
+        assert_eq!(persisted.trained_examples, ROUTING_POLICY_PERSIST_BATCH);
+        assert!(persisted.last_updated.is_some());
+        assert!(is_trained(&persisted));
+
+        let profile = QueryProfile::from_query(query);
+        let heuristic = RetrievalRouter::default().route(&profile);
+        let before_restart = route_with_policy(&persisted, &profile);
+        assert_ne!(before_restart.rerank_fine, heuristic.rerank_fine);
+
+        let policy_json = runtime
+            .block_on(async { tokio::task::block_in_place(|| server.sm_get_routing_policy()) })
+            .unwrap();
+        let policy_json: serde_json::Value = serde_json::from_str(&policy_json).unwrap();
+        assert_eq!(
+            policy_json["policy"]["training_examples_count"],
+            ROUTING_POLICY_PERSIST_BATCH
+        );
+        assert!(policy_json["policy"]["last_updated"].is_string());
+
+        drop(server);
+        let restarted =
+            SemanticMemoryServer::new(MemoryBridge::open(make_config()).unwrap(), "full");
+        let loaded = runtime
+            .block_on(restarted.bridge.store.load_routing_policy())
+            .unwrap()
+            .expect("routing policy loaded after restart");
+        let after_restart = route_with_policy(&loaded, &profile);
+        assert_eq!(after_restart.bm25_coarse, before_restart.bm25_coarse);
+        assert_eq!(after_restart.vector_medium, before_restart.vector_medium);
+        assert_eq!(after_restart.rerank_fine, before_restart.rerank_fine);
+        assert_eq!(after_restart.decoder, before_restart.decoder);
+    }
+
     fn governed_decision_server(
         scopes: semantic_memory::AuthorityScopesV1,
     ) -> (SemanticMemoryServer, tokio::runtime::Runtime, String) {
@@ -4434,7 +5952,10 @@ mod correctness_contract_tests {
         assert_eq!(json["namespace"], "authority-test");
         assert_eq!(json["message"], "Fact added successfully");
         assert!(json["fact_id"].as_str().is_some());
-        assert_eq!(json.as_object().unwrap().len(), 4);
+        assert_eq!(json.as_object().unwrap().len(), 5);
+        assert!(json["receipt"]["receipt_id"].as_str().is_some());
+        assert!(json["receipt"]["recorded_at"].as_str().is_some());
+        assert_eq!(json["receipt"]["tool"], "sm_add_fact");
     }
 
     #[test]
@@ -4468,7 +5989,17 @@ mod correctness_contract_tests {
             add_fact_params("retry-safe", Some("caller-retry-key")),
         )
         .unwrap();
-        assert_eq!(first, retry);
+        // Compare fact_id rather than full JSON: receipt_id and recorded_at
+        // are unique per call by design, so full-string equality would fail.
+        let first_fact = serde_json::from_str::<serde_json::Value>(&first).unwrap()["fact_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let retry_fact = serde_json::from_str::<serde_json::Value>(&retry).unwrap()["fact_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(first_fact, retry_fact);
 
         let unkeyed_a = invoke_add_fact(
             &runtime,
@@ -4713,6 +6244,7 @@ mod correctness_contract_tests {
                         namespaces: Some(vec!["provenance-test".into()]),
                         request_id: Some("witnessed-provenance-test".into()),
                         retrieval_mode: None,
+                        replay_mode: None,
                     }))
                 })
             })
@@ -4768,6 +6300,7 @@ mod correctness_contract_tests {
                         namespaces: Some(vec!["provenance-test".into()]),
                         request_id: Some("witnessed-source-less-test".into()),
                         retrieval_mode: None,
+                        replay_mode: None,
                     }))
                 })
             })
@@ -4816,6 +6349,7 @@ mod correctness_contract_tests {
                         namespaces: Some(vec!["stateful".into()]),
                         request_id: Some("witnessed-state-request".into()),
                         retrieval_mode: None,
+                        replay_mode: None,
                     }))
                 })
             })
@@ -4900,6 +6434,7 @@ mod correctness_contract_tests {
                         namespaces: Some(vec!["modes".into()]),
                         request_id: None,
                         retrieval_mode: Some(retrieval_mode),
+                        replay_mode: None,
                     }))
                 })
                 .unwrap();
@@ -4911,6 +6446,211 @@ mod correctness_contract_tests {
                 serde_json::to_value(retrieval_mode).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn witnessed_search_opt_in_enables_complete_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = MemoryBridge::open(BridgeConfig {
+            memory_dir: dir.path().to_path_buf(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+        })
+        .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(bridge.store.add_fact(
+                "stored-replay",
+                "complete replay uses explicitly retained inputs",
+                Some("tests/stored-replay.md"),
+                None,
+            ))
+            .unwrap();
+        let server = SemanticMemoryServer::new(bridge, "full");
+        let body = runtime
+            .block_on(async {
+                server.sm_search_witnessed(Parameters(SearchWitnessedParams {
+                    query: "complete replay explicitly retained inputs".into(),
+                    top_k: Some(1),
+                    namespaces: Some(vec!["stored-replay".into()]),
+                    request_id: Some("mcp-stored-replay".into()),
+                    retrieval_mode: None,
+                    replay_mode: Some(ReplayModeParam::StoreInputs),
+                }))
+            })
+            .unwrap();
+        let witnessed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(witnessed["complete_replay_available"], true);
+        assert_eq!(witnessed["stage_outcomes"]["replay"]["outcome"], "Applied");
+
+        let replay = runtime
+            .block_on(async {
+                server.sm_replay_search(Parameters(ReplayStoredSearchParams {
+                    receipt_id: "mcp-stored-replay".into(),
+                }))
+            })
+            .unwrap();
+        let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+        assert_eq!(replay["result_ids_match"], true);
+        assert_eq!(replay["query_embedding_digest_matches"], true);
+    }
+
+    #[cfg(feature = "claim-integration")]
+    fn claim_test_entries() -> Vec<claim_ledger::LedgerEntry> {
+        let first = claim_ledger::LedgerEntryBuilder::new(1, None)
+            .add_claim(
+                "claim-1",
+                "semantic-memory:fact:fact-1",
+                "full",
+                "verified claim",
+            )
+            .unwrap();
+        let second = claim_ledger::LedgerEntryBuilder::new(2, Some(first.entry_digest.clone()))
+            .add_support_judgment(
+                "judgment-1",
+                "claim-1",
+                "bundle-1",
+                claim_ledger::SupportState::Supported,
+                "test",
+            )
+            .unwrap();
+        vec![first, second]
+    }
+
+    #[cfg(feature = "claim-integration")]
+    fn write_claim_jsonl(path: &std::path::Path, entries: &[claim_ledger::LedgerEntry]) {
+        let mut contents = String::new();
+        for entry in entries {
+            contents.push_str(&claim_ledger::serialize_entry(entry).unwrap());
+            contents.push('\n');
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[test]
+    fn claim_ledger_startup_rebuilds_from_verified_snapshot_and_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("claim_ledger.jsonl");
+        let entries = claim_test_entries();
+        write_claim_jsonl(&legacy, &entries);
+        let mut store = ClaimLedgerStore::open(legacy.clone());
+        let result = store
+            .compact(ClaimLedgerCompactionConfig {
+                dry_run: false,
+                max_entries: 0,
+                max_bytes: 0,
+                retain_tail_entries: 1,
+                max_backups: 2,
+            })
+            .unwrap();
+        assert_eq!(result["compacted"], true);
+
+        let reopened = ClaimLedgerStore::open(legacy);
+        assert!(reopened.trust_enabled);
+        assert!(reopened.snapshot.is_some());
+        assert_eq!(reopened.entries.len(), 1);
+        let mut index = ClaimTrustIndex::default();
+        index.load_snapshot(reopened.snapshot.as_ref().unwrap());
+        index.rebuild_from_ledger_incremental(&reopened.entries);
+        assert_eq!(index.trust_for_fact("fact-1"), "supported");
+        assert_eq!(index.last_processed_sequence, 2);
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[test]
+    fn interrupted_compaction_files_leave_old_ledger_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("claim_ledger.jsonl");
+        let entries = claim_test_entries();
+        write_claim_jsonl(&legacy, &entries);
+        let interrupted = dir.path().join("claim_ledger_generations/.tmp-interrupted");
+        std::fs::create_dir_all(&interrupted).unwrap();
+        std::fs::write(interrupted.join("snapshot.json"), b"incomplete").unwrap();
+
+        let reopened = ClaimLedgerStore::open(legacy);
+        assert!(reopened.trust_enabled);
+        assert!(reopened.snapshot.is_none());
+        assert_eq!(reopened.entries.len(), entries.len());
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[test]
+    fn tampered_active_snapshot_disables_claim_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("claim_ledger.jsonl");
+        write_claim_jsonl(&legacy, &claim_test_entries());
+        let mut store = ClaimLedgerStore::open(legacy.clone());
+        store
+            .compact(ClaimLedgerCompactionConfig {
+                dry_run: false,
+                max_entries: 0,
+                max_bytes: 0,
+                retain_tail_entries: 1,
+                max_backups: 2,
+            })
+            .unwrap();
+        let snapshot_path = store.path.parent().unwrap().join("snapshot.json");
+        let mut snapshot: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&snapshot_path).unwrap()).unwrap();
+        snapshot["claims"][0]["normalized_claim"] = serde_json::json!("tampered");
+        std::fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        let reopened = ClaimLedgerStore::open(legacy);
+        assert!(!reopened.trust_enabled);
+        assert!(reopened.entries.is_empty());
+    }
+
+    #[cfg(feature = "claim-integration")]
+    #[test]
+    fn compact_claim_ledger_defaults_to_dry_run_without_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = MemoryBridge::open(BridgeConfig {
+            memory_dir: dir.path().to_path_buf(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+        })
+        .unwrap();
+        let server = SemanticMemoryServer::new(bridge, "full");
+        assert!(server.exposes_tool("sm_compact_claim_ledger"));
+        {
+            let mut store = server.claim_ledger_store.lock().unwrap();
+            for entry in claim_test_entries() {
+                store.append(entry).unwrap();
+            }
+        }
+        let before = std::fs::read(dir.path().join("claim_ledger.jsonl")).unwrap();
+        let response = server
+            .sm_compact_claim_ledger(Parameters(CompactClaimLedgerParams {
+                dry_run: None,
+                max_entries: Some(0),
+                max_bytes: Some(0),
+                retain_tail_entries: Some(1),
+                max_backups: Some(2),
+            }))
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["dry_run"], true);
+        assert_eq!(response["compacted"], false);
+        assert_eq!(
+            before,
+            std::fs::read(dir.path().join("claim_ledger.jsonl")).unwrap()
+        );
+        assert!(!dir
+            .path()
+            .join("claim_ledger.active_compaction.json")
+            .exists());
+        assert!(!dir.path().join("claim_ledger_generations").exists());
     }
 }
 

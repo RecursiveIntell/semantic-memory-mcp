@@ -294,7 +294,8 @@ fn handle_search_routed(
     handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
     use semantic_memory::integration::plan_execution;
-    use semantic_memory::routing::RetrievalRouter;
+    use semantic_memory::rl_routing::{is_trained, route_with_policy};
+    use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
     let params: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -338,7 +339,21 @@ fn handle_search_routed(
         corpus_density: 0.5,
         ..Default::default()
     };
-    let decision = router.route_query(query);
+    let store = &bridge.store;
+    let policy = match block_in_place(|| handle.block_on(store.load_routing_policy())) {
+        Ok(policy) => policy,
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("load routing policy error: {e}")}),
+            )
+        }
+    };
+    let profile = QueryProfile::from_query(query);
+    let (decision, routing_source) = match policy.as_ref().filter(|p| is_trained(p)) {
+        Some(policy) => (route_with_policy(policy, &profile), "trained_policy"),
+        None => (router.route(&profile), "heuristic"),
+    };
     let contras = contradictions.clone();
     let plan = plan_execution(&decision, contras.clone());
 
@@ -349,7 +364,6 @@ fn handle_search_routed(
         base_top_k
     };
 
-    let store = &bridge.store;
     let ns_slice: Option<Vec<&str>> = namespaces
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -628,6 +642,7 @@ fn handle_search_routed(
                     "query_class": query_class,
                     "routed": true,
                     "routing_decision": {
+                        "source": routing_source,
                         "bm25_coarse": decision.bm25_coarse,
                         "vector_medium": decision.vector_medium,
                         "rerank_fine": decision.rerank_fine,
