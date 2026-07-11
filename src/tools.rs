@@ -34,6 +34,73 @@ pub struct SearchParams {
     pub namespaces: Option<Vec<String>>,
 }
 
+/// Parameters for mandatory witnessed autonomous retrieval.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchWitnessedParams {
+    pub query: String,
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+    /// Optional caller correlation ID; generated when omitted.
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+/// Exact namespace/resource scope used by governed authority decisions.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedNamespaceScopeParams {
+    pub namespace: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
+/// Purpose values carried by a delegation/elevation lease. The MCP tool fixes
+/// the decision purpose independently, so callers cannot substitute recall.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernedAccessPurposeParam {
+    Recall,
+    Assertion,
+    Action,
+    Export,
+    Replay,
+    Admin,
+}
+
+/// Existing multi-principal delegation/elevation lease contract in MCP-safe fields.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedLeaseParams {
+    pub lease_id: String,
+    pub delegator: String,
+    pub delegatee: String,
+    pub purposes: Vec<GovernedAccessPurposeParam>,
+    pub scope: GovernedNamespaceScopeParams,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    pub expires_at: String,
+    #[serde(default)]
+    pub revoked: bool,
+    #[serde(default)]
+    pub elevation: bool,
+}
+
+/// Multi-principal request for a fixed-purpose assertion or action decision.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedDecisionParams {
+    pub fact_id: String,
+    pub caller: String,
+    pub subject: String,
+    pub audiences: Vec<String>,
+    pub scope: GovernedNamespaceScopeParams,
+    #[serde(default)]
+    pub delegation_or_elevation: Option<GovernedLeaseParams>,
+}
+
 /// Parameters for sm_search_explained
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -70,6 +137,28 @@ pub struct AddFactParams {
     /// Evidence references supporting this fact (URLs, fact IDs, source paths).
     #[serde(default)]
     pub evidence_refs: Option<Vec<String>>,
+    /// Optional caller-provided idempotency key. Retries with the same key and
+    /// payload return the original fact; omit it for a distinct append.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[cfg(test)]
+mod add_fact_param_tests {
+    use super::AddFactParams;
+
+    #[test]
+    fn add_fact_idempotency_key_is_optional_and_backward_compatible() {
+        let legacy: AddFactParams =
+            serde_json::from_str(r#"{"content":"same fact","namespace":"general"}"#).unwrap();
+        assert_eq!(legacy.idempotency_key, None);
+
+        let keyed: AddFactParams = serde_json::from_str(
+            r#"{"content":"same fact","namespace":"general","idempotency_key":"request-42"}"#,
+        )
+        .unwrap();
+        assert_eq!(keyed.idempotency_key.as_deref(), Some("request-42"));
+    }
 }
 
 /// Parameters for sm_ingest_document
@@ -455,7 +544,8 @@ pub struct ConsolidateFactsParams {
 pub struct RecordOutcomeParams {
     /// The query string that was routed.
     pub query: String,
-    /// The outcome of the routing decision: "good", "bad", or "neutral".
+    /// Caller-supplied proxy feedback label: "good", "bad", or "neutral".
+    /// This is training input, not a verified retrieval outcome.
     pub outcome: String,
 }
 
@@ -587,6 +677,59 @@ pub struct ImportStatusParams {
 pub struct ImportEnvelopeParams {
     /// The import envelope as a JSON string.
     pub envelope_json: String,
+}
+
+// ─── LLM output parser tools ──────────────────────────────────────────
+
+/// Parameters for sm_parse_json
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseJsonParams {
+    /// The raw LLM output text that should contain JSON (may include think blocks, markdown fences, trailing text).
+    pub raw_output: String,
+}
+
+/// Parameters for sm_parse_json_value
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseJsonValueParams {
+    /// The raw LLM output text that should contain JSON.
+    pub raw_output: String,
+}
+
+/// Parameters for sm_strip_think_tags
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StripThinkTagsParams {
+    /// The text that may contain <think>...</think> blocks.
+    pub text: String,
+}
+
+/// Parameters for sm_repair_json
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RepairJsonParams {
+    /// The malformed JSON string to attempt repair on.
+    pub json_string: String,
+}
+
+/// Parameters for sm_parse_string_list
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseStringListParams {
+    /// The raw LLM output text that should contain a list of items.
+    pub raw_output: String,
+}
+
+/// Parameters for sm_parse_choice
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseChoiceParams {
+    /// The raw LLM output text that should contain a choice.
+    pub raw_output: String,
+    /// Valid options to choose from.
+    pub options: Vec<String>,
+}
+
+/// Parameters for sm_parse_number
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseNumberParams {
+    /// The raw LLM output text that should contain a number.
+    pub raw_output: String,
 }
 
 // ─── Projection query tools ───────────────────────────────────────────

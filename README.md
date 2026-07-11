@@ -304,11 +304,25 @@ When the agent calls `sm_search`, the query flows through:
 
 ## Tools
 
-The server exposes 33 MCP tools in the default `lean` profile, 39 in
-`standard`, and 48 in `full`. Use `tools/list` as the source of
-truth for the available tool surface on your build.
+The default autonomous profiles, `lean` and `standard`, expose three
+read-only tools. The explicit operator profile, `full`, exposes 60 tools.
+Use `tools/list` as the source of truth for the available tool surface on
+your build.
 
-### Core tools (always available)
+### Autonomous read-only tools
+
+- `sm_search_witnessed` returns witnessed retrieval results.
+- `sm_decide_assertion_authority` returns the existing typed
+  `origin_authority_decision_v1` receipt for a purpose fixed to `assertion`.
+- `sm_decide_action_authority` returns the same receipt type for a purpose
+  fixed to `action`; it neither returns memory content nor performs an action.
+
+The decision tools accept the existing multi-principal caller, subject,
+audience, namespace scope, and optional delegation/elevation lease fields.
+They are read-only and do not turn recall authority into assertion or action
+authority. Mutation and administration tools remain exclusive to `full`.
+
+### Full operator-profile tools
 
 #### sm_search
 
@@ -630,12 +644,13 @@ sm_discord_search(["fact:abc123-...", "fact:def456-..."])
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `full` | yes | All features — the full 48-tool surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
-| `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
+| `full` | yes | All features — the full 60-tool operator surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
+| `search` | no | Supported standalone build profile. It enables every semantic-memory and local integration capability referenced by the unified MCP tool router. |
 | `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
 
-Build with `--no-default-features --features search` for the minimal
-profile. The `full` feature enables all semantic-memory sub-features
+Build with `--no-default-features --features search` for the supported
+standalone profile. The current unified router is not a minimal tool surface.
+The `full` feature is an alias and enables all semantic-memory sub-features
 (provenance, temporal, decoder, discord, routing, subtraction,
 compression governor, integration, topology, community) plus the
 Candle embedder.

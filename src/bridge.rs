@@ -12,30 +12,17 @@ use std::path::PathBuf;
 use tokio::runtime::Handle;
 
 /// Which embedding backend to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EmbedderBackend {
     /// In-process Candle embedder (pure-Rust, CPU-only, no Ollama required).
     /// Downloads the model from HuggingFace Hub on first use.
+    #[cfg_attr(feature = "candle-embedder", default)]
     Candle,
     /// External Ollama server (requires `ollama serve` running).
+    #[cfg_attr(not(feature = "candle-embedder"), default)]
     Ollama,
     /// Mock embedder for testing (deterministic hash-based, no real embeddings).
     Mock,
-}
-
-impl Default for EmbedderBackend {
-    fn default() -> Self {
-        // Candle is the default when the feature is enabled.
-        // Ollama is the default when it's not (backward compat).
-        #[cfg(feature = "candle-embedder")]
-        {
-            EmbedderBackend::Candle
-        }
-        #[cfg(not(feature = "candle-embedder"))]
-        {
-            EmbedderBackend::Ollama
-        }
-    }
 }
 
 impl std::str::FromStr for EmbedderBackend {
@@ -78,6 +65,7 @@ pub struct BridgeConfig {
 }
 
 impl BridgeConfig {
+    #[allow(clippy::too_many_arguments)]
     pub fn from_args(
         memory_dir: &str,
         embedder_backend: EmbedderBackend,
@@ -153,7 +141,8 @@ impl MemoryBridge {
         {
             if config.turbo_quant_enabled {
                 use semantic_memory::DerivedVectorBackendPolicy;
-                search_config.derived_vector_backend = DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
+                search_config.derived_vector_backend =
+                    DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
                 if let Some(bits) = config.turbo_quant_bits {
                     search_config.turbo_quant_bits = bits;
                 }

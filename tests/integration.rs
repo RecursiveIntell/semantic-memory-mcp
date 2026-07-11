@@ -4,8 +4,9 @@
 //! the mock embedder (no model download, no Ollama, no network).
 //! Each test gets a fresh temp directory so there is no cross-test state.
 
-use semantic_memory_mcp::bridge::{BridgeConfig, EmbedderBackend, MemoryBridge};
 use semantic_memory::GraphEdgeType;
+use semantic_memory_mcp::bridge::{BridgeConfig, EmbedderBackend, MemoryBridge};
+use semantic_memory_mcp::server::SemanticMemoryServer;
 
 /// Open a MemoryBridge with the mock embedder in a temp directory.
 fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
@@ -20,6 +21,62 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
         turbo_quant_projections: None,
     };
     MemoryBridge::open(config).expect("bridge should open")
+}
+
+#[test]
+fn autonomous_profiles_expose_only_witnessed_search() {
+    for profile in ["lean", "standard"] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SemanticMemoryServer::new(open_bridge(dir.path()), profile);
+        assert!(server.exposes_tool("sm_search_witnessed"));
+        assert!(server.exposes_tool("sm_decide_assertion_authority"));
+        assert!(server.exposes_tool("sm_decide_action_authority"));
+        assert!(!server.exposes_tool("sm_search"));
+        assert_eq!(
+            server.exposed_tool_names(),
+            vec![
+                "sm_decide_action_authority",
+                "sm_decide_assertion_authority",
+                "sm_search_witnessed",
+            ]
+        );
+        for name in [
+            "sm_decide_assertion_authority",
+            "sm_decide_action_authority",
+        ] {
+            let annotations = server.tool_annotations(name).expect("decision metadata");
+            assert_eq!(annotations.read_only_hint, Some(true));
+            assert_ne!(annotations.destructive_hint, Some(true));
+        }
+        for forbidden in [
+            "sm_add_fact",
+            "sm_delete_fact",
+            "sm_delete_namespace",
+            "sm_update_fact",
+            "sm_set_provenance",
+            "sm_record_outcome",
+        ] {
+            assert!(
+                !server.exposes_tool(forbidden),
+                "{profile} exposed {forbidden}"
+            );
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let full = SemanticMemoryServer::new(open_bridge(dir.path()), "full");
+    assert!(full.exposes_tool("sm_search_witnessed"));
+    assert!(full.exposes_tool("sm_search"));
+}
+
+#[test]
+fn routing_feedback_is_declared_mutating() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = SemanticMemoryServer::new(open_bridge(dir.path()), "full");
+    let annotations = server
+        .tool_annotations("sm_record_outcome")
+        .expect("record outcome metadata");
+    assert_eq!(annotations.read_only_hint, Some(false));
+    assert_eq!(annotations.destructive_hint, Some(false));
 }
 
 /// Helper: add a fact via the underlying store and return its fact_id.
@@ -160,12 +217,8 @@ mod lifecycle_tests {
         let results = rt
             .block_on(store.search("turbo-quant downloads", Some(10), None, None))
             .expect("search should succeed");
-        let _has_old = results
-            .iter()
-            .any(|r| r.content.contains("1000 downloads"));
-        let has_new = results
-            .iter()
-            .any(|r| r.content.contains("4000 downloads"));
+        let _has_old = results.iter().any(|r| r.content.contains("1000 downloads"));
+        let has_new = results.iter().any(|r| r.content.contains("4000 downloads"));
         assert!(has_new, "new fact should appear in search");
         // Old fact may or may not be filtered depending on search filter logic,
         // but the edge should exist
@@ -236,10 +289,7 @@ mod lifecycle_tests {
         let edges = rt
             .block_on(store.list_graph_edges_for_node(&source))
             .expect("list_graph_edges should succeed");
-        assert!(
-            !edges.is_empty(),
-            "should have at least one edge from A"
-        );
+        assert!(!edges.is_empty(), "should have at least one edge from A");
         let found = edges.iter().any(|e| e.target == target);
         assert!(found, "should find the edge A->B");
     }
@@ -251,9 +301,7 @@ mod lifecycle_tests {
         add_fact(&bridge, "Fact for stats test.", "stats_ns");
         let store = &bridge.store;
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let stats = rt
-            .block_on(store.stats())
-            .expect("stats should succeed");
+        let stats = rt.block_on(store.stats()).expect("stats should succeed");
         assert!(
             stats.total_facts >= 1,
             "should have at least 1 fact, got: {}",
@@ -343,6 +391,23 @@ mod http_server_tests {
     }
 
     #[test]
+    fn routing_feedback_response_is_mutating_proxy_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let (port, _rt) = start_http(bridge);
+        let (_, body) = http_post(
+            port,
+            "/record-outcome",
+            r#"{"query":"test query","outcome":"good"}"#,
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(json["mutating"], true);
+        assert_eq!(json["feedback"]["kind"], "ProxyLabel");
+        assert_eq!(json["feedback"]["label"], "good");
+        assert!(json.get("outcome").is_none());
+    }
+
+    #[test]
     fn add_and_search_via_http() {
         let dir = tempfile::tempdir().unwrap();
         let bridge = open_bridge(dir.path());
@@ -363,6 +428,14 @@ mod http_server_tests {
         assert!(
             add_json["fact_id"].is_string(),
             "fact_id should be a string"
+        );
+        assert!(
+            add_json["authority_receipt"].is_object(),
+            "HTTP writes must return a durable authority receipt: {add_body}"
+        );
+        assert_eq!(
+            add_json["authority_receipt"]["affected_ids"][0], add_json["fact_id"],
+            "authority receipt must witness the returned fact"
         );
 
         // Search for it
@@ -388,6 +461,46 @@ mod http_server_tests {
     }
 
     #[test]
+    fn http_search_returns_current_supersession_head_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let old_id = add_fact(&bridge, "release train is indigo", "state");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let new_id = rt
+            .block_on(
+                bridge
+                    .store
+                    .add_fact("state", "release train is coral", None, None),
+            )
+            .unwrap();
+        rt.block_on(bridge.store.add_graph_edge(
+            &format!("fact:{new_id}"),
+            &format!("fact:{old_id}"),
+            GraphEdgeType::Entity {
+                relation: "supersedes".into(),
+            },
+            1.0,
+            None,
+        ))
+        .unwrap();
+        let (port, _server_rt) = start_http(bridge);
+        let (_, body) = http_post(
+            port,
+            "/search",
+            r#"{"query":"release train","top_k":10,"namespaces":["state"]}"#,
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let contents: Vec<&str> = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["content"].as_str())
+            .collect();
+        assert!(contents.iter().any(|value| value.contains("coral")));
+        assert!(!contents.iter().any(|value| value.contains("indigo")));
+    }
+
+    #[test]
     fn stats_endpoint_returns_counts() {
         let dir = tempfile::tempdir().unwrap();
         let bridge = open_bridge(dir.path());
@@ -398,11 +511,17 @@ mod http_server_tests {
             "/add",
             r#"{"content": "Test fact for stats.", "namespace": "stats"}"#,
         );
-        assert!(add_response.contains("200 OK"), "add should succeed: {}", add_body);
+        assert!(
+            add_response.contains("200 OK"),
+            "add should succeed: {}",
+            add_body
+        );
 
         let (_, body) = http_post(port, "/stats", "{}");
         let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(json["ok"], serde_json::Value::Bool(true));
+        assert_eq!(json["components"]["core"]["health"], "healthy");
+        assert_eq!(json["components"]["graph"]["health"], "healthy");
         assert!(
             json["facts"].as_u64().unwrap_or(0) >= 1,
             "should have >= 1 fact, got: {}",

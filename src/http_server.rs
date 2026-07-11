@@ -8,7 +8,7 @@
 //! Endpoints:
 //!   POST /search   {"query": "...", "top_k": 10} -> search results
 //!   POST /stats    {} -> DB stats
-//!   POST /add      {"content": "...", "namespace": "..."} -> fact_id
+//!   POST /add      {"content": "...", "namespace": "...", "source": "..."} -> authority receipt
 //!   GET  /health   -> {"ok": true}
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -97,11 +97,7 @@ pub fn start_http_server(port: u16, bridge: MemoryBridge, handle: Handle) {
     });
 }
 
-fn handle_connection(
-    mut stream: std::net::TcpStream,
-    bridge: MemoryBridge,
-    handle: Handle,
-) {
+fn handle_connection(mut stream: std::net::TcpStream, bridge: MemoryBridge, handle: Handle) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
@@ -154,7 +150,10 @@ fn handle_connection(
         ("POST", "/maintenance/check") => handle_maintenance_check(&bridge, &handle),
         ("POST", "/maintenance/vacuum") => handle_maintenance_vacuum(&bridge, &handle),
         ("POST", "/maintenance/reembed") => handle_maintenance_reembed(&bridge, &handle),
-        ("POST", "/maintenance/reconcile") => handle_maintenance_reconcile(&body_str, &bridge, &handle),
+        ("POST", "/maintenance/reconcile") => {
+            handle_maintenance_reconcile(&body_str, &bridge, &handle)
+        }
+        ("POST", "/maintenance/rebuild-hnsw") => handle_maintenance_rebuild_hnsw(&bridge, &handle),
         ("POST", "/maintenance/compact-hnsw") => handle_maintenance_compact_hnsw(&bridge, &handle),
         _ => (
             "404 Not Found",
@@ -195,7 +194,10 @@ fn handle_search(
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let do_rerank = params.get("rerank").and_then(|v| v.as_bool()).unwrap_or(false);
+    let do_rerank = params
+        .get("rerank")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -221,7 +223,9 @@ fn handle_search(
                 .map(|r| {
                     let namespace = match &r.source {
                         semantic_memory::SearchSource::Fact { namespace, .. } => namespace.clone(),
-                        semantic_memory::SearchSource::Chunk { document_title, .. } => document_title.clone(),
+                        semantic_memory::SearchSource::Chunk { document_title, .. } => {
+                            document_title.clone()
+                        }
                         _ => String::new(),
                     };
                     serde_json::json!({
@@ -304,7 +308,10 @@ fn handle_search_routed(
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
     let base_top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(12) as usize;
-    let query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let query_class = params
+        .get("query_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("A");
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -312,7 +319,10 @@ fn handle_search_routed(
         .get("contradictions")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-    let group_by_community = params.get("group_by_community").and_then(|v| v.as_bool()).unwrap_or(false);
+    let group_by_community = params
+        .get("group_by_community")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -402,11 +412,12 @@ fn handle_search_routed(
             if decision.decoder {
                 #[cfg(feature = "full")]
                 {
-                    use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
+                    use semantic_memory::factor_graph::{
+                        factors_from_edges, FactorGraph, FactorGraphConfig,
+                    };
 
-                    let graph_edges = block_in_place(|| {
-                        handle.block_on(store.list_all_graph_edges())
-                    });
+                    let graph_edges =
+                        block_in_place(|| handle.block_on(store.list_all_graph_edges()));
 
                     if let Ok(edges) = graph_edges {
                         let raw_edges: Vec<(
@@ -440,8 +451,7 @@ fn handle_search_routed(
                             .map(|r| (r.source.result_id(), r.score))
                             .collect();
                         let factors = factors_from_edges(&raw_edges);
-                        let graph =
-                            FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
+                        let graph = FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
                         let propagated = graph.propagate();
                         let top_beliefs = propagated.top_k(top_k);
 
@@ -485,7 +495,8 @@ fn handle_search_routed(
             // Discord second-order retrieval
             if plan.use_discord {
                 use semantic_memory::discord::DiscordScorer;
-                let direct_ids: Vec<String> = results.iter().map(|r| r.source.result_id()).collect();
+                let direct_ids: Vec<String> =
+                    results.iter().map(|r| r.source.result_id()).collect();
                 let existing_ids: std::collections::HashSet<String> =
                     direct_ids.iter().cloned().collect();
                 let edges_result = block_in_place(|| {
@@ -563,33 +574,23 @@ fn handle_search_routed(
                             member_to_comm.insert(m.clone(), c.id.clone());
                         }
                     }
-                    let mut groups: std::collections::HashMap<
-                        String,
-                        Vec<serde_json::Value>,
-                    > = std::collections::HashMap::new();
+                    let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
+                        std::collections::HashMap::new();
                     let mut ungrouped: Vec<serde_json::Value> = Vec::new();
                     for r in &json_results {
                         if let Some(rid) = r.get("result_id").and_then(|v| v.as_str()) {
                             match member_to_comm.get(rid).cloned() {
-                                Some(cid) => {
-                                    groups.entry(cid).or_default().push(r.clone())
-                                }
+                                Some(cid) => groups.entry(cid).or_default().push(r.clone()),
                                 None => ungrouped.push(r.clone()),
                             }
                         }
                     }
                     let mut map = serde_json::Map::new();
                     for (cid, items) in groups {
-                        map.insert(
-                            format!("community_{cid}"),
-                            serde_json::json!(items),
-                        );
+                        map.insert(format!("community_{cid}"), serde_json::json!(items));
                     }
                     if !ungrouped.is_empty() {
-                        map.insert(
-                            "ungrouped".to_string(),
-                            serde_json::json!(ungrouped),
-                        );
+                        map.insert("ungrouped".to_string(), serde_json::json!(ungrouped));
                     }
                     serde_json::Value::Object(map)
                 } else {
@@ -653,28 +654,37 @@ fn handle_search_routed(
     }
 }
 
-fn handle_stats(
-    bridge: &MemoryBridge,
-    handle: &Handle,
-) -> (&'static str, serde_json::Value) {
+fn handle_stats(bridge: &MemoryBridge, handle: &Handle) -> (&'static str, serde_json::Value) {
     let store = &bridge.store;
-    let result = block_in_place(|| handle.block_on(store.stats()));
-    match result {
-        Ok(stats) => (
-            "200 OK",
-            serde_json::json!({
-                "ok": true,
-                "facts": stats.total_facts,
-                "documents": stats.total_documents,
-                "chunks": stats.total_chunks,
-                "db_size_mb": (stats.database_size_bytes as f64) / (1024.0 * 1024.0),
-            }),
-        ),
-        Err(e) => (
-            "500 Internal Server Error",
-            serde_json::json!({"ok": false, "error": format!("{e}")}),
-        ),
-    }
+    let core = block_in_place(|| handle.block_on(store.stats()));
+    let graph = block_in_place(|| handle.block_on(store.list_all_graph_edges()));
+    let core_health = match &core {
+        Ok(_) => serde_json::json!({"health":"healthy","error":null}),
+        Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
+    };
+    let graph_health = match &graph {
+        Ok(_) => serde_json::json!({"health":"healthy","error":null}),
+        Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
+    };
+    let stats = core.ok();
+    let graph_edges = graph.ok().map(|edges| edges.len());
+    let ok = stats.is_some() && graph_edges.is_some();
+    (
+        if ok {
+            "200 OK"
+        } else {
+            "503 Service Unavailable"
+        },
+        serde_json::json!({
+            "ok": ok,
+            "components": {"core": core_health, "graph": graph_health},
+            "facts": stats.as_ref().map(|s| s.total_facts),
+            "documents": stats.as_ref().map(|s| s.total_documents),
+            "chunks": stats.as_ref().map(|s| s.total_chunks),
+            "graph_edges": graph_edges,
+            "db_size_mb": stats.as_ref().map(|s| (s.database_size_bytes as f64) / (1024.0 * 1024.0)),
+        }),
+    )
 }
 
 fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
@@ -743,6 +753,12 @@ fn handle_add_fact(
         .and_then(|v| v.as_str())
         .unwrap_or("general");
     let source = params.get("source").and_then(|v| v.as_str());
+    let idempotency_key = params
+        .get("idempotency_key")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http-add:{}", uuid::Uuid::new_v4()));
 
     if content.is_empty() {
         return (
@@ -752,14 +768,62 @@ fn handle_add_fact(
     }
 
     let store = &bridge.store;
-    let result =
-        block_in_place(|| handle.block_on(store.add_fact(namespace, content, source, None)));
+    let source_ref = source.filter(|value| !value.trim().is_empty());
+    let origin = match source_ref {
+        Some(value) => semantic_memory::OriginAuthorityLabelV1::new(
+            semantic_memory::OriginClassV1::ExternalEvidence,
+            "principal:semantic-memory-http",
+            "caller:http-add",
+            format!("blake3:{}", blake3::hash(value.as_bytes()).to_hex()),
+            semantic_memory::OriginRiskV1::Medium,
+            semantic_memory::AuthorityScopesV1 {
+                recall: semantic_memory::AuthorityScopeV1::Universal,
+                assertion: semantic_memory::AuthorityScopeV1::Denied,
+                action: semantic_memory::AuthorityScopeV1::Denied,
+            },
+            semantic_memory::ElevationRequirementV1::ExplicitOperatorApproval,
+            None,
+            semantic_memory::RevocationStatusV1::Active,
+            vec!["principal:semantic-memory-http".into()],
+        )
+        .expect("HTTP external-evidence origin constants are valid"),
+        None => semantic_memory::OriginAuthorityLabelV1::operator_system(
+            "principal:semantic-memory-http",
+            "caller:http-add",
+        ),
+    };
+    let permit = match source_ref {
+        Some(source_ref) => semantic_memory::AuthorityPermit::with_evidence(
+            "principal:semantic-memory-http",
+            "caller:http-add",
+            semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
+            vec![source_ref.to_owned()],
+        ),
+        None => semantic_memory::AuthorityPermit::operator_system(
+            "principal:semantic-memory-http",
+            "caller:http-add",
+            semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
+        ),
+    }
+    .with_origin(origin);
+    let result = block_in_place(|| {
+        handle.block_on(store.authority().append(
+            permit,
+            idempotency_key,
+            namespace.to_owned(),
+            content.to_owned(),
+            source.map(str::to_owned),
+        ))
+    });
 
     match result {
-        Ok(fact_id) => (
-            "200 OK",
-            serde_json::json!({"ok": true, "fact_id": fact_id}),
-        ),
+        Ok(receipt) => {
+            let fact_id = receipt.affected_ids.first().cloned();
+            (
+                "200 OK",
+                serde_json::json!({"ok": true, "fact_id": fact_id, "authority_receipt": receipt}),
+            )
+        }
         Err(e) => (
             "500 Internal Server Error",
             serde_json::json!({"ok": false, "error": format!("{e}")}),
@@ -787,8 +851,14 @@ fn handle_record_outcome(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let outcome = params.get("outcome").and_then(|v| v.as_str()).unwrap_or("neutral");
-    let _query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let outcome = params
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .unwrap_or("neutral");
+    let _query_class = params
+        .get("query_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("A");
 
     if query.is_empty() {
         return (
@@ -815,20 +885,31 @@ fn handle_record_outcome(
 
     let store = &bridge.store;
     // Load persisted policy (or default if none saved yet)
-    let mut policy = block_in_place(|| handle.block_on(store.load_routing_policy()))
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let mut policy = match block_in_place(|| handle.block_on(store.load_routing_policy())) {
+        Ok(policy) => policy.unwrap_or_default(),
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("load routing policy error: {e}")}),
+            )
+        }
+    };
     record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
     // Save updated policy
-    let _ = block_in_place(|| handle.block_on(store.save_routing_policy(&policy)));
+    if let Err(e) = block_in_place(|| handle.block_on(store.save_routing_policy(&policy))) {
+        return (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("persist routing policy error: {e}")}),
+        );
+    }
 
     (
         "200 OK",
         serde_json::json!({
             "ok": true,
+            "mutating": true,
             "recorded": true,
-            "outcome": outcome,
+            "feedback": {"kind": "ProxyLabel", "label": outcome},
             "routing_decision": {
                 "bm25_coarse": decision.bm25_coarse,
                 "vector_medium": decision.vector_medium,
@@ -920,9 +1001,8 @@ fn handle_discord(
                 );
             }
             let store = &bridge.store;
-            let search_result = block_in_place(|| {
-                handle.block_on(store.search(query, Some(top_k), None, None))
-            });
+            let search_result =
+                block_in_place(|| handle.block_on(store.search(query, Some(top_k), None, None)));
             match search_result {
                 Ok(results) => results.iter().map(|r| r.source.result_id()).collect(),
                 Err(e) => {
@@ -945,11 +1025,7 @@ fn handle_discord(
     let store = &bridge.store;
     // Load graph edges for the neighborhood
     let edges_result = block_in_place(|| {
-        handle.block_on(store.list_graph_edges_for_neighborhood(
-            direct_ids.clone(),
-            2,
-            200,
-        ))
+        handle.block_on(store.list_graph_edges_for_neighborhood(direct_ids.clone(), 2, 200))
     });
 
     let edges: Vec<semantic_memory::discord::GraphEdgeRef> = match edges_result {
@@ -1180,6 +1256,54 @@ fn handle_maintenance_reconcile(
             "500 Internal Server Error",
             serde_json::json!({"ok": false, "error": format!("reconcile error: {e}")}),
         ),
+    }
+}
+
+/// Handle POST /maintenance/rebuild-hnsw: calls store.rebuild_hnsw_index().
+///
+/// Rebuilds the HNSW sidecar from current SQLite embeddings. Use this when
+/// the index is stale (e.g. after bulk imports, model changes, or long periods
+/// without automatic sync).
+fn handle_maintenance_rebuild_hnsw(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    #[cfg(feature = "hnsw")]
+    {
+        let store = &bridge.store;
+        let result = block_in_place(|| handle.block_on(store.rebuild_hnsw_index()));
+
+        return match result {
+            Ok(receipt) => (
+                "200 OK",
+                serde_json::json!({
+                    "ok": true,
+                    "action": "rebuild-hnsw",
+                    "message": "HNSW index rebuilt successfully",
+                    "generation_id": receipt.generation_id,
+                    "vector_count": receipt.vector_count,
+                }),
+            ),
+            Err(e) => (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("rebuild_hnsw error: {e}")}),
+            ),
+        };
+    }
+
+    #[cfg(not(feature = "hnsw"))]
+    {
+        let _ = bridge;
+        let _ = handle;
+        (
+            "200 OK",
+            serde_json::json!({
+                "ok": true,
+                "action": "rebuild-hnsw",
+                "message": "HNSW rebuild not applicable — usearch backend does not require rebuild",
+                "skipped": true,
+            }),
+        )
     }
 }
 

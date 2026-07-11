@@ -80,8 +80,8 @@ struct Cli {
     #[arg(long)]
     turbo_quant_projections: Option<usize>,
 
-    /// Tool profile: lean (33 tools, default), standard (39 tools), full (48 tools).
-    /// Lean hides admin/audit/bitemporal/import tools for better agent efficiency.
+    /// Tool profile: lean/standard (3 governed read-only tools; lean is default),
+    /// or full (60 operator tools, including mutation and administration).
     #[arg(long, default_value = "lean")]
     tool_profile: String,
 }
@@ -107,7 +107,10 @@ fn main() -> anyhow::Result<()> {
             );
         }
         EmbedderBackend::Ollama => {
-            let url = cli.embedding_url.as_deref().unwrap_or("http://localhost:11434");
+            let url = cli
+                .embedding_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
             eprintln!(
                 "  embedding: {} @ {} ({}d) — Ollama GPU-accelerated",
                 cli.embedding_model.as_deref().unwrap_or("nomic-embed-text"),
