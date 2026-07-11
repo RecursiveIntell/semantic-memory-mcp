@@ -1273,7 +1273,7 @@ fn handle_maintenance_rebuild_hnsw(
         let store = &bridge.store;
         let result = block_in_place(|| handle.block_on(store.rebuild_hnsw_index()));
 
-        return match result {
+        match result {
             Ok(receipt) => (
                 "200 OK",
                 serde_json::json!({
@@ -1281,14 +1281,14 @@ fn handle_maintenance_rebuild_hnsw(
                     "action": "rebuild-hnsw",
                     "message": "HNSW index rebuilt successfully",
                     "generation_id": receipt.generation_id,
-                    "vector_count": receipt.vector_count,
+                    "vector_count": receipt.source_row_count,
                 }),
             ),
             Err(e) => (
                 "500 Internal Server Error",
                 serde_json::json!({"ok": false, "error": format!("rebuild_hnsw error: {e}")}),
             ),
-        };
+        }
     }
 
     #[cfg(not(feature = "hnsw"))]
@@ -1320,7 +1320,7 @@ fn handle_maintenance_compact_hnsw(
         let store = &bridge.store;
         let result = block_in_place(|| handle.block_on(store.compact_hnsw()));
 
-        return match result {
+        match result {
             Ok(()) => (
                 "200 OK",
                 serde_json::json!({"ok": true, "action": "compact-hnsw", "message": "HNSW index compacted successfully"}),
@@ -1329,7 +1329,7 @@ fn handle_maintenance_compact_hnsw(
                 "500 Internal Server Error",
                 serde_json::json!({"ok": false, "error": format!("compact_hnsw error: {e}")}),
             ),
-        };
+        }
     }
 
     #[cfg(not(feature = "hnsw"))]
