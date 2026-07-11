@@ -645,6 +645,12 @@ impl SemanticMemoryServer {
         let receipt = response.receipt.ok_or_else(|| {
             ErrorData::internal_error("witness missing; operation contained".to_string(), None)
         })?;
+        let authority_state = tokio::task::block_in_place(|| {
+            Handle::current().block_on(self.bridge.store.authority().current_state())
+        })
+        .map_err(|error| {
+            ErrorData::internal_error(format!("authority state lookup failed: {error}"), None)
+        })?;
         let durable = tokio::task::block_in_place(|| {
             Handle::current().block_on(self.bridge.store.get_search_receipt(&receipt.receipt_id))
         })
@@ -681,14 +687,20 @@ impl SemanticMemoryServer {
         };
         json_to_string(&serde_json::json!({
             "schema_version": "retrieval_response_v1", "ok": true, "request_id": request_id, "receipt_id": receipt.receipt_id,
-            "state_view": {"kind": "Current"}, "current_snapshot_id": null, "retrieval_epoch": null,
+            "state_view": {"kind": "Current"}, "current_snapshot_id": authority_state.snapshot_id.0,
+            "retrieval_epoch": authority_state.retrieval_epoch.0,
             "evaluation_time": receipt.evaluation_time,
-            "authority": {"snapshot_id": null, "retrieval_epoch": null, "status": "unavailable", "degradation": "authority snapshot and retrieval epoch are not exposed by the current API"},
+            "authority": {
+                "snapshot_id": authority_state.snapshot_id.0,
+                "retrieval_epoch": authority_state.retrieval_epoch.0,
+                "status": "Applied",
+                "degradation": null
+            },
             "digests": {"query_text": query_digest, "input": input_digest, "filter": filter_digest, "config": config_digest, "model": model_digest},
             "execution": {"cache": "bypassed", "candidate_backend": receipt.candidate_backend, "exactness": exactness, "artifact_generation_id": receipt.artifact_generation_id},
             "ordered_results": ordered_results, "results": results,
             "stage_outcomes": {
-                "authority_snapshot": {"outcome": "Degraded", "degradation": "current snapshot id and retrieval epoch unavailable"},
+                "authority_snapshot": {"outcome": "Applied", "degradation": null},
                 "hybrid_retrieval": {"outcome": "Applied", "degradation": null},
                 "receipt_persistence": {"outcome": "Applied", "degradation": null},
                 "cache": {"outcome": "Skipped", "degradation": "witnessed retrieval bypasses cache"},
@@ -3991,6 +4003,7 @@ fn typed_graph_path(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod correctness_contract_tests {
     use super::*;
     use crate::bridge::{BridgeConfig, EmbedderBackend};
@@ -4689,6 +4702,93 @@ mod correctness_contract_tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(json["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sm_search_witnessed_exposes_authority_state_and_vector_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = MemoryBridge::open(BridgeConfig {
+            memory_dir: dir.path().to_path_buf(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+        })
+        .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let permit = semantic_memory::AuthorityPermit::operator_system(
+            "witness-principal",
+            "witness-caller",
+            semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
+        );
+        let receipt = runtime
+            .block_on(bridge.store.authority().append(
+                permit,
+                "witnessed-state-1".into(),
+                "stateful".into(),
+                "governed witnessed state should expose".into(),
+                Some("tests/witnessed-state.md".into()),
+            ))
+            .unwrap();
+
+        let server = SemanticMemoryServer::new(bridge, "lean");
+        let body = runtime
+            .block_on(async {
+                tokio::task::block_in_place(|| {
+                    server.sm_search_witnessed(Parameters(SearchWitnessedParams {
+                        query: "governed witnessed state should expose".into(),
+                        top_k: Some(5),
+                        namespaces: Some(vec!["stateful".into()]),
+                        request_id: Some("witnessed-state-request".into()),
+                    }))
+                })
+            })
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert!(json["authority"]["snapshot_id"].as_str().is_some());
+        assert!(
+            json["authority"]["retrieval_epoch"].as_u64().is_some()
+                || json["authority"]["retrieval_epoch"].as_str().is_some(),
+            "authoritative retrieval epoch should be surfaced"
+        );
+        assert!(json["current_snapshot_id"].as_str().is_some());
+        assert!(
+            json["retrieval_epoch"].as_u64().is_some()
+                || json["retrieval_epoch"].as_str().is_some(),
+            "top-level retrieval epoch should be surfaced"
+        );
+
+        assert_eq!(json["authority"]["status"], "Applied");
+        assert_eq!(
+            json["stage_outcomes"]["authority_snapshot"]["outcome"],
+            "Applied"
+        );
+
+        let hit = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|hit| {
+                hit.get("content")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|content| content.contains("governed witnessed state"))
+            })
+            .expect("governed witnessed result should be returned");
+
+        assert!(hit["cosine_similarity"].as_f64().is_some());
+        assert_eq!(
+            hit["source"],
+            serde_json::json!("tests/witnessed-state.md"),
+            "witnessed path should retain source"
+        );
+        assert_eq!(
+            json["ordered_results"][0]["result_id"],
+            format!("fact:{}", receipt.affected_ids[0])
+        );
     }
 }
 

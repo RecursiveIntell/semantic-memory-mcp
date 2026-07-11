@@ -4,7 +4,7 @@
 //! the mock embedder (no model download, no Ollama, no network).
 //! Each test gets a fresh temp directory so there is no cross-test state.
 
-use semantic_memory::GraphEdgeType;
+use semantic_memory::{AuthorityPermit, GraphEdgeType};
 use semantic_memory_mcp::bridge::{BridgeConfig, EmbedderBackend, MemoryBridge};
 use semantic_memory_mcp::server::SemanticMemoryServer;
 
@@ -62,6 +62,41 @@ fn autonomous_profiles_expose_only_witnessed_search() {
             );
         }
     }
+
+    let dir = tempfile::tempdir().unwrap();
+    let bridge = open_bridge(dir.path());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let permit = AuthorityPermit::operator_system(
+        "lean-principal",
+        "lean-caller",
+        AuthorityPermit::APPEND_CAPABILITY,
+    );
+    runtime
+        .block_on(bridge.store.authority().append(
+            permit,
+            "lean-canary".into(),
+            "lean".into(),
+            "lean profile canary should remain queryable by witnessed surfaces".into(),
+            Some("tests/canary.md".into()),
+        ))
+        .unwrap();
+    let lean_server = SemanticMemoryServer::new(open_bridge(dir.path()), "lean");
+    assert!(lean_server.exposes_tool("sm_search_witnessed"));
+    assert!(!lean_server.exposes_tool("sm_add_fact"));
+    let results = runtime
+        .block_on(
+            bridge
+                .store
+                .search("lean profile canary", Some(5), None, None),
+        )
+        .unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|result| result.content.contains("lean profile canary")),
+        "Canary should be queryable in lean-profile environment"
+    );
+
     let dir = tempfile::tempdir().unwrap();
     let full = SemanticMemoryServer::new(open_bridge(dir.path()), "full");
     assert!(full.exposes_tool("sm_search_witnessed"));
