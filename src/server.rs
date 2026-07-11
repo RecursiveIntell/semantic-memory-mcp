@@ -595,6 +595,7 @@ impl SemanticMemoryServer {
             top_k,
             namespaces,
             request_id,
+            retrieval_mode,
         }): Parameters<SearchWitnessedParams>,
     ) -> Result<String, ErrorData> {
         use semantic_memory::{ExactnessProfile, ReceiptMode, SearchContext};
@@ -613,8 +614,14 @@ impl SemanticMemoryServer {
             &serde_json::json!({"query": query, "top_k": k, "filters": filters}).to_string(),
         );
         let filter_digest = digest(&filters.to_string());
+        let retrieval_mode = retrieval_mode.unwrap_or(RetrievalModeParam::Hybrid);
+        let retrieval_mode_name = match retrieval_mode {
+            RetrievalModeParam::Hybrid => "hybrid",
+            RetrievalModeParam::FtsOnly => "fts_only",
+            RetrievalModeParam::VectorOnly => "vector_only",
+        };
         let config_digest = digest(&format!(
-            "hybrid_rrf;top_k={k};state=current;cache=bypass;exactness=prefer_exact"
+            "retrieval_mode={retrieval_mode_name};top_k={k};state=current;cache=bypass;exactness=prefer_exact"
         ));
         let ns: Option<Vec<&str>> = namespaces
             .as_ref()
@@ -628,13 +635,40 @@ impl SemanticMemoryServer {
         context.filter_digest = Some(filter_digest.clone());
         // ReturnReceipt bypasses semantic-memory's cache and propagates persistence failure.
         let response = tokio::task::block_in_place(|| {
-            Handle::current().block_on(self.bridge.store.search_with_context(
-                &query,
-                Some(k),
-                ns.as_deref(),
-                None,
-                context,
-            ))
+            Handle::current().block_on(async {
+                match retrieval_mode {
+                    RetrievalModeParam::Hybrid => {
+                        self.bridge
+                            .store
+                            .search_with_context(&query, Some(k), ns.as_deref(), None, context)
+                            .await
+                    }
+                    RetrievalModeParam::FtsOnly => {
+                        self.bridge
+                            .store
+                            .search_fts_only_with_context(
+                                &query,
+                                Some(k),
+                                ns.as_deref(),
+                                None,
+                                context,
+                            )
+                            .await
+                    }
+                    RetrievalModeParam::VectorOnly => {
+                        self.bridge
+                            .store
+                            .search_vector_only_with_context(
+                                &query,
+                                Some(k),
+                                ns.as_deref(),
+                                None,
+                                context,
+                            )
+                            .await
+                    }
+                }
+            })
         })
         .map_err(|e| {
             ErrorData::internal_error(
@@ -686,7 +720,7 @@ impl SemanticMemoryServer {
             "backend_reported_non_approximate"
         };
         json_to_string(&serde_json::json!({
-            "schema_version": "retrieval_response_v1", "ok": true, "request_id": request_id, "receipt_id": receipt.receipt_id,
+            "schema_version": "retrieval_response_v1", "ok": true, "request_id": request_id, "receipt_id": receipt.receipt_id, "retrieval_mode": retrieval_mode_name,
             "state_view": {"kind": "Current"}, "current_snapshot_id": authority_state.snapshot_id.0,
             "retrieval_epoch": authority_state.retrieval_epoch.0,
             "evaluation_time": receipt.evaluation_time,
@@ -701,7 +735,8 @@ impl SemanticMemoryServer {
             "ordered_results": ordered_results, "results": results,
             "stage_outcomes": {
                 "authority_snapshot": {"outcome": "Applied", "degradation": null},
-                "hybrid_retrieval": {"outcome": "Applied", "degradation": null},
+                "hybrid_retrieval": {"outcome": if matches!(retrieval_mode, RetrievalModeParam::Hybrid) { "Applied" } else { "Skipped" }, "degradation": null},
+                "selected_retrieval": {"outcome": "Applied", "degradation": null, "mode": retrieval_mode_name},
                 "receipt_persistence": {"outcome": "Applied", "degradation": null},
                 "cache": {"outcome": "Skipped", "degradation": "witnessed retrieval bypasses cache"},
                 "replay": {"outcome": "AnalysisOnly", "degradation": "complete replay inputs are not available"}
@@ -4642,6 +4677,7 @@ mod correctness_contract_tests {
                         top_k: Some(5),
                         namespaces: Some(vec!["provenance-test".into()]),
                         request_id: Some("witnessed-provenance-test".into()),
+                        retrieval_mode: None,
                     }))
                 })
             })
@@ -4696,6 +4732,7 @@ mod correctness_contract_tests {
                         top_k: Some(5),
                         namespaces: Some(vec!["provenance-test".into()]),
                         request_id: Some("witnessed-source-less-test".into()),
+                        retrieval_mode: None,
                     }))
                 })
             })
@@ -4743,12 +4780,14 @@ mod correctness_contract_tests {
                         top_k: Some(5),
                         namespaces: Some(vec!["stateful".into()]),
                         request_id: Some("witnessed-state-request".into()),
+                        retrieval_mode: None,
                     }))
                 })
             })
             .unwrap();
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
 
+        assert_eq!(json["retrieval_mode"], "hybrid");
         assert!(json["authority"]["snapshot_id"].as_str().is_some());
         assert!(
             json["authority"]["retrieval_epoch"].as_u64().is_some()
@@ -4789,6 +4828,54 @@ mod correctness_contract_tests {
             json["ordered_results"][0]["result_id"],
             format!("fact:{}", receipt.affected_ids[0])
         );
+    }
+
+    #[test]
+    fn sm_search_witnessed_accepts_general_retrieval_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = MemoryBridge::open(BridgeConfig {
+            memory_dir: dir.path().to_path_buf(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+        })
+        .unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(
+            bridge
+                .store
+                .add_fact("modes", "alpha beta gamma", Some("test"), None),
+        )
+        .unwrap();
+        let server = SemanticMemoryServer::new(bridge, "full");
+        for retrieval_mode in [
+            RetrievalModeParam::Hybrid,
+            RetrievalModeParam::FtsOnly,
+            RetrievalModeParam::VectorOnly,
+        ] {
+            let body = rt
+                .block_on(async {
+                    server.sm_search_witnessed(Parameters(SearchWitnessedParams {
+                        query: "alpha beta".into(),
+                        top_k: Some(5),
+                        namespaces: Some(vec!["modes".into()]),
+                        request_id: None,
+                        retrieval_mode: Some(retrieval_mode),
+                    }))
+                })
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(json["ok"], true);
+            assert!(json["receipt_id"].is_string());
+            assert_eq!(
+                json["retrieval_mode"],
+                serde_json::to_value(retrieval_mode).unwrap()
+            );
+        }
     }
 }
 

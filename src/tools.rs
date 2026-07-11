@@ -3,7 +3,7 @@
 //! the JSON Schema for the tool's inputSchema.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Edge type for graph edges. JSON Schema enum helps LLMs pick the
 /// right value without guessing.
@@ -45,6 +45,17 @@ pub struct SearchWitnessedParams {
     /// Optional caller correlation ID; generated when omitted.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Retrieval stage selection. Defaults to the current hybrid behavior.
+    #[serde(default)]
+    pub retrieval_mode: Option<RetrievalModeParam>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalModeParam {
+    Hybrid,
+    FtsOnly,
+    VectorOnly,
 }
 
 /// Exact namespace/resource scope used by governed authority decisions.
