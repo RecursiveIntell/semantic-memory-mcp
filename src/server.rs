@@ -34,6 +34,41 @@ impl SemanticMemoryServer {
 
         match tool_profile {
             "full" => { /* all tools visible */ }
+            "agent" => {
+                // Bounded daily surface for coding agents: witnessed recall,
+                // durable capture/supersession, provenance, and basic graph access.
+                // Destructive maintenance, import/export, raw search, and
+                // administrative tools remain exclusive to the full profile.
+                let allowed: HashSet<&str> = [
+                    "sm_add_fact",
+                    "sm_add_graph_edge",
+                    "sm_decide_action_authority",
+                    "sm_decide_assertion_authority",
+                    "sm_get_fact",
+                    "sm_get_fact_neighbors",
+                    "sm_get_search_receipt",
+                    "sm_graph_path",
+                    "sm_list_namespaces",
+                    "sm_search_conversations",
+                    "sm_search_witnessed",
+                    "sm_set_provenance",
+                    "sm_stats",
+                    "sm_supersede_fact",
+                    "sm_update_fact",
+                ]
+                .into_iter()
+                .collect();
+                let names: Vec<_> = router
+                    .list_all()
+                    .into_iter()
+                    .map(|tool| tool.name.into_owned())
+                    .collect();
+                for name in names {
+                    if !allowed.contains(name.as_str()) {
+                        router.disable_route(name);
+                    }
+                }
+            }
             _ => {
                 // Autonomous profiles expose witnessed retrieval and content-free,
                 // governed assertion/action decisions. Mutation, administration,

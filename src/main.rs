@@ -81,7 +81,7 @@ struct Cli {
     turbo_quant_projections: Option<usize>,
 
     /// Tool profile: lean/standard (3 governed read-only tools; lean is default),
-    /// or full (60 operator tools, including mutation and administration).
+    /// agent (15 bounded daily tools), or full (60 operator/admin tools).
     #[arg(long, default_value = "lean")]
     tool_profile: String,
 }

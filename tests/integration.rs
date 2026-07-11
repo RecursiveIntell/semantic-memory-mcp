@@ -104,6 +104,45 @@ fn autonomous_profiles_expose_only_witnessed_search() {
 }
 
 #[test]
+fn agent_profile_exposes_bounded_daily_memory_surface() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = SemanticMemoryServer::new(open_bridge(dir.path()), "agent");
+    assert_eq!(
+        server.exposed_tool_names(),
+        vec![
+            "sm_add_fact",
+            "sm_add_graph_edge",
+            "sm_decide_action_authority",
+            "sm_decide_assertion_authority",
+            "sm_get_fact",
+            "sm_get_fact_neighbors",
+            "sm_get_search_receipt",
+            "sm_graph_path",
+            "sm_list_namespaces",
+            "sm_search_conversations",
+            "sm_search_witnessed",
+            "sm_set_provenance",
+            "sm_stats",
+            "sm_supersede_fact",
+            "sm_update_fact",
+        ]
+    );
+    for forbidden in [
+        "sm_delete_fact",
+        "sm_delete_namespace",
+        "sm_import_envelope",
+        "sm_reembed_all",
+        "sm_reconcile",
+        "sm_run_lifecycle",
+        "sm_search",
+        "sm_search_with_routing",
+        "sm_vacuum",
+    ] {
+        assert!(!server.exposes_tool(forbidden), "agent exposed {forbidden}");
+    }
+}
+
+#[test]
 fn routing_feedback_is_declared_mutating() {
     let dir = tempfile::tempdir().unwrap();
     let server = SemanticMemoryServer::new(open_bridge(dir.path()), "full");
