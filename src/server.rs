@@ -4,11 +4,12 @@
 //! can discover and call. The rmcp macro auto-generates JSON Schema
 //! from the parameter structs in tools.rs.
 
+use schemars::JsonSchema;
 use crate::bridge::MemoryBridge;
 use crate::tools::*;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    tool, tool_handler, tool_router, ErrorData, ServerHandler,
+    tool, tool_handler, tool_router, ErrorData, Json, ServerHandler,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -683,6 +684,23 @@ fn support_state_label(state: claim_ledger::SupportState) -> &'static str {
         SupportState::HeuristicOnly => "heuristic_only",
         SupportState::Unknown => "persisted_unjudged",
     }
+}
+
+/// Typed output for sm_stats — provides outputSchema with type: "object" for MCP.
+#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct StatsOutput {
+    pub ok: bool,
+    pub components: serde_json::Value,
+    pub facts: Option<u64>,
+    pub chunks: Option<u64>,
+    pub documents: Option<u64>,
+    pub sessions: Option<u64>,
+    pub messages: Option<u64>,
+    pub graph_edges: Option<usize>,
+    pub db_size_bytes: Option<u64>,
+    pub db_size_mb: Option<f64>,
+    pub embedding_model: Option<String>,
+    pub embedding_dimensions: Option<usize>,
 }
 
 pub struct SemanticMemoryServer {
@@ -2258,7 +2276,7 @@ impl SemanticMemoryServer {
         description = "Get knowledge base statistics: fact/chunk/document/session counts, DB size, embedding model, and graph edge count.",
         annotations(read_only_hint = true)
     )]
-    fn sm_stats(&self) -> Result<String, ErrorData> {
+    fn sm_stats(&self) -> Result<Json<StatsOutput>, ErrorData> {
         let store = &self.bridge.store;
         let core = tokio::task::block_in_place(|| Handle::current().block_on(store.stats()));
         let graph = tokio::task::block_in_place(|| {
@@ -2274,19 +2292,19 @@ impl SemanticMemoryServer {
         };
         let core_value = core.ok();
         let graph_count = graph.ok().map(|edges| edges.len());
-        json_to_string(&serde_json::json!({
-            "ok": core_value.is_some() && graph_count.is_some(),
-            "components": {"core": core_health, "graph": graph_health},
-            "facts": core_value.as_ref().map(|s| s.total_facts),
-            "chunks": core_value.as_ref().map(|s| s.total_chunks),
-            "documents": core_value.as_ref().map(|s| s.total_documents),
-            "sessions": core_value.as_ref().map(|s| s.total_sessions),
-            "messages": core_value.as_ref().map(|s| s.total_messages),
-            "graph_edges": graph_count,
-            "db_size_bytes": core_value.as_ref().map(|s| s.database_size_bytes),
-            "db_size_mb": core_value.as_ref().map(|s| (s.database_size_bytes as f64 / 1_048_576.0 * 100.0).round() / 100.0),
-            "embedding_model": core_value.as_ref().and_then(|s| s.embedding_model.clone()),
-            "embedding_dimensions": core_value.as_ref().and_then(|s| s.embedding_dimensions),
+        Ok(Json(StatsOutput {
+            ok: core_value.is_some() && graph_count.is_some(),
+            components: serde_json::json!({"core": core_health, "graph": graph_health}),
+            facts: core_value.as_ref().map(|s| s.total_facts),
+            chunks: core_value.as_ref().map(|s| s.total_chunks),
+            documents: core_value.as_ref().map(|s| s.total_documents),
+            sessions: core_value.as_ref().map(|s| s.total_sessions),
+            messages: core_value.as_ref().map(|s| s.total_messages),
+            graph_edges: graph_count,
+            db_size_bytes: core_value.as_ref().map(|s| s.database_size_bytes),
+            db_size_mb: core_value.as_ref().map(|s| (s.database_size_bytes as f64 / 1_048_576.0 * 100.0).round() / 100.0),
+            embedding_model: core_value.as_ref().and_then(|s| s.embedding_model.clone()),
+            embedding_dimensions: core_value.as_ref().and_then(|s| s.embedding_dimensions),
         }))
     }
 
