@@ -60,6 +60,13 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
+    /// Authorization token required for HTTP server access.
+    /// If --http-port is set, this token must be provided via the
+    /// Authorization: Bearer <token> header on all HTTP requests.
+    /// If --http-port is set without --http-auth-token, the server refuses to start.
+    #[arg(long)]
+    http_auth_token: Option<String>,
+
     /// Run only the HTTP server (skip stdio MCP). Requires --http-port.
     /// Use this for standalone warm-server mode (benchmarks, hooks).
     #[arg(long)]
@@ -163,7 +170,10 @@ fn main() -> anyhow::Result<()> {
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
     if let Some(port) = cli.http_port {
-        http_server::start_http_server(port, bridge, rt.handle().clone());
+        let auth_token = cli.http_auth_token.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("--http-port requires --http-auth-token. Refusing to start HTTP server without authorization.")
+        })?;
+        http_server::start_http_server(port, auth_token, bridge, rt.handle().clone());
     }
 
     // If --http-only was set, skip stdio MCP and just keep the process alive

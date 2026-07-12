@@ -25,44 +25,64 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
 
 #[test]
 fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
-    for profile in ["lean", "standard"] {
-        let dir = tempfile::tempdir().unwrap();
-        let server = SemanticMemoryServer::new(open_bridge(dir.path()), profile);
-        assert!(server.exposes_tool("sm_search_witnessed"));
-        assert!(server.exposes_tool("sm_replay_search"));
-        assert!(server.exposes_tool("sm_decide_assertion_authority"));
-        assert!(server.exposes_tool("sm_decide_action_authority"));
-        assert!(!server.exposes_tool("sm_search"));
-        assert_eq!(
-            server.exposed_tool_names(),
-            vec![
-                "sm_decide_action_authority",
-                "sm_decide_assertion_authority",
-                "sm_replay_search",
-                "sm_search_witnessed",
-            ]
-        );
-        for name in [
-            "sm_decide_assertion_authority",
+    // Lean is the autonomous read-only profile: 4 governed tools only.
+    let dir = tempfile::tempdir().unwrap();
+    let server = SemanticMemoryServer::new(open_bridge(dir.path()), "lean");
+    assert!(server.exposes_tool("sm_search_witnessed"));
+    assert!(server.exposes_tool("sm_replay_search"));
+    assert!(server.exposes_tool("sm_decide_assertion_authority"));
+    assert!(server.exposes_tool("sm_decide_action_authority"));
+    assert!(!server.exposes_tool("sm_search"));
+    assert_eq!(
+        server.exposed_tool_names(),
+        vec![
             "sm_decide_action_authority",
-        ] {
-            let annotations = server.tool_annotations(name).expect("decision metadata");
-            assert_eq!(annotations.read_only_hint, Some(true));
-            assert_ne!(annotations.destructive_hint, Some(true));
-        }
-        for forbidden in [
-            "sm_add_fact",
-            "sm_delete_fact",
-            "sm_delete_namespace",
-            "sm_update_fact",
-            "sm_set_provenance",
-            "sm_record_outcome",
-        ] {
-            assert!(
-                !server.exposes_tool(forbidden),
-                "{profile} exposed {forbidden}"
-            );
-        }
+            "sm_decide_assertion_authority",
+            "sm_replay_search",
+            "sm_search_witnessed",
+        ]
+    );
+    for name in [
+        "sm_decide_assertion_authority",
+        "sm_decide_action_authority",
+    ] {
+        let annotations = server.tool_annotations(name).expect("decision metadata");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_ne!(annotations.destructive_hint, Some(true));
+    }
+    for forbidden in [
+        "sm_add_fact",
+        "sm_delete_fact",
+        "sm_delete_namespace",
+        "sm_update_fact",
+        "sm_set_provenance",
+        "sm_record_outcome",
+    ] {
+        assert!(
+            !server.exposes_tool(forbidden),
+            "lean exposed {forbidden}"
+        );
+    }
+
+    // Standard is the operator profile: includes sm_search, sm_add_fact,
+    // sm_replay_search, and governed decisions, but NOT destructive tools.
+    let dir2 = tempfile::tempdir().unwrap();
+    let server2 = SemanticMemoryServer::new(open_bridge(dir2.path()), "standard");
+    assert!(server2.exposes_tool("sm_search_witnessed"));
+    assert!(server2.exposes_tool("sm_replay_search"));
+    assert!(server2.exposes_tool("sm_decide_assertion_authority"));
+    assert!(server2.exposes_tool("sm_decide_action_authority"));
+    assert!(server2.exposes_tool("sm_search"));
+    assert!(server2.exposes_tool("sm_add_fact"));
+    for forbidden in [
+        "sm_delete_fact",
+        "sm_delete_namespace",
+        "sm_record_outcome",
+    ] {
+        assert!(
+            !server2.exposes_tool(forbidden),
+            "standard exposed {forbidden}"
+        );
     }
 
     let dir = tempfile::tempdir().unwrap();
@@ -409,7 +429,7 @@ mod http_server_tests {
         let _enter = rt.enter();
         std::thread::spawn(move || {
             let _guard = handle.enter();
-            semantic_memory_mcp::http_server::start_http_server(port, bridge, handle);
+            semantic_memory_mcp::http_server::start_http_server(port, "test-token", bridge, handle);
         });
 
         // Give the server a moment to bind
@@ -420,7 +440,7 @@ mod http_server_tests {
     fn http_get(port: u16, path: &str) -> (String, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let request = format!(
-            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\nConnection: close\r\n\r\n",
             path
         );
         stream.write_all(request.as_bytes()).unwrap();
@@ -436,7 +456,7 @@ mod http_server_tests {
     fn http_post(port: u16, path: &str, body: &str) -> (String, String) {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let request = format!(
-            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             path,
             body.len(),
             body
@@ -632,5 +652,43 @@ mod http_server_tests {
         );
         let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(json["ok"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn http_rejects_request_without_authorization() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let (port, _rt) = start_http(bridge);
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let request = "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("401 Unauthorized"), "expected 401, got: {response}");
+    }
+
+    #[test]
+    fn http_rejects_request_with_wrong_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let (port, _rt) = start_http(bridge);
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let request = "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n";
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert!(response.contains("401 Unauthorized"), "expected 401, got: {response}");
+    }
+}
+
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "Unknown tool profile")]
+    fn unknown_profile_panics() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let _server = SemanticMemoryServer::new(bridge, "nonexistent-profile");
     }
 }

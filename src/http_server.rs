@@ -69,7 +69,8 @@ fn rerank_results(
         .collect()
 }
 
-pub fn start_http_server(port: u16, bridge: MemoryBridge, handle: Handle) {
+pub fn start_http_server(port: u16, auth_token: &str, bridge: MemoryBridge, handle: Handle) {
+    let auth_token = auth_token.to_string();
     std::thread::spawn(move || {
         let listener = match TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => {
@@ -90,14 +91,15 @@ pub fn start_http_server(port: u16, bridge: MemoryBridge, handle: Handle) {
 
             let bridge = bridge.clone();
             let h = handle.clone();
+            let token = auth_token.clone();
             std::thread::spawn(move || {
-                handle_connection(stream, bridge, h);
+                handle_connection(stream, &token, bridge, h);
             });
         }
     });
 }
 
-fn handle_connection(mut stream: std::net::TcpStream, bridge: MemoryBridge, handle: Handle) {
+fn handle_connection(mut stream: std::net::TcpStream, auth_token: &str, bridge: MemoryBridge, handle: Handle) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
@@ -112,6 +114,8 @@ fn handle_connection(mut stream: std::net::TcpStream, bridge: MemoryBridge, hand
     let path = parts[1];
 
     let mut content_length = 0;
+    let mut auth_header: Option<String> = None;
+    let mut host_header: Option<String> = None;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).is_err() {
@@ -126,6 +130,48 @@ fn handle_connection(mut stream: std::net::TcpStream, bridge: MemoryBridge, hand
         {
             content_length = len_str.trim().parse().unwrap_or(0);
         }
+        if let Some(val) = header
+            .strip_prefix("Authorization:")
+            .or_else(|| header.strip_prefix("authorization:"))
+        {
+            auth_header = Some(val.trim().to_string());
+        }
+        if let Some(val) = header
+            .strip_prefix("Host:")
+            .or_else(|| header.strip_prefix("host:"))
+        {
+            host_header = Some(val.trim().to_string());
+        }
+    }
+
+    // Auth check
+    let authorized = auth_header
+        .as_deref()
+        .map(|h| h == format!("Bearer {}", auth_token))
+        .unwrap_or(false);
+    if !authorized {
+        let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
+    // Host check
+    let host_ok = host_header
+        .as_deref()
+        .map(|h| h.starts_with("127.0.0.1") || h.starts_with("localhost"))
+        .unwrap_or(false);
+    if !host_ok {
+        let response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
+    // Content-Length cap: 10MB
+    const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+    if content_length > MAX_BODY_SIZE {
+        let response = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
     }
 
     let mut body = vec![0u8; content_length];

@@ -701,11 +701,90 @@ impl SemanticMemoryServer {
 
         match tool_profile {
             "full" => { /* all tools visible */ }
+            "stable" => {
+                let allowed: HashSet<&str> = [
+                    "sm_search",
+                    "sm_search_witnessed",
+                    "sm_stats",
+                    "sm_list_namespaces",
+                    "sm_get_fact",
+                    "sm_get_fact_neighbors",
+                    "sm_graph_path",
+                    "sm_search_conversations",
+                    "sm_add_fact",
+                    "sm_supersede_fact",
+                    "sm_add_graph_edge",
+                    "sm_decide_assertion_authority",
+                    "sm_decide_action_authority",
+                ]
+                .into_iter()
+                .collect();
+                let names: Vec<_> = router
+                    .list_all()
+                    .into_iter()
+                    .map(|tool| tool.name.into_owned())
+                    .collect();
+                for name in names {
+                    if !allowed.contains(name.as_str()) {
+                        router.disable_route(name);
+                    }
+                }
+            }
+            "lean" => {
+                // Autonomous/lean: governed read-only surface only.
+                let allowed: HashSet<&str> = [
+                    "sm_search_witnessed",
+                    "sm_replay_search",
+                    "sm_decide_assertion_authority",
+                    "sm_decide_action_authority",
+                ]
+                .into_iter()
+                .collect();
+                let names: Vec<_> = router
+                    .list_all()
+                    .into_iter()
+                    .map(|tool| tool.name.into_owned())
+                    .collect();
+                for name in names {
+                    if !allowed.contains(name.as_str()) {
+                        router.disable_route(name);
+                    }
+                }
+            }
+            "standard" => {
+                let allowed: HashSet<&str> = [
+                    "sm_search",
+                    "sm_search_witnessed",
+                    "sm_replay_search",
+                    "sm_stats",
+                    "sm_list_namespaces",
+                    "sm_get_fact",
+                    "sm_get_fact_neighbors",
+                    "sm_graph_path",
+                    "sm_search_conversations",
+                    "sm_add_fact",
+                    "sm_supersede_fact",
+                    "sm_add_graph_edge",
+                    "sm_decide_assertion_authority",
+                    "sm_decide_action_authority",
+                    "sm_update_fact",
+                    "sm_set_provenance",
+                    "sm_list_facts",
+                ]
+                .into_iter()
+                .collect();
+                let names: Vec<_> = router
+                    .list_all()
+                    .into_iter()
+                    .map(|tool| tool.name.into_owned())
+                    .collect();
+                for name in names {
+                    if !allowed.contains(name.as_str()) {
+                        router.disable_route(name);
+                    }
+                }
+            }
             "agent" => {
-                // Bounded daily surface for coding agents: witnessed recall,
-                // durable capture/supersession, provenance, and basic graph access.
-                // Destructive maintenance, import/export, raw search, and
-                // administrative tools remain exclusive to the full profile.
                 let allowed: HashSet<&str> = [
                     "sm_add_fact",
                     "sm_add_graph_edge",
@@ -716,8 +795,8 @@ impl SemanticMemoryServer {
                     "sm_get_search_receipt",
                     "sm_graph_path",
                     "sm_list_namespaces",
-                    "sm_search_conversations",
                     "sm_replay_search",
+                    "sm_search_conversations",
                     "sm_search_witnessed",
                     "sm_set_provenance",
                     "sm_stats",
@@ -737,27 +816,10 @@ impl SemanticMemoryServer {
                     }
                 }
             }
-            _ => {
-                // Autonomous profiles expose witnessed retrieval and content-free,
-                // governed assertion/action decisions. Mutation, administration,
-                // and unwitnessed/derived retrieval require the full operator profile.
-                let names: Vec<_> = router
-                    .list_all()
-                    .into_iter()
-                    .map(|tool| tool.name.into_owned())
-                    .collect();
-                for name in names {
-                    if !matches!(
-                        name.as_str(),
-                        "sm_search_witnessed"
-                            | "sm_replay_search"
-                            | "sm_decide_assertion_authority"
-                            | "sm_decide_action_authority"
-                    ) {
-                        router.disable_route(name);
-                    }
-                }
-            }
+            _ => panic!(
+                "Unknown tool profile '{}'. Must be one of: stable, lean, standard, agent, full",
+                tool_profile
+            ),
         }
 
         eprintln!(
@@ -922,26 +984,30 @@ fn load_stored_edge_refs(
             })?;
     let refs = edges
         .iter()
-        .map(|edge| {
-            let parsed_type = edge
+        .filter_map(|edge| {
+            let parsed_type = match edge
                 .edge_type_parsed
                 .clone()
                 .or_else(|| serde_json::from_str(&edge.edge_type).ok())
-                .unwrap_or(semantic_memory::GraphEdgeType::Entity {
-                    relation: "unknown".to_string(),
-                });
+            {
+                Some(t) => t,
+                None => {
+                    eprintln!("WARNING: Skipping edge with unparseable type between {} and {} (edge_type={})", edge.source, edge.target, edge.edge_type);
+                    return None;
+                }
+            };
             let type_str = match parsed_type {
                 semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
                 semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
                 semantic_memory::GraphEdgeType::Causal { .. } => "causal",
                 semantic_memory::GraphEdgeType::Entity { .. } => "entity",
             };
-            semantic_memory::discord::GraphEdgeRef {
+            Some(semantic_memory::discord::GraphEdgeRef {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
                 edge_type: type_str.to_string(),
                 weight: edge.weight,
-            }
+            })
         })
         .collect();
     Ok(refs)
@@ -1042,26 +1108,30 @@ fn load_neighborhood_edge_refs(
     })?;
     let refs = edges
         .iter()
-        .map(|edge| {
-            let parsed_type = edge
+        .filter_map(|edge| {
+            let parsed_type = match edge
                 .edge_type_parsed
                 .clone()
                 .or_else(|| serde_json::from_str(&edge.edge_type).ok())
-                .unwrap_or(semantic_memory::GraphEdgeType::Entity {
-                    relation: "unknown".to_string(),
-                });
+            {
+                Some(t) => t,
+                None => {
+                    eprintln!("WARNING: Skipping edge with unparseable type between {} and {} (edge_type={})", edge.source, edge.target, edge.edge_type);
+                    return None;
+                }
+            };
             let type_str = match parsed_type {
                 semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
                 semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
                 semantic_memory::GraphEdgeType::Causal { .. } => "causal",
                 semantic_memory::GraphEdgeType::Entity { .. } => "entity",
             };
-            semantic_memory::discord::GraphEdgeRef {
+            Some(semantic_memory::discord::GraphEdgeRef {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
                 edge_type: type_str.to_string(),
                 weight: edge.weight,
-            }
+            })
         })
         .collect();
     Ok(refs)
@@ -1295,7 +1365,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
+                    if superseded_targets.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -1896,7 +1966,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.result.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
+                    if superseded_targets.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -1949,8 +2019,7 @@ impl SemanticMemoryServer {
     }
 
     #[tool(
-        description = "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest.",
-        annotations(idempotent_hint = true)
+        description = "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest."
     )]
     fn sm_add_fact(
         &self,
@@ -2001,14 +2070,7 @@ impl SemanticMemoryServer {
             }
         }
 
-        // Build metadata JSON with typed memory fields
-        let mut meta = serde_json::Map::new();
-        meta.insert("memory_kind".to_string(), serde_json::json!(kind));
-        meta.insert("sensitivity".to_string(), serde_json::json!(sens));
-        if let Some(refs) = evidence_refs {
-            meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
-        }
-        let _metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
+        // TODO: Pass typed metadata (memory_kind, sensitivity, evidence_refs) through the authority append API once it supports a metadata parameter.
 
         let caller_idempotency_key = match idempotency_key {
             Some(key) if !key.trim().is_empty() => key,
@@ -2806,7 +2868,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
+                    if superseded_targets.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -4190,6 +4252,7 @@ impl SemanticMemoryServer {
         }
     }
 
+    // NOTE: Consolidation requires atomic transaction support. Excluded from stable profile until transaction safety is implemented.
     #[tool(
         description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
     )]
@@ -4359,6 +4422,7 @@ impl SemanticMemoryServer {
         };
 
         let profile = QueryProfile::from_query(&query);
+        // TODO: Accept decision_id from the original routing receipt, not recompute.
         let router = RetrievalRouter::default();
         let store = &self.bridge.store;
         let mut batch = self
@@ -4422,11 +4486,7 @@ impl SemanticMemoryServer {
                 "persisted": persisted,
                 "pending_outcomes": pending_outcomes,
             },
-            "message": if persisted {
-                "Routing outcome recorded and policy batch persisted to DB"
-            } else {
-                "Routing outcome recorded; policy persistence batch pending"
-            },
+            "message": "Routing outcome recorded (best-effort). NOTE: outcome is associated with a recomputed decision, not the original served decision.",
         }))
     }
 
@@ -4471,7 +4531,8 @@ impl SemanticMemoryServer {
         json_to_string(&result)
     }
 
-    #[cfg(feature = "claim-integration")]
+        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
+#[cfg(feature = "claim-integration")]
     #[tool(
         description = "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record from the fact's metadata. Returns the claim ID.",
         annotations(read_only_hint = false, idempotent_hint = true)
@@ -4547,7 +4608,8 @@ impl SemanticMemoryServer {
         }))
     }
 
-    #[cfg(feature = "claim-integration")]
+        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
+#[cfg(feature = "claim-integration")]
     #[tool(
         description = "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns the evidence bundle ID.",
         annotations(read_only_hint = false)
@@ -4582,7 +4644,8 @@ impl SemanticMemoryServer {
         }))
     }
 
-    #[cfg(feature = "claim-integration")]
+        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
+#[cfg(feature = "claim-integration")]
     #[tool(
         description = "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or heuristic_only) with optional rationale.",
         annotations(read_only_hint = false)
@@ -4663,10 +4726,10 @@ impl SemanticMemoryServer {
     // ─── Bitemporal search ─────────────────────────────────────────────
 
     #[tool(
-        description = "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filter results to only include facts that existed on the specified date.",
+        description = "PREVIEW: Temporal filtering is not yet implemented. Results are NOT filtered by the provided timestamp. This tool exists for API exploration only.",
         annotations(read_only_hint = true)
     )]
-    fn sm_search_as_of(
+    fn sm_search_as_of_preview(
         &self,
         Parameters(SearchAsOfParams {
             query,
@@ -4724,7 +4787,9 @@ impl SemanticMemoryServer {
 
     // ─── Verification gate ─────────────────────────────────────────────
 
-    #[tool(
+        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
+    #[cfg(feature = "claim-integration")]
+#[tool(
         description = "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims need falsification. Critical claims need replay AND falsification. Returns disposition: promote, reject, quarantine, or defer.",
         annotations(read_only_hint = true)
     )]
@@ -4781,15 +4846,15 @@ impl SemanticMemoryServer {
                 true,
                 if refuted {
                     "quarantine"
-                } else if has_evidence && refutation_attempted == Some(true) {
-                    "promote"
+                } else if has_evidence {
+                    "promote_pending_replay"
                 } else {
                     "defer"
                 },
                 if refuted {
                     "Critical risk: refutation found, claim quarantined"
-                } else if has_evidence && refutation_attempted == Some(true) {
-                    "Critical risk: replay + falsification passed, claim promoted"
+                } else if has_evidence {
+                    "Critical risk: evidence provided, replay verification required before promotion"
                 } else {
                     "Critical risk: requires evidence AND refutation, claim deferred"
                 },
