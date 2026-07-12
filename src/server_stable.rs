@@ -1436,7 +1436,7 @@ impl SemanticMemoryServer {
 #[tool_handler(
     router = self.tool_router,
     name = "semantic-memory-mcp",
-    version = "0.5.3",
+    version = "0.5.4",
     instructions = "Compile-time stable semantic memory surface. Search before asking for context. Use witnessed retrieval for durable receipts. Recall authority never implies assertion or action authority. Prefer supersession to deletion."
 )]
 impl ServerHandler for SemanticMemoryServer {}

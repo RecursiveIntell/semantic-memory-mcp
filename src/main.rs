@@ -127,7 +127,9 @@ fn resolve_http_auth_token(
     token_file: Option<&Path>,
 ) -> anyhow::Result<Option<String>> {
     if let Some(token) = explicit {
-        return normalize_http_auth_token(token, "--http-auth-token").map(Some);
+        if !token.is_empty() {
+            return normalize_http_auth_token(token, "--http-auth-token").map(Some);
+        }
     }
     if let Some(path) = token_file {
         let raw = std::fs::read_to_string(path)
@@ -285,6 +287,25 @@ mod tests {
             .expect("valid explicit token")
             .expect("resolved token");
         assert_eq!(token, "explicit-token");
+    }
+
+    #[test]
+    fn exactly_empty_explicit_token_falls_back_to_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "file-token\n").expect("write token");
+        let token = resolve_http_auth_token(Some(""), Some(&path))
+            .expect("empty explicit token falls back")
+            .expect("resolved token");
+        assert_eq!(token, "file-token");
+    }
+
+    #[test]
+    fn explicit_token_rejects_unicode_internal_whitespace() {
+        let error = resolve_http_auth_token(Some("first\u{a0}second"), None)
+            .expect_err("Unicode whitespace must fail")
+            .to_string();
+        assert!(error.contains("contains whitespace"));
     }
 
     #[test]
