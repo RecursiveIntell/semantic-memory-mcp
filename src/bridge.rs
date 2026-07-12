@@ -136,6 +136,7 @@ impl MemoryBridge {
             }
         };
 
+        #[allow(unused_mut)]
         let mut search_config = SearchConfig::default();
 
         // TurboQuant compressed vector candidate backend

@@ -4,8 +4,11 @@
 //! the mock embedder (no model download, no Ollama, no network).
 //! Each test gets a fresh temp directory so there is no cross-test state.
 
-use semantic_memory::{AuthorityPermit, GraphEdgeType};
+#[cfg(feature = "full")]
+use semantic_memory::AuthorityPermit;
+use semantic_memory::GraphEdgeType;
 use semantic_memory_mcp::bridge::{BridgeConfig, EmbedderBackend, MemoryBridge};
+#[cfg(feature = "full")]
 use semantic_memory_mcp::server::SemanticMemoryServer;
 
 /// Open a MemoryBridge with the mock embedder in a temp directory.
@@ -23,6 +26,7 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
     MemoryBridge::open(config).expect("bridge should open")
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
     // Lean is the autonomous read-only profile: 4 governed tools only.
@@ -118,6 +122,7 @@ fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
     assert!(full.exposes_tool("sm_search"));
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn agent_profile_exposes_bounded_daily_memory_surface() {
     let dir = tempfile::tempdir().unwrap();
@@ -158,6 +163,7 @@ fn agent_profile_exposes_bounded_daily_memory_surface() {
     }
 }
 
+#[cfg(feature = "full")]
 #[test]
 fn routing_feedback_is_declared_mutating() {
     let dir = tempfile::tempdir().unwrap();
@@ -314,6 +320,7 @@ mod lifecycle_tests {
         // but the edge should exist
     }
 
+    #[cfg(feature = "full")]
     #[test]
     fn delete_fact_removes_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -400,6 +407,7 @@ mod lifecycle_tests {
     }
 }
 
+#[cfg(feature = "full")]
 mod http_server_tests {
     use super::*;
     use std::io::{Read, Write};
@@ -680,6 +688,7 @@ mod http_server_tests {
     }
 }
 
+#[cfg(feature = "full")]
 mod profile_tests {
     use super::*;
 

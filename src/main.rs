@@ -13,7 +13,9 @@ use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
 use semantic_memory_mcp::bridge::{self, EmbedderBackend};
-use semantic_memory_mcp::{http_server, server};
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+use semantic_memory_mcp::http_server;
+use semantic_memory_mcp::server;
 
 /// semantic-memory MCP server configuration.
 #[derive(Parser, Debug)]
@@ -89,7 +91,14 @@ struct Cli {
 
     /// Tool profile: lean/standard (3 governed read-only tools; lean is default),
     /// agent (15 bounded daily tools), or full (60 operator/admin tools).
-    #[arg(long, default_value = "lean")]
+    #[cfg_attr(
+        all(feature = "stable", not(feature = "full")),
+        arg(long, default_value = "stable")
+    )]
+    #[cfg_attr(
+        not(all(feature = "stable", not(feature = "full"))),
+        arg(long, default_value = "lean")
+    )]
     tool_profile: String,
 }
 
@@ -169,6 +178,14 @@ fn main() -> anyhow::Result<()> {
 
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
+    #[cfg(all(feature = "stable", not(feature = "full")))]
+    if cli.http_port.is_some() || cli.http_only {
+        anyhow::bail!(
+            "HTTP transport is unavailable in the compile-time stable build; use stdio MCP or rebuild with --features full"
+        );
+    }
+
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
     if let Some(port) = cli.http_port {
         let auth_token = cli.http_auth_token.as_deref().ok_or_else(|| {
             anyhow::anyhow!("--http-port requires --http-auth-token. Refusing to start HTTP server without authorization.")
@@ -178,6 +195,7 @@ fn main() -> anyhow::Result<()> {
 
     // If --http-only was set, skip stdio MCP and just keep the process alive
     // for the HTTP server.
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
     if cli.http_only {
         eprintln!("HTTP-only mode: stdio MCP disabled, serving HTTP requests.");
         // Park the main thread -- the HTTP server runs in its own thread

@@ -1398,12 +1398,11 @@ impl SemanticMemoryServer {
                     .iter()
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
-                let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
-                        results.iter().collect()
-                    } else {
-                        fresh_results
-                    };
+                let result_refs: Vec<_> = if superseded_targets.is_empty() {
+                    results.iter().collect()
+                } else {
+                    fresh_results
+                };
                 let superseded_filtered_count = results.len().saturating_sub(result_refs.len());
                 let json_results: Vec<serde_json::Value> = result_refs
                     .iter()
@@ -1999,12 +1998,11 @@ impl SemanticMemoryServer {
                     .iter()
                     .filter(|r| !superseded_targets.contains(&r.result.source.result_id()))
                     .collect();
-                let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
-                        results.iter().collect()
-                    } else {
-                        fresh_results
-                    };
+                let result_refs: Vec<_> = if superseded_targets.is_empty() {
+                    results.iter().collect()
+                } else {
+                    fresh_results
+                };
                 let superseded_filtered_count = results.len().saturating_sub(result_refs.len());
                 let json_results: Vec<serde_json::Value> = result_refs
                     .iter()
@@ -2911,12 +2909,11 @@ impl SemanticMemoryServer {
                     .iter()
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
-                let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() || fresh_results.is_empty() {
-                        results.iter().collect()
-                    } else {
-                        fresh_results
-                    };
+                let result_refs: Vec<_> = if superseded_targets.is_empty() {
+                    results.iter().collect()
+                } else {
+                    fresh_results
+                };
                 let superseded_filtered_count = results.len().saturating_sub(result_refs.len());
                 let json_results: Vec<serde_json::Value> = result_refs
                     .iter()
