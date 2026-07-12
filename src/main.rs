@@ -10,6 +10,9 @@
 
 use clap::Parser;
 use rmcp::ServiceExt;
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+use std::path::Path;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 use semantic_memory_mcp::bridge::{self, EmbedderBackend};
@@ -64,10 +67,14 @@ struct Cli {
 
     /// Authorization token required for HTTP server access.
     /// If --http-port is set, this token must be provided via the
-    /// Authorization: Bearer <token> header on all HTTP requests.
-    /// If --http-port is set without --http-auth-token, the server refuses to start.
+    /// Authorization: Bearer header on all HTTP requests.
     #[arg(long)]
     http_auth_token: Option<String>,
+
+    /// Read the HTTP authorization token from a private file instead of argv.
+    /// The file must contain one non-empty token with no internal whitespace.
+    #[arg(long)]
+    http_auth_token_file: Option<PathBuf>,
 
     /// Run only the HTTP server (skip stdio MCP). Requires --http-port.
     /// Use this for standalone warm-server mode (benchmarks, hooks).
@@ -100,6 +107,34 @@ struct Cli {
         arg(long, default_value = "lean")
     )]
     tool_profile: String,
+}
+
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+fn normalize_http_auth_token(raw: &str, source: &str) -> anyhow::Result<String> {
+    let token = raw.trim();
+    if token.is_empty() {
+        anyhow::bail!("HTTP authorization token from {source} is empty");
+    }
+    if token.chars().any(char::is_whitespace) {
+        anyhow::bail!("HTTP authorization token from {source} contains whitespace");
+    }
+    Ok(token.to_string())
+}
+
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+fn resolve_http_auth_token(
+    explicit: Option<&str>,
+    token_file: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(token) = explicit {
+        return normalize_http_auth_token(token, "--http-auth-token").map(Some);
+    }
+    if let Some(path) = token_file {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
+        return normalize_http_auth_token(&raw, &path.display().to_string()).map(Some);
+    }
+    Ok(None)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -187,10 +222,14 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(not(all(feature = "stable", not(feature = "full"))))]
     if let Some(port) = cli.http_port {
-        let auth_token = cli.http_auth_token.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("--http-port requires --http-auth-token. Refusing to start HTTP server without authorization.")
+        let auth_token = resolve_http_auth_token(
+            cli.http_auth_token.as_deref(),
+            cli.http_auth_token_file.as_deref(),
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!("--http-port requires --http-auth-token or --http-auth-token-file. Refusing to start HTTP server without authorization.")
         })?;
-        http_server::start_http_server(port, auth_token, bridge, rt.handle().clone());
+        http_server::start_http_server(port, &auth_token, bridge, rt.handle().clone());
     }
 
     // If --http-only was set, skip stdio MCP and just keep the process alive
@@ -220,4 +259,49 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(all(test, not(all(feature = "stable", not(feature = "full")))))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_file_trims_surrounding_whitespace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "  file-token\n").expect("write token");
+        let token = resolve_http_auth_token(None, Some(&path))
+            .expect("valid token file")
+            .expect("resolved token");
+        assert_eq!(token, "file-token");
+    }
+
+    #[test]
+    fn explicit_token_precedes_token_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "file-token\n").expect("write token");
+        let token = resolve_http_auth_token(Some("explicit-token"), Some(&path))
+            .expect("valid explicit token")
+            .expect("resolved token");
+        assert_eq!(token, "explicit-token");
+    }
+
+    #[test]
+    fn token_file_rejects_internal_whitespace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "first\nsecond\n").expect("write token");
+        let error = resolve_http_auth_token(None, Some(&path))
+            .expect_err("multiline token must fail")
+            .to_string();
+        assert!(error.contains("contains whitespace"));
+    }
+
+    #[test]
+    fn missing_token_sources_resolve_to_none() {
+        assert!(resolve_http_auth_token(None, None)
+            .expect("missing token is not a parse error")
+            .is_none());
+    }
 }
