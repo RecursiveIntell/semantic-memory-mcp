@@ -59,8 +59,25 @@ search = [
     "llm-parser",
     "orchestration",
 ]
-# Local feature forwarding for cfg-gated integration reranking in server.rs.
+# Stable minimal feature set: no experimental/advanced modules.
+stable = [
+    "semantic-memory/usearch-backend",
+    "semantic-memory/candle-embedder",
+    "semantic-memory/provenance",
+    "semantic-memory/temporal",
+    "candle-embedder",
+]
+# Local feature forwarders for cfg-gated semantic-memory modules.
+discord = ["semantic-memory/discord"]
+routing = ["semantic-memory/routing"]
+decoder = ["semantic-memory/decoder"]
 integration = ["semantic-memory/integration"]
+turbo-quant-codec = ["semantic-memory/turbo-quant-codec"]
+rl-routing = ["semantic-memory/rl-routing"]
+late-interaction = ["semantic-memory/late-interaction"]
+multiscale = ["semantic-memory/multiscale"]
+subtraction = ["semantic-memory/subtraction"]
+compression-governor = ["semantic-memory/compression-governor"]
 # Local feature forwarding for the sm_subgraph_prune implementation.
 subgraph-pruning = ["semantic-memory/subgraph-pruning"]
 # Local feature that forwards to semantic-memory's candle-embedder.
