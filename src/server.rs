@@ -2110,7 +2110,7 @@ impl SemanticMemoryServer {
         if let Some(refs) = evidence_refs {
             meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
         }
-        let _metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
+        let metadata = serde_json::Value::Object(meta);
 
         let caller_idempotency_key = match idempotency_key {
             Some(key) if !key.trim().is_empty() => key,
@@ -2168,12 +2168,13 @@ impl SemanticMemoryServer {
         .with_origin(origin);
 
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.authority().append(
+            Handle::current().block_on(store.authority().append_with_metadata(
                 permit,
                 caller_idempotency_key,
                 namespace.clone(),
                 content.clone(),
                 source.clone(),
+                Some(metadata),
             ))
         });
 
@@ -6161,6 +6162,20 @@ mod correctness_contract_tests {
         assert!(json["receipt"]["receipt_id"].as_str().is_some());
         assert!(json["receipt"]["recorded_at"].as_str().is_some());
         assert_eq!(json["receipt"]["tool"], "sm_add_fact");
+
+        let fact_id = json["fact_id"].as_str().expect("fact id");
+        let fact = runtime
+            .block_on(server.bridge.store.get_fact(fact_id))
+            .expect("read stored fact")
+            .expect("stored fact exists");
+        let metadata = fact.metadata.expect("typed metadata must persist");
+        assert_eq!(metadata["memory_kind"], "durable_fact");
+        assert_eq!(metadata["sensitivity"], "internal");
+        assert_eq!(
+            metadata["evidence_refs"],
+            serde_json::json!(["evidence:authority-test"])
+        );
+        assert!(metadata["authority"]["operation_id"].as_str().is_some());
     }
 
     #[test]
