@@ -2217,7 +2217,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Ingest a document with automatic chunking. Splits into chunks, each embedded and indexed. Returns document ID and chunk count.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_ingest_document(
         &self,
@@ -2518,7 +2518,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting outdated facts. Returns new fact id and edge id.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_supersede_fact(
         &self,
@@ -3379,7 +3379,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Set provenance (evidence confidence) for an item. Confidence in [0.0, 1.0] with support count. Returns a provenance receipt.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_set_provenance(
         &self,
@@ -3668,7 +3668,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. Idempotent — same edge returns existing ID.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_add_graph_edge(
         &self,
@@ -3796,7 +3796,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Invalidate a stored graph edge by ID. Append-only — edge is never deleted, only marked invalidated with a reason.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_invalidate_graph_edge(
         &self,
@@ -4224,7 +4224,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_update_fact(
         &self,
@@ -4535,7 +4535,7 @@ impl SemanticMemoryServer {
 #[cfg(feature = "claim-integration")]
     #[tool(
         description = "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record from the fact's metadata. Returns the claim ID.",
-        annotations(read_only_hint = false, idempotent_hint = true)
+        annotations(read_only_hint = false)
     )]
     fn sm_create_claim(
         &self,
@@ -4781,7 +4781,7 @@ impl SemanticMemoryServer {
             "as_of_date": as_of_date,
             "results": result_json,
             "count": filtered.len(),
-            "message": format!("Found {} facts valid as of {}", filtered.len(), as_of_date),
+            "message": format!("PREVIEW: {} results returned. Temporal filtering NOT applied — results may include facts not valid as of {}.", filtered.len(), as_of_date),
         }))
     }
 
@@ -5025,7 +5025,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS indexes), re_embed (re-embed all content). Returns an integrity report after the action.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_reconcile(
         &self,
@@ -5070,7 +5070,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take a moment.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_vacuum(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
@@ -5090,7 +5090,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns the count of items re-embedded.",
-        annotations(idempotent_hint = true)
+
     )]
     fn sm_reembed_all(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
@@ -5270,7 +5270,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Import a projection envelope atomically. All records are committed in a single transaction or the entire import is rolled back. Pass the envelope as a JSON string.",
-        annotations(idempotent_hint = true)
+
     )]
     #[allow(deprecated)]
     fn sm_import_envelope(

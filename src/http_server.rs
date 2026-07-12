@@ -303,7 +303,7 @@ fn handle_search(
                 },
                 "result_count": count,
                 "view": "semantic",
-                "widening_occurred": false,
+                "widening_occurred": null, // TODO: derive from execution receipt
                 "widening_reason": null,
                 "verification_status": "verified",
             });
@@ -672,7 +672,7 @@ fn handle_search_routed(
                 "result_count": results.len(),
                 "view": "routed",
                 "query_class": query_class,
-                "widening_occurred": false,
+                "widening_occurred": null, // TODO: derive from execution receipt
                 "widening_reason": null,
                 "verification_status": "verified",
             });
