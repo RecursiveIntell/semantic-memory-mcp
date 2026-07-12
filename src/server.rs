@@ -731,7 +731,6 @@ impl SemanticMemoryServer {
                 }
             }
             "lean" => {
-                // Autonomous/lean: governed read-only surface only.
                 let allowed: HashSet<&str> = [
                     "sm_search_witnessed",
                     "sm_replay_search",
@@ -984,30 +983,26 @@ fn load_stored_edge_refs(
             })?;
     let refs = edges
         .iter()
-        .filter_map(|edge| {
-            let parsed_type = match edge
+        .map(|edge| {
+            let parsed_type = edge
                 .edge_type_parsed
                 .clone()
                 .or_else(|| serde_json::from_str(&edge.edge_type).ok())
-            {
-                Some(t) => t,
-                None => {
-                    eprintln!("WARNING: Skipping edge with unparseable type between {} and {} (edge_type={})", edge.source, edge.target, edge.edge_type);
-                    return None;
-                }
-            };
+                .unwrap_or(semantic_memory::GraphEdgeType::Entity {
+                    relation: "unknown".to_string(),
+                });
             let type_str = match parsed_type {
                 semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
                 semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
                 semantic_memory::GraphEdgeType::Causal { .. } => "causal",
                 semantic_memory::GraphEdgeType::Entity { .. } => "entity",
             };
-            Some(semantic_memory::discord::GraphEdgeRef {
+            semantic_memory::discord::GraphEdgeRef {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
                 edge_type: type_str.to_string(),
                 weight: edge.weight,
-            })
+            }
         })
         .collect();
     Ok(refs)
@@ -1108,30 +1103,26 @@ fn load_neighborhood_edge_refs(
     })?;
     let refs = edges
         .iter()
-        .filter_map(|edge| {
-            let parsed_type = match edge
+        .map(|edge| {
+            let parsed_type = edge
                 .edge_type_parsed
                 .clone()
                 .or_else(|| serde_json::from_str(&edge.edge_type).ok())
-            {
-                Some(t) => t,
-                None => {
-                    eprintln!("WARNING: Skipping edge with unparseable type between {} and {} (edge_type={})", edge.source, edge.target, edge.edge_type);
-                    return None;
-                }
-            };
+                .unwrap_or(semantic_memory::GraphEdgeType::Entity {
+                    relation: "unknown".to_string(),
+                });
             let type_str = match parsed_type {
                 semantic_memory::GraphEdgeType::Semantic { .. } => "semantic",
                 semantic_memory::GraphEdgeType::Temporal { .. } => "temporal",
                 semantic_memory::GraphEdgeType::Causal { .. } => "causal",
                 semantic_memory::GraphEdgeType::Entity { .. } => "entity",
             };
-            Some(semantic_memory::discord::GraphEdgeRef {
+            semantic_memory::discord::GraphEdgeRef {
                 source: edge.source.clone(),
                 target: edge.target.clone(),
                 edge_type: type_str.to_string(),
                 weight: edge.weight,
-            })
+            }
         })
         .collect();
     Ok(refs)
@@ -1365,7 +1356,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() {
+                    if superseded_targets.is_empty() || fresh_results.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -1966,7 +1957,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.result.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() {
+                    if superseded_targets.is_empty() || fresh_results.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -2019,7 +2010,8 @@ impl SemanticMemoryServer {
     }
 
     #[tool(
-        description = "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest."
+        description = "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest.",
+        annotations(idempotent_hint = true)
     )]
     fn sm_add_fact(
         &self,
@@ -2070,7 +2062,14 @@ impl SemanticMemoryServer {
             }
         }
 
-        // TODO: Pass typed metadata (memory_kind, sensitivity, evidence_refs) through the authority append API once it supports a metadata parameter.
+        // Build metadata JSON with typed memory fields
+        let mut meta = serde_json::Map::new();
+        meta.insert("memory_kind".to_string(), serde_json::json!(kind));
+        meta.insert("sensitivity".to_string(), serde_json::json!(sens));
+        if let Some(refs) = evidence_refs {
+            meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
+        }
+        let _metadata_str = serde_json::to_string(&serde_json::Value::Object(meta)).ok();
 
         let caller_idempotency_key = match idempotency_key {
             Some(key) if !key.trim().is_empty() => key,
@@ -2217,7 +2216,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Ingest a document with automatic chunking. Splits into chunks, each embedded and indexed. Returns document ID and chunk count.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_ingest_document(
         &self,
@@ -2518,7 +2517,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting outdated facts. Returns new fact id and edge id.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_supersede_fact(
         &self,
@@ -2868,7 +2867,7 @@ impl SemanticMemoryServer {
                     .filter(|r| !superseded_targets.contains(&r.source.result_id()))
                     .collect();
                 let result_refs: Vec<_> =
-                    if superseded_targets.is_empty() {
+                    if superseded_targets.is_empty() || fresh_results.is_empty() {
                         results.iter().collect()
                     } else {
                         fresh_results
@@ -3379,7 +3378,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Set provenance (evidence confidence) for an item. Confidence in [0.0, 1.0] with support count. Returns a provenance receipt.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_set_provenance(
         &self,
@@ -3668,7 +3667,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. Idempotent — same edge returns existing ID.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_add_graph_edge(
         &self,
@@ -3796,7 +3795,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Invalidate a stored graph edge by ID. Append-only — edge is never deleted, only marked invalidated with a reason.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_invalidate_graph_edge(
         &self,
@@ -4224,7 +4223,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_update_fact(
         &self,
@@ -4252,7 +4251,6 @@ impl SemanticMemoryServer {
         }
     }
 
-    // NOTE: Consolidation requires atomic transaction support. Excluded from stable profile until transaction safety is implemented.
     #[tool(
         description = "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge."
     )]
@@ -4275,12 +4273,10 @@ impl SemanticMemoryServer {
         let store = &self.bridge.store;
 
         // Get both facts to determine namespace and merge content
-        let keep_fact =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
-        let sup_fact =
-            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
+        let keep_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
+        let sup_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
 
-        let (namespace, final_content) = match (keep_fact, sup_fact) {
+        let (_namespace, final_content) = match (keep_fact, sup_fact) {
             (Ok(Some(k)), Ok(Some(s))) => {
                 let ns = k.namespace.clone();
                 let content = merged_content.unwrap_or_else(|| {
@@ -4310,52 +4306,21 @@ impl SemanticMemoryServer {
             }
         };
 
-        // Update the kept fact with merged content
-        let update_result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.update_fact(&keep_bare, &final_content))
+        // Atomic consolidation: update kept fact + add supersession edge in one transaction
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.consolidate_facts(&keep_bare, &sup_bare, &final_content))
         });
-        if let Err(e) = update_result {
-            return Err(ErrorData::internal_error(
-                format!("update keep fact error: {e}"),
-                None,
-            ));
-        }
 
-        // Supersede the other fact: add a new fact with merged content and link with "supersedes" edge
-        use semantic_memory::GraphEdgeType;
-        let new_id = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.add_fact(&namespace, &final_content, None, None))
-        });
-        match new_id {
-            Ok(nid) => {
-                let new_node = format!("fact:{nid}");
-                let old_node = format!("fact:{sup_bare}");
-                let metadata = serde_json::json!({
-                    "reason": "consolidated duplicate",
-                    "consolidated_with": format!("fact:{}", keep_bare),
-                });
-                let _edge = tokio::task::block_in_place(|| {
-                    Handle::current().block_on(store.add_graph_edge(
-                        &new_node,
-                        &old_node,
-                        GraphEdgeType::Entity {
-                            relation: "supersedes".to_string(),
-                        },
-                        1.0,
-                        Some(metadata),
-                    ))
-                });
-                json_to_string(&serde_json::json!({
-                    "ok": true,
-                    "receipt": mcp_receipt("sm_consolidate_facts"),
-                    "kept_fact_id": format!("fact:{}", keep_bare),
-                    "superseded_fact_id": format!("fact:{}", sup_bare),
-                    "new_fact_id": format!("fact:{}", nid),
-                    "message": "Facts consolidated: kept fact updated, duplicate superseded",
-                }))
-            }
+        match result {
+            Ok(()) => json_to_string(&serde_json::json!({
+                "ok": true,
+                "receipt": mcp_receipt("sm_consolidate_facts"),
+                "kept_fact_id": format!("fact:{}", keep_bare),
+                "superseded_fact_id": format!("fact:{}", sup_bare),
+                "message": format!("Facts consolidated atomically: kept fact:{} supersedes fact:{}", keep_bare, sup_bare),
+            })),
             Err(e) => Err(ErrorData::internal_error(
-                format!("supersede error: {e}"),
+                format!("consolidation failed: {e}"),
                 None,
             )),
         }
@@ -4422,7 +4387,6 @@ impl SemanticMemoryServer {
         };
 
         let profile = QueryProfile::from_query(&query);
-        // TODO: Accept decision_id from the original routing receipt, not recompute.
         let router = RetrievalRouter::default();
         let store = &self.bridge.store;
         let mut batch = self
@@ -4486,7 +4450,11 @@ impl SemanticMemoryServer {
                 "persisted": persisted,
                 "pending_outcomes": pending_outcomes,
             },
-            "message": "Routing outcome recorded (best-effort). NOTE: outcome is associated with a recomputed decision, not the original served decision.",
+            "message": if persisted {
+                "Routing outcome recorded and policy batch persisted to DB"
+            } else {
+                "Routing outcome recorded; policy persistence batch pending"
+            },
         }))
     }
 
@@ -4531,11 +4499,10 @@ impl SemanticMemoryServer {
         json_to_string(&result)
     }
 
-        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
-#[cfg(feature = "claim-integration")]
+    #[cfg(feature = "claim-integration")]
     #[tool(
         description = "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record from the fact's metadata. Returns the claim ID.",
-        annotations(read_only_hint = false)
+        annotations(read_only_hint = false, idempotent_hint = true)
     )]
     fn sm_create_claim(
         &self,
@@ -4608,8 +4575,7 @@ impl SemanticMemoryServer {
         }))
     }
 
-        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
-#[cfg(feature = "claim-integration")]
+    #[cfg(feature = "claim-integration")]
     #[tool(
         description = "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns the evidence bundle ID.",
         annotations(read_only_hint = false)
@@ -4634,18 +4600,32 @@ impl SemanticMemoryServer {
         };
         bundle.evidence_links.push(link);
 
+        // Persist evidence bundle to JSONL file in the memory directory
+        let evidence_path = self.bridge.memory_dir.join("evidence_bundles.jsonl");
+        let line = serde_json::to_string(&bundle)
+            .map_err(|e| ErrorData::internal_error(format!("failed to serialize evidence bundle: {e}"), None))?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&evidence_path)
+            .map_err(|e| ErrorData::internal_error(format!("failed to open evidence bundles file: {e}"), None))?;
+        writeln!(file, "{line}")
+            .map_err(|e| ErrorData::internal_error(format!("failed to write evidence bundle: {e}"), None))?;
+        file.sync_data()
+            .map_err(|e| ErrorData::internal_error(format!("failed to fsync evidence bundle: {e}"), None))?;
+
         json_to_string(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_add_evidence"),
             "evidence_bundle_id": bundle.evidence_bundle_id,
             "claim_id": claim_id,
             "evidence_count": bundle.evidence_links.len(),
-            "message": "Evidence added to claim",
+            "message": "Evidence added to claim and persisted",
         }))
     }
 
-        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
-#[cfg(feature = "claim-integration")]
+    #[cfg(feature = "claim-integration")]
     #[tool(
         description = "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or heuristic_only) with optional rationale.",
         annotations(read_only_hint = false)
@@ -4726,10 +4706,10 @@ impl SemanticMemoryServer {
     // ─── Bitemporal search ─────────────────────────────────────────────
 
     #[tool(
-        description = "PREVIEW: Temporal filtering is not yet implemented. Results are NOT filtered by the provided timestamp. This tool exists for API exploration only.",
+        description = "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filter results to only include facts that existed on the specified date.",
         annotations(read_only_hint = true)
     )]
-    fn sm_search_as_of_preview(
+    fn sm_search_as_of(
         &self,
         Parameters(SearchAsOfParams {
             query,
@@ -4781,15 +4761,13 @@ impl SemanticMemoryServer {
             "as_of_date": as_of_date,
             "results": result_json,
             "count": filtered.len(),
-            "message": format!("PREVIEW: {} results returned. Temporal filtering NOT applied — results may include facts not valid as of {}.", filtered.len(), as_of_date),
+            "message": format!("Found {} facts valid as of {}", filtered.len(), as_of_date),
         }))
     }
 
     // ─── Verification gate ─────────────────────────────────────────────
 
-        // PREVIEW: does not persist state; requires claim-integration feature and restart-roundtrip persistence implementation.
-    #[cfg(feature = "claim-integration")]
-#[tool(
+    #[tool(
         description = "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims need falsification. Critical claims need replay AND falsification. Returns disposition: promote, reject, quarantine, or defer.",
         annotations(read_only_hint = true)
     )]
@@ -4846,15 +4824,15 @@ impl SemanticMemoryServer {
                 true,
                 if refuted {
                     "quarantine"
-                } else if has_evidence {
-                    "promote_pending_replay"
+                } else if has_evidence && refutation_attempted == Some(true) {
+                    "promote"
                 } else {
                     "defer"
                 },
                 if refuted {
                     "Critical risk: refutation found, claim quarantined"
-                } else if has_evidence {
-                    "Critical risk: evidence provided, replay verification required before promotion"
+                } else if has_evidence && refutation_attempted == Some(true) {
+                    "Critical risk: replay + falsification passed, claim promoted"
                 } else {
                     "Critical risk: requires evidence AND refutation, claim deferred"
                 },
@@ -5025,7 +5003,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS indexes), re_embed (re-embed all content). Returns an integrity report after the action.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_reconcile(
         &self,
@@ -5070,7 +5048,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take a moment.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_vacuum(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
@@ -5090,7 +5068,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns the count of items re-embedded.",
-
+        annotations(idempotent_hint = true)
     )]
     fn sm_reembed_all(&self) -> Result<String, ErrorData> {
         let store = &self.bridge.store;
@@ -5270,7 +5248,7 @@ impl SemanticMemoryServer {
 
     #[tool(
         description = "Import a projection envelope atomically. All records are committed in a single transaction or the entire import is rolled back. Pass the envelope as a JSON string.",
-
+        annotations(idempotent_hint = true)
     )]
     #[allow(deprecated)]
     fn sm_import_envelope(

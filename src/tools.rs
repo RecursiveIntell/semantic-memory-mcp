@@ -673,7 +673,7 @@ pub struct SubgraphPruneParams {
 
 // ─── Bitemporal search ─────────────────────────────────────────────────
 
-/// Parameters for sm_search_as_of_preview
+/// Parameters for sm_search_as_of
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchAsOfParams {
     /// The search query.

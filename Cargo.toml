@@ -24,15 +24,14 @@ name = "semantic-memory-mcp"
 path = "src/main.rs"
 
 [features]
-# SM-AUD-001: Containment patch. `full` is the compile-time default because
-# server.rs unconditionally references modules behind `full` features. Runtime
-# containment is handled by the tool-profile allowlist in SemanticMemoryServer::new().
-# Use --tool-profile stable at runtime for the safe surface.
+# SM-AUD-001: The MCP server references routing, integration, decoder, discord,
+# provenance, factor_graph, topology, and community modules unconditionally in
+# server.rs. These are all behind `full` features in semantic-memory. Making
+# `full` the default ensures the advertised 18-tool surface compiles and works
+# out of the box. The `search` profile composes every capability referenced by
+# the currently unified tool router; it is a supported build profile, not a
+# minimal tool surface.
 default = ["full"]
-# Stable: safe runtime profile. Read, search, add, supersede, graph.
-# Does NOT expose admin-ops, claim tools, RL feedback, consolidation, as-of search,
-# verification, hard deletes, or maintenance at runtime.
-# (Compile-time feature -- not yet a separate build target.)
 # Core: usearch 2.25 backend (the default and recommended backend for
 # semantic-memory — won the benchmark vs hnsw_rs by 2-78x on every metric
 # that matters for a desktop RAG app, +4pp better recall@10 at D=768).
