@@ -19,7 +19,7 @@ use semantic_memory_mcp::server;
 
 /// semantic-memory MCP server configuration.
 #[derive(Parser, Debug)]
-#[command(name = "semantic-memory-mcp")]
+#[command(name = "semantic-memory-mcp", version)]
 #[command(about = "MCP server for semantic-memory — local-first knowledge management")]
 struct Cli {
     /// Path to the memory store directory (created if it does not exist)
