@@ -4,13 +4,13 @@
 //! can discover and call. The rmcp macro auto-generates JSON Schema
 //! from the parameter structs in tools.rs.
 
-use schemars::JsonSchema;
 use crate::bridge::MemoryBridge;
 use crate::tools::*;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     tool, tool_handler, tool_router, ErrorData, Json, ServerHandler,
 };
+use schemars::JsonSchema;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -686,6 +686,31 @@ fn support_state_label(state: claim_ledger::SupportState) -> &'static str {
     }
 }
 
+/// Schema-backed structured output shared by heterogeneous MCP tools.
+///
+/// Existing object responses retain their top-level wire shape through
+/// `flatten`. Scalar and array results are wrapped under `value`, because MCP
+/// requires structured tool outputs to have an object root schema.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonSchema)]
+pub struct StructuredOutput {
+    #[serde(flatten)]
+    pub fields: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl StructuredOutput {
+    fn from_value(value: serde_json::Value) -> Self {
+        let fields = match value {
+            serde_json::Value::Object(map) => map.into_iter().collect(),
+            value => std::collections::BTreeMap::from([("value".to_string(), value)]),
+        };
+        Self { fields }
+    }
+}
+
+fn structured_output(value: serde_json::Value) -> Json<StructuredOutput> {
+    Json(StructuredOutput::from_value(value))
+}
+
 /// Typed output for sm_stats — provides outputSchema with type: "object" for MCP.
 #[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
 pub struct StatsOutput {
@@ -902,7 +927,7 @@ impl SemanticMemoryServer {
         &self,
         params: GovernedDecisionParams,
         purpose: semantic_memory::GovernedAccessPurposeV1,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::{
             AudienceV1, CallerPrincipalV1, DelegationElevationLeaseV1, GovernedAccessPurposeV1,
             GovernedAccessRequestV1, NamespaceScopeV1, SubjectPrincipalV1,
@@ -980,12 +1005,13 @@ impl SemanticMemoryServer {
 
         // Deliberately serialize only the canonical typed receipt. `access.fact`
         // and `access.origin` are never part of this MCP decision surface.
-        serde_json::to_string(&access.decision).map_err(|error| {
+        let value = serde_json::to_value(&access.decision).map_err(|error| {
             ErrorData::internal_error(
                 format!("decision receipt serialization error: {error}"),
                 None,
             )
-        })
+        })?;
+        Ok(structured_output(value))
     }
 }
 
@@ -1260,9 +1286,8 @@ fn build_projection_query(params: ProjectionQueryParams) -> semantic_memory::Pro
     }
 }
 
-fn json_to_string(value: &serde_json::Value) -> Result<String, ErrorData> {
-    serde_json::to_string_pretty(value)
-        .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))
+fn json_to_output(value: &serde_json::Value) -> Result<Json<StructuredOutput>, ErrorData> {
+    Ok(structured_output(value.clone()))
 }
 
 /// Generate a receipt ID for MCP mutation operations.
@@ -1345,7 +1370,7 @@ impl SemanticMemoryServer {
             top_k,
             namespaces,
         }): Parameters<SearchParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let requested_k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = false;
         let search_k = if allow_superseded {
@@ -1395,7 +1420,7 @@ impl SemanticMemoryServer {
                         })
                     })
                     .collect();
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "results": json_results,
                     "count": json_results.len(),
@@ -1480,7 +1505,7 @@ impl SemanticMemoryServer {
             retrieval_mode,
             replay_mode,
         }): Parameters<SearchWitnessedParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::{ExactnessProfile, ReceiptMode, ReplayMode, SearchContext};
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let request_id = request_id.unwrap_or_else(|| {
@@ -1678,7 +1703,7 @@ impl SemanticMemoryServer {
         } else {
             "backend_reported_non_approximate"
         };
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "schema_version": "retrieval_response_v1", "ok": true, "request_id": request_id, "receipt_id": receipt.receipt_id, "retrieval_mode": retrieval_mode_name,
             "state_view": {"kind": "Current"}, "current_snapshot_id": authority_state.snapshot_id.0,
             "retrieval_epoch": authority_state.retrieval_epoch.0,
@@ -1721,7 +1746,7 @@ impl SemanticMemoryServer {
             namespaces,
             budget_micros,
         }): Parameters<SearchProofDebtParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let store = &self.bridge.store;
         let ns: Option<Vec<&str>> = namespaces
@@ -1783,7 +1808,7 @@ impl SemanticMemoryServer {
                 budget_for_claim("sm_search_proof_debt", &all_debts, budget);
             let gate = evaluate_proof_debt_gate_with_config(&proof_budget, &config);
 
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "query": query,
                 "results": per_result,
@@ -1803,7 +1828,7 @@ impl SemanticMemoryServer {
         }
         #[cfg(not(feature = "claim-integration"))]
         {
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "query": query,
                 "results": results.iter().map(|r| serde_json::json!({
@@ -1835,7 +1860,7 @@ impl SemanticMemoryServer {
             top_k,
             namespaces,
         }): Parameters<BenchmarkTrustParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let n = query_count.map(|v| v as usize).unwrap_or(10);
         let k = top_k.map(|v| v as usize).unwrap_or(5);
         let store = &self.bridge.store;
@@ -1889,7 +1914,7 @@ impl SemanticMemoryServer {
                 }));
             }
 
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "queries_run": facts.len(),
                 "top_k": k,
@@ -1908,7 +1933,7 @@ impl SemanticMemoryServer {
         }
         #[cfg(not(feature = "claim-integration"))]
         {
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "queries_run": facts.len(),
                 "top_k": k,
@@ -1927,7 +1952,7 @@ impl SemanticMemoryServer {
     fn sm_decide_assertion_authority(
         &self,
         Parameters(params): Parameters<GovernedDecisionParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         self.decide_governed_authority(params, semantic_memory::GovernedAccessPurposeV1::Assertion)
     }
 
@@ -1938,7 +1963,7 @@ impl SemanticMemoryServer {
     fn sm_decide_action_authority(
         &self,
         Parameters(params): Parameters<GovernedDecisionParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         self.decide_governed_authority(params, semantic_memory::GovernedAccessPurposeV1::Action)
     }
 
@@ -1950,7 +1975,7 @@ impl SemanticMemoryServer {
     fn sm_search_explained(
         &self,
         Parameters(SearchExplainedParams { query, top_k }): Parameters<SearchExplainedParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let requested_k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = query_allows_superseded(&query);
         let search_k = if allow_superseded {
@@ -2013,7 +2038,7 @@ impl SemanticMemoryServer {
                         })
                     })
                     .collect();
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "results": json_results,
                     "count": json_results.len(),
@@ -2043,7 +2068,7 @@ impl SemanticMemoryServer {
             evidence_refs,
             idempotency_key,
         }): Parameters<AddFactParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
 
         // Admission gate: classify sensitivity
@@ -2217,7 +2242,7 @@ impl SemanticMemoryServer {
                     }
                 }
 
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "fact_id": id,
                     "namespace": namespace,
@@ -2243,7 +2268,7 @@ impl SemanticMemoryServer {
             title,
             namespace,
         }): Parameters<IngestDocumentParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current()
@@ -2256,7 +2281,7 @@ impl SemanticMemoryServer {
                     Handle::current().block_on(store.count_chunks_for_document(&doc_id))
                 })
                 .unwrap_or(0);
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "receipt": mcp_receipt("sm_ingest_document"),
                     "document_id": doc_id,
@@ -2302,7 +2327,9 @@ impl SemanticMemoryServer {
             messages: core_value.as_ref().map(|s| s.total_messages),
             graph_edges: graph_count,
             db_size_bytes: core_value.as_ref().map(|s| s.database_size_bytes),
-            db_size_mb: core_value.as_ref().map(|s| (s.database_size_bytes as f64 / 1_048_576.0 * 100.0).round() / 100.0),
+            db_size_mb: core_value
+                .as_ref()
+                .map(|s| (s.database_size_bytes as f64 / 1_048_576.0 * 100.0).round() / 100.0),
             embedding_model: core_value.as_ref().and_then(|s| s.embedding_model.clone()),
             embedding_dimensions: core_value.as_ref().and_then(|s| s.embedding_dimensions),
         }))
@@ -2319,7 +2346,7 @@ impl SemanticMemoryServer {
             to_id,
             max_depth,
         }): Parameters<GraphPathParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let depth = max_depth.map(|v| v as usize).unwrap_or(5);
         let store = &self.bridge.store;
         let g = store.graph_view();
@@ -2328,7 +2355,7 @@ impl SemanticMemoryServer {
             Ok(GraphPathOutcome::Found(path)) => {
                 // Build edge evidence for each hop by examining neighbors.
                 let path_segments = build_path_segments(store, &path);
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "outcome": "Found",
                     "from": from_id,
@@ -2339,7 +2366,7 @@ impl SemanticMemoryServer {
                 }))
             }
             Ok(GraphPathOutcome::NoPathWithinCompleteSearch) => {
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "outcome": "NoPathWithinCompleteSearch",
                     "from": from_id,
@@ -2348,11 +2375,11 @@ impl SemanticMemoryServer {
                     "message": format!("No path found from {from_id} to {to_id} within depth {depth}"),
                 }))
             }
-            Ok(GraphPathOutcome::BudgetExceeded) => json_to_string(&serde_json::json!({
+            Ok(GraphPathOutcome::BudgetExceeded) => json_to_output(&serde_json::json!({
                 "ok": false, "outcome": "BudgetExceeded", "from": from_id, "to": to_id,
                 "path": null, "budget": {"max_depth": depth}
             })),
-            Ok(GraphPathOutcome::InvalidEndpoint(endpoint)) => json_to_string(&serde_json::json!({
+            Ok(GraphPathOutcome::InvalidEndpoint(endpoint)) => json_to_output(&serde_json::json!({
                 "ok": false, "outcome": "InvalidEndpoint", "invalid_endpoint": endpoint,
                 "from": from_id, "to": to_id, "path": null
             })),
@@ -2372,7 +2399,7 @@ impl SemanticMemoryServer {
     fn sm_get_fact(
         &self,
         Parameters(GetFactParams { fact_id }): Parameters<GetFactParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let bare = fact_id
             .strip_prefix("fact:")
             .unwrap_or(&fact_id)
@@ -2381,7 +2408,7 @@ impl SemanticMemoryServer {
         let result =
             tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&bare)));
         match result {
-            Ok(Some(f)) => json_to_string(&serde_json::json!({
+            Ok(Some(f)) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "found": true,
                 "fact": {
@@ -2395,7 +2422,7 @@ impl SemanticMemoryServer {
                     "metadata": f.metadata,
                 },
             })),
-            Ok(None) => json_to_string(&serde_json::json!({
+            Ok(None) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "found": false,
                 "message": format!("No fact with id '{fact_id}'"),
@@ -2418,7 +2445,7 @@ impl SemanticMemoryServer {
             limit,
             offset,
         }): Parameters<ListFactsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let lim = limit.map(|v| v as usize).unwrap_or(50);
         let off = offset.map(|v| v as usize).unwrap_or(0);
         let store = &self.bridge.store;
@@ -2440,7 +2467,7 @@ impl SemanticMemoryServer {
                         })
                     })
                     .collect();
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "namespace": namespace,
                     "count": arr.len(),
@@ -2460,13 +2487,13 @@ impl SemanticMemoryServer {
         description = "List namespaces that currently contain facts. Use before sm_list_facts to discover what is stored.",
         annotations(read_only_hint = true)
     )]
-    fn sm_list_namespaces(&self) -> Result<String, ErrorData> {
+    fn sm_list_namespaces(&self) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.list_fact_namespaces())
         });
         match result {
-            Ok(ns) => json_to_string(&serde_json::json!({
+            Ok(ns) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "count": ns.len(),
                 "namespaces": ns,
@@ -2485,7 +2512,7 @@ impl SemanticMemoryServer {
     fn sm_get_fact_neighbors(
         &self,
         Parameters(GetFactNeighborsParams { item_id }): Parameters<GetFactNeighborsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let node_id = if item_id.contains(':') {
             item_id.clone()
         } else {
@@ -2524,7 +2551,7 @@ impl SemanticMemoryServer {
                 "content": content,
             }));
         }
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "item_id": node_id,
             "center_content": center.map(|f| f.content),
@@ -2546,7 +2573,7 @@ impl SemanticMemoryServer {
             source,
             reason,
         }): Parameters<SupersedeFactParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::GraphEdgeType;
 
         let old_bare = old_fact_id
@@ -2588,7 +2615,7 @@ impl SemanticMemoryServer {
         })
         .map_err(|e| ErrorData::internal_error(format!("add supersedes edge error: {e}"), None))?;
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_supersede_fact"),
             "new_fact_id": new_id,
@@ -2611,7 +2638,7 @@ impl SemanticMemoryServer {
     fn sm_create_session(
         &self,
         Parameters(CreateSessionParams { channel, metadata }): Parameters<CreateSessionParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let meta: Option<serde_json::Value> = metadata
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok());
@@ -2620,7 +2647,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.create_session_with_metadata(&channel, meta))
         });
         match result {
-            Ok(id) => json_to_string(
+            Ok(id) => json_to_output(
                 &serde_json::json!({"ok": true, "session_id": id, "channel": channel, "receipt": mcp_receipt("sm_create_session")}),
             ),
             Err(e) => Err(ErrorData::internal_error(
@@ -2641,7 +2668,7 @@ impl SemanticMemoryServer {
             role,
             content,
         }): Parameters<AddMessageParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let parsed_role = match role.to_lowercase().as_str() {
             "user" => semantic_memory::types::Role::User,
             "assistant" => semantic_memory::types::Role::Assistant,
@@ -2665,7 +2692,7 @@ impl SemanticMemoryServer {
             ))
         });
         match result {
-            Ok(id) => json_to_string(
+            Ok(id) => json_to_output(
                 &serde_json::json!({"ok": true, "message_id": id, "session_id": session_id, "receipt": mcp_receipt("sm_add_message")}),
             ),
             Err(e) => Err(ErrorData::internal_error(
@@ -2682,7 +2709,7 @@ impl SemanticMemoryServer {
     fn sm_list_sessions(
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let lim = limit.map(|v| v as usize).unwrap_or(20);
         let off = offset.map(|v| v as usize).unwrap_or(0);
         let store = &self.bridge.store;
@@ -2690,7 +2717,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.list_sessions(lim, off))
         });
         match result {
-            Ok(sessions) => json_to_string(&serde_json::json!({
+            Ok(sessions) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "count": sessions.len(),
                 "sessions": sessions.iter().map(|s| serde_json::json!({
@@ -2718,14 +2745,14 @@ impl SemanticMemoryServer {
             session_id,
             max_tokens,
         }): Parameters<GetMessagesParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let budget = max_tokens.unwrap_or(4000);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.get_messages_within_budget(&session_id, budget))
         });
         match result {
-            Ok(msgs) => json_to_string(&serde_json::json!({
+            Ok(msgs) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "session_id": session_id,
                 "count": msgs.len(),
@@ -2753,14 +2780,14 @@ impl SemanticMemoryServer {
         Parameters(SearchConversationsParams { query, top_k }): Parameters<
             SearchConversationsParams,
         >,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let k = top_k.map(|v| v as usize);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search_conversations(&query, k, None))
         });
         match result {
-            Ok(results) => json_to_string(&serde_json::json!({
+            Ok(results) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "count": results.len(),
                 "results": results.iter().map(|r| serde_json::json!({
@@ -2790,7 +2817,7 @@ impl SemanticMemoryServer {
     fn sm_route_query(
         &self,
         Parameters(RouteQueryParams { query }): Parameters<RouteQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::rl_routing::{is_trained, route_with_policy};
         use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
@@ -2810,7 +2837,7 @@ impl SemanticMemoryServer {
             Some(policy) => (route_with_policy(policy, &profile), "trained_policy"),
             None => (router.route(&profile), "heuristic"),
         };
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "routing_source": routing_source,
             "bm25_coarse": decision.bm25_coarse,
@@ -2836,7 +2863,7 @@ impl SemanticMemoryServer {
             contradictions,
             group_by_community,
         }): Parameters<SearchWithRoutingParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::integration::plan_execution;
         use semantic_memory::rl_routing::{is_trained, route_with_policy};
         use semantic_memory::routing::{QueryProfile, RetrievalRouter};
@@ -3167,7 +3194,7 @@ impl SemanticMemoryServer {
                     }
                 }
 
-                json_to_string(&serde_json::json!({
+                json_to_output(&serde_json::json!({
                     "ok": true,
                     "routing_decision": {
                         "source": routing_source,
@@ -3211,7 +3238,7 @@ impl SemanticMemoryServer {
             results,
             contradictions,
         }): Parameters<DecoderAnalyzeParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::decoder::{
             compute_correction, detect_syndromes, pass_messages, ConflictGraph,
         };
@@ -3222,7 +3249,7 @@ impl SemanticMemoryServer {
         let graph = ConflictGraph::from_syndromes(&results, &syndromes);
         let mp = pass_messages(&graph, 50, 0.001);
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "syndromes": syndromes.iter().map(|s| serde_json::json!({
                 "id": s.id,
@@ -3258,7 +3285,7 @@ impl SemanticMemoryServer {
             top_k,
             record_to_ledger,
         }): Parameters<DetectContradictionsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::contradiction_detect::{detect_contradictions, DetectorConfig};
 
         let k = top_k.map(|v| v as usize).unwrap_or(10);
@@ -3346,7 +3373,7 @@ impl SemanticMemoryServer {
             (0, Vec::new())
         };
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "query": query,
             "items_scanned": items.len(),
@@ -3371,7 +3398,7 @@ impl SemanticMemoryServer {
     fn sm_discord_search(
         &self,
         Parameters(DiscordSearchParams { direct_result_ids }): Parameters<DiscordSearchParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::discord::DiscordScorer;
 
         // Use neighborhood loading: only load edges within 2 hops of the
@@ -3380,7 +3407,7 @@ impl SemanticMemoryServer {
         let scorer = DiscordScorer::with_defaults();
         let results = scorer.score(&direct_result_ids, &edges);
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "discord_results": results.iter().map(|r| serde_json::json!({
                 "item_id": r.item_id,
@@ -3405,7 +3432,7 @@ impl SemanticMemoryServer {
             confidence,
             support_count,
         }): Parameters<SetProvenanceParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::provenance::{
             ConfidenceSemiring, ConfidenceValue, ProvenanceItemType,
         };
@@ -3432,7 +3459,7 @@ impl SemanticMemoryServer {
         });
 
         match result {
-            Ok(receipt) => json_to_string(&serde_json::json!({
+            Ok(receipt) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "provenance_id": receipt.provenance_id,
                 "item_id": receipt.item_id,
@@ -3454,7 +3481,7 @@ impl SemanticMemoryServer {
     fn sm_run_lifecycle(
         &self,
         Parameters(RunLifecycleParams { item_ids }): Parameters<RunLifecycleParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::decoder::{compute_correction, detect_syndromes};
         use semantic_memory::integration::{
             corrections_to_subtraction_candidates, should_trigger_recompression,
@@ -3633,7 +3660,7 @@ impl SemanticMemoryServer {
         #[cfg(not(feature = "full"))]
         let (f32_count, compressed_count) = (0usize, 0usize);
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "items_analyzed": item_ids.len(),
             "syndromes_detected": syndromes.len(),
@@ -3690,7 +3717,7 @@ impl SemanticMemoryServer {
     fn sm_add_graph_edge(
         &self,
         Parameters(params): Parameters<AddGraphEdgeParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::GraphEdgeType;
 
         // SM-AUD-015: Validate numeric params are finite and in range.
@@ -3753,7 +3780,7 @@ impl SemanticMemoryServer {
         });
 
         match result {
-            Ok(edge) => json_to_string(&serde_json::json!({
+            Ok(edge) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_add_graph_edge"),
                 "id": edge.id,
@@ -3779,7 +3806,7 @@ impl SemanticMemoryServer {
     fn sm_list_graph_edges(
         &self,
         Parameters(ListGraphEdgesParams { node_id }): Parameters<ListGraphEdgesParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = match node_id {
             Some(id) => tokio::task::block_in_place(|| {
@@ -3791,7 +3818,7 @@ impl SemanticMemoryServer {
         };
 
         match result {
-            Ok(edges) => json_to_string(&serde_json::json!({
+            Ok(edges) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "edges": edges.iter().map(|e| serde_json::json!({
                     "id": e.id,
@@ -3820,14 +3847,14 @@ impl SemanticMemoryServer {
         Parameters(InvalidateGraphEdgeParams { edge_id, reason }): Parameters<
             InvalidateGraphEdgeParams,
         >,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.invalidate_graph_edge(&edge_id, &reason))
         });
 
         match result {
-            Ok(()) => json_to_string(&serde_json::json!({
+            Ok(()) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_invalidate_graph_edge"),
                 "edge_id": edge_id,
@@ -3849,7 +3876,7 @@ impl SemanticMemoryServer {
     fn sm_factor_graph(
         &self,
         Parameters(params): Parameters<FactorGraphParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
 
         let defaults = FactorGraphConfig::default();
@@ -3883,7 +3910,7 @@ impl SemanticMemoryServer {
         let graph = FactorGraph::new(&nodes, factors, config);
         let result = graph.propagate();
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "node_beliefs": result.node_beliefs,
             "iterations": result.iterations,
@@ -3917,7 +3944,7 @@ impl SemanticMemoryServer {
     fn sm_topology(
         &self,
         Parameters(_params): Parameters<TopologyParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::topology::{compute_betti_numbers, find_voids, gap_report};
 
         // MCP-001: Load edges from the store, not from caller-supplied params.
@@ -3934,7 +3961,7 @@ impl SemanticMemoryServer {
         let voids = find_voids(&edges);
         let report = gap_report(&voids);
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "betti_numbers": {
                 "betti_0": betti.betti_0,
@@ -3959,7 +3986,7 @@ impl SemanticMemoryServer {
     fn sm_community(
         &self,
         Parameters(params): Parameters<CommunityParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::community::{
             community_aware_compression, community_contradiction_scan, detect_communities,
         };
@@ -4036,7 +4063,7 @@ impl SemanticMemoryServer {
             })
             .collect();
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "communities": communities_json,
             "community_count": communities.len(),
@@ -4069,7 +4096,7 @@ impl SemanticMemoryServer {
     fn sm_subgraph_prune(
         &self,
         Parameters(SubgraphPruneParams { dry_run, max_prune }): Parameters<SubgraphPruneParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         #[cfg(feature = "subgraph-pruning")]
         {
             use semantic_memory::integration::autonomous_subgraph_maintenance;
@@ -4111,7 +4138,7 @@ impl SemanticMemoryServer {
             let report =
                 autonomous_subgraph_maintenance(&edges, &access_logs, &contradictions, prune_count);
 
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "dry_run": dry,
                 "subgraphs_identified": report.subgraphs_identified,
@@ -4127,7 +4154,7 @@ impl SemanticMemoryServer {
         #[cfg(not(feature = "subgraph-pruning"))]
         {
             let _ = (dry_run, max_prune);
-            json_to_string(&serde_json::json!({
+            json_to_output(&serde_json::json!({
                 "ok": true,
                 "note": "subgraph-pruning feature not enabled",
                 "receipt": mcp_receipt("sm_subgraph_prune"),
@@ -4142,7 +4169,7 @@ impl SemanticMemoryServer {
     fn sm_delete_fact(
         &self,
         Parameters(DeleteFactParams { fact_id }): Parameters<DeleteFactParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let bare = fact_id
             .strip_prefix("fact:")
             .unwrap_or(&fact_id)
@@ -4189,7 +4216,7 @@ impl SemanticMemoryServer {
             ))
         });
         match result {
-            Ok(receipt) => json_to_string(&serde_json::json!({
+            Ok(receipt) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "deleted": false,
                 "forgotten": true,
@@ -4211,13 +4238,13 @@ impl SemanticMemoryServer {
     fn sm_delete_namespace(
         &self,
         Parameters(DeleteNamespaceParams { namespace }): Parameters<DeleteNamespaceParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.delete_namespace(&namespace))
         });
         match result {
-            Ok(r) => json_to_string(&serde_json::json!({
+            Ok(r) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_delete_namespace"),
                 "namespace": namespace,
@@ -4246,7 +4273,7 @@ impl SemanticMemoryServer {
     fn sm_update_fact(
         &self,
         Parameters(UpdateFactParams { fact_id, content }): Parameters<UpdateFactParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let bare = fact_id
             .strip_prefix("fact:")
             .unwrap_or(&fact_id)
@@ -4256,7 +4283,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.update_fact(&bare, &content))
         });
         match result {
-            Ok(()) => json_to_string(&serde_json::json!({
+            Ok(()) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_update_fact"),
                 "fact_id": format!("fact:{bare}"),
@@ -4279,7 +4306,7 @@ impl SemanticMemoryServer {
             supersede_id,
             merged_content,
         }): Parameters<ConsolidateFactsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let keep_bare = keep_id
             .strip_prefix("fact:")
             .unwrap_or(&keep_id)
@@ -4291,8 +4318,10 @@ impl SemanticMemoryServer {
         let store = &self.bridge.store;
 
         // Get both facts to determine namespace and merge content
-        let keep_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
-        let sup_fact = tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
+        let keep_fact =
+            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&keep_bare)));
+        let sup_fact =
+            tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&sup_bare)));
 
         let (_namespace, final_content) = match (keep_fact, sup_fact) {
             (Ok(Some(k)), Ok(Some(s))) => {
@@ -4326,11 +4355,15 @@ impl SemanticMemoryServer {
 
         // Atomic consolidation: update kept fact + add supersession edge in one transaction
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.consolidate_facts(&keep_bare, &sup_bare, &final_content))
+            Handle::current().block_on(store.consolidate_facts(
+                &keep_bare,
+                &sup_bare,
+                &final_content,
+            ))
         });
 
         match result {
-            Ok(()) => json_to_string(&serde_json::json!({
+            Ok(()) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_consolidate_facts"),
                 "kept_fact_id": format!("fact:{}", keep_bare),
@@ -4350,7 +4383,7 @@ impl SemanticMemoryServer {
         description = "Return the current persisted RL routing policy, including weights, training example count, and last update time.",
         annotations(read_only_hint = true)
     )]
-    fn sm_get_routing_policy(&self) -> Result<String, ErrorData> {
+    fn sm_get_routing_policy(&self) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::rl_routing::is_trained;
 
         let policy = tokio::task::block_in_place(|| {
@@ -4359,7 +4392,7 @@ impl SemanticMemoryServer {
         .map_err(|e| ErrorData::internal_error(format!("load routing policy error: {e}"), None))?;
 
         match policy {
-            Some(policy) => json_to_string(&serde_json::json!({
+            Some(policy) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "policy": {
                     "weights": policy.weights,
@@ -4368,7 +4401,7 @@ impl SemanticMemoryServer {
                     "last_updated": policy.last_updated,
                 }
             })),
-            None => json_to_string(&serde_json::json!({
+            None => json_to_output(&serde_json::json!({
                 "ok": true,
                 "policy": null,
             })),
@@ -4386,7 +4419,7 @@ impl SemanticMemoryServer {
     fn sm_record_outcome(
         &self,
         Parameters(RecordOutcomeParams { query, outcome }): Parameters<RecordOutcomeParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::rl_routing::{
             is_trained, record_routing_outcome, route_with_policy, RoutingOutcome,
         };
@@ -4444,7 +4477,7 @@ impl SemanticMemoryServer {
         let pending_outcomes = batch.pending_outcomes;
         batch.policy = Some(policy.clone());
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_record_outcome"),
             "mutating": true,
@@ -4492,7 +4525,7 @@ impl SemanticMemoryServer {
             retain_tail_entries,
             max_backups,
         }): Parameters<CompactClaimLedgerParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let mut ledger = self.claim_ledger_store.lock().unwrap();
         let result = ledger
             .compact(ClaimLedgerCompactionConfig {
@@ -4514,7 +4547,7 @@ impl SemanticMemoryServer {
                 index.rebuild_from_ledger_incremental(&ledger.entries);
             }
         }
-        json_to_string(&result)
+        json_to_output(&result)
     }
 
     #[cfg(feature = "claim-integration")]
@@ -4528,7 +4561,7 @@ impl SemanticMemoryServer {
             fact_id,
             source_span,
         }): Parameters<CreateClaimParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use claim_ledger::Claim;
         let bare = fact_id
             .strip_prefix("fact:")
@@ -4580,7 +4613,7 @@ impl SemanticMemoryServer {
             idx.register_claim(claim_id.clone(), normalized.clone());
         }
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_create_claim"),
             "claim_id": claim_id,
@@ -4605,7 +4638,7 @@ impl SemanticMemoryServer {
             evidence_text,
             source_type,
         }): Parameters<AddEvidenceParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use claim_ledger::{EvidenceBundle, EvidenceLink, EvidenceRelation};
         let mut bundle = EvidenceBundle::new(&claim_id);
         let link = EvidenceLink {
@@ -4620,20 +4653,28 @@ impl SemanticMemoryServer {
 
         // Persist evidence bundle to JSONL file in the memory directory
         let evidence_path = self.bridge.memory_dir.join("evidence_bundles.jsonl");
-        let line = serde_json::to_string(&bundle)
-            .map_err(|e| ErrorData::internal_error(format!("failed to serialize evidence bundle: {e}"), None))?;
+        let line = serde_json::to_string(&bundle).map_err(|e| {
+            ErrorData::internal_error(format!("failed to serialize evidence bundle: {e}"), None)
+        })?;
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&evidence_path)
-            .map_err(|e| ErrorData::internal_error(format!("failed to open evidence bundles file: {e}"), None))?;
-        writeln!(file, "{line}")
-            .map_err(|e| ErrorData::internal_error(format!("failed to write evidence bundle: {e}"), None))?;
-        file.sync_data()
-            .map_err(|e| ErrorData::internal_error(format!("failed to fsync evidence bundle: {e}"), None))?;
+            .map_err(|e| {
+                ErrorData::internal_error(
+                    format!("failed to open evidence bundles file: {e}"),
+                    None,
+                )
+            })?;
+        writeln!(file, "{line}").map_err(|e| {
+            ErrorData::internal_error(format!("failed to write evidence bundle: {e}"), None)
+        })?;
+        file.sync_data().map_err(|e| {
+            ErrorData::internal_error(format!("failed to fsync evidence bundle: {e}"), None)
+        })?;
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_add_evidence"),
             "evidence_bundle_id": bundle.evidence_bundle_id,
@@ -4655,7 +4696,7 @@ impl SemanticMemoryServer {
             judgment,
             rationale,
         }): Parameters<JudgeSupportParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use claim_ledger::{SupportJudgment, SupportState};
         let state = match judgment.to_lowercase().as_str() {
             "supported" => SupportState::Supported,
@@ -4711,7 +4752,7 @@ impl SemanticMemoryServer {
             .unwrap()
             .record_judgment(claim_id.clone(), state);
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "receipt": mcp_receipt("sm_judge_support"),
             "support_judgment_id": j.support_judgment_id,
@@ -4735,7 +4776,7 @@ impl SemanticMemoryServer {
             top_k,
             namespace,
         }): Parameters<SearchAsOfParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let k = top_k.unwrap_or(5);
         let ns_slice: Option<Vec<&str>> = namespace.as_ref().map(|n| vec![n.as_str()]);
@@ -4773,7 +4814,7 @@ impl SemanticMemoryServer {
             })
             .collect();
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "query": query,
             "as_of_date": as_of_date,
@@ -4797,7 +4838,7 @@ impl SemanticMemoryServer {
             evidence_refs,
             refutation_attempted,
         }): Parameters<VerifyClaimParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let risk = risk_class.to_lowercase();
         let has_evidence = evidence_refs
             .as_ref()
@@ -4863,7 +4904,7 @@ impl SemanticMemoryServer {
             }
         };
 
-        json_to_string(&serde_json::json!({
+        json_to_output(&serde_json::json!({
             "ok": true,
             "claim": claim,
             "risk_class": risk,
@@ -4889,13 +4930,13 @@ impl SemanticMemoryServer {
     fn sm_get_search_receipt(
         &self,
         Parameters(GetSearchReceiptParams { receipt_id }): Parameters<GetSearchReceiptParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.get_search_receipt(&receipt_id))
         });
         match result {
-            Ok(Some(receipt)) => json_to_string(&serde_json::json!({
+            Ok(Some(receipt)) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": {
                     "receipt_id": receipt.receipt_id,
@@ -4913,7 +4954,7 @@ impl SemanticMemoryServer {
                     "budget_id": receipt.budget_id,
                 },
             })),
-            Ok(None) => json_to_string(&serde_json::json!({
+            Ok(None) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "found": false,
                 "receipt_id": receipt_id,
@@ -4938,7 +4979,7 @@ impl SemanticMemoryServer {
             top_k,
             namespaces,
         }): Parameters<ReplaySearchReceiptParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let k = top_k.map(|v| v as usize);
         let ns_slice: Option<Vec<&str>> = namespaces
@@ -4955,7 +4996,7 @@ impl SemanticMemoryServer {
             ))
         });
         match result {
-            Ok(report) => json_to_string(&serde_json::json!({
+            Ok(report) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt_id": report.receipt_id,
                 "replay_receipt_id": report.replay_receipt_id,
@@ -4990,7 +5031,7 @@ impl SemanticMemoryServer {
     fn sm_replay_search(
         &self,
         Parameters(ReplayStoredSearchParams { receipt_id }): Parameters<ReplayStoredSearchParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(
                 self.bridge
@@ -4999,7 +5040,7 @@ impl SemanticMemoryServer {
             )
         });
         match result {
-            Ok(report) => json_to_string(&serde_json::json!({
+            Ok(report) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt_id": report.receipt_id,
                 "replay_receipt_id": report.replay_receipt_id,
@@ -5026,7 +5067,7 @@ impl SemanticMemoryServer {
     fn sm_reconcile(
         &self,
         Parameters(ReconcileParams { action }): Parameters<ReconcileParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let action_enum = match action.to_lowercase().as_str() {
             "report_only" | "report-only" => semantic_memory::ReconcileAction::ReportOnly,
             "rebuild_fts" | "rebuild-fts" => semantic_memory::ReconcileAction::RebuildFts,
@@ -5043,7 +5084,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.reconcile(action_enum))
         });
         match result {
-            Ok(report) => json_to_string(&serde_json::json!({
+            Ok(report) => json_to_output(&serde_json::json!({
                 "ok": report.ok,
                 "schema_version": report.schema_version,
                 "fact_count": report.fact_count,
@@ -5068,11 +5109,11 @@ impl SemanticMemoryServer {
         description = "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take a moment.",
         annotations(idempotent_hint = true)
     )]
-    fn sm_vacuum(&self) -> Result<String, ErrorData> {
+    fn sm_vacuum(&self) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| Handle::current().block_on(store.vacuum()));
         match result {
-            Ok(()) => json_to_string(&serde_json::json!({
+            Ok(()) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_vacuum"),
                 "message": "Database vacuumed successfully",
@@ -5088,12 +5129,12 @@ impl SemanticMemoryServer {
         description = "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns the count of items re-embedded.",
         annotations(idempotent_hint = true)
     )]
-    fn sm_reembed_all(&self) -> Result<String, ErrorData> {
+    fn sm_reembed_all(&self) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result =
             tokio::task::block_in_place(|| Handle::current().block_on(store.reembed_all()));
         match result {
-            Ok(count) => json_to_string(&serde_json::json!({
+            Ok(count) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipt": mcp_receipt("sm_reembed_all"),
                 "reembedded_count": count,
@@ -5113,13 +5154,13 @@ impl SemanticMemoryServer {
     fn sm_embeddings_are_dirty(
         &self,
         Parameters(_params): Parameters<EmbeddingsAreDirtyParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.embeddings_are_dirty())
         });
         match result {
-            Ok(dirty) => json_to_string(&serde_json::json!({
+            Ok(dirty) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "dirty": dirty,
                 "message": if dirty { "Embeddings are dirty and need re-generation. Call sm_reembed_all." } else { "Embeddings are up to date" },
@@ -5140,14 +5181,14 @@ impl SemanticMemoryServer {
     fn sm_query_claim_versions(
         &self,
         Parameters(params): Parameters<ProjectionQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.query_claim_versions(query))
         });
         match result {
-            Ok(rows) => json_to_string(&serde_json::json!({
+            Ok(rows) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "results": serde_json::to_value(&rows).unwrap_or_else(|_| serde_json::json!([])),
                 "count": rows.len(),
@@ -5166,14 +5207,14 @@ impl SemanticMemoryServer {
     fn sm_query_relation_versions(
         &self,
         Parameters(params): Parameters<ProjectionQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.query_relation_versions(query))
         });
         match result {
-            Ok(rows) => json_to_string(&serde_json::json!({
+            Ok(rows) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
                 "count": rows.len(),
@@ -5192,13 +5233,13 @@ impl SemanticMemoryServer {
     fn sm_query_episodes(
         &self,
         Parameters(params): Parameters<ProjectionQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
         let result =
             tokio::task::block_in_place(|| Handle::current().block_on(store.query_episodes(query)));
         match result {
-            Ok(rows) => json_to_string(&serde_json::json!({
+            Ok(rows) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
                 "count": rows.len(),
@@ -5217,14 +5258,14 @@ impl SemanticMemoryServer {
     fn sm_query_entity_aliases(
         &self,
         Parameters(params): Parameters<ProjectionQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.query_entity_aliases(query))
         });
         match result {
-            Ok(rows) => json_to_string(&serde_json::json!({
+            Ok(rows) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
                 "count": rows.len(),
@@ -5243,14 +5284,14 @@ impl SemanticMemoryServer {
     fn sm_query_evidence_refs(
         &self,
         Parameters(params): Parameters<ProjectionQueryParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let query = build_projection_query(params);
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.query_evidence_refs(query))
         });
         match result {
-            Ok(rows) => json_to_string(&serde_json::json!({
+            Ok(rows) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
                 "count": rows.len(),
@@ -5272,7 +5313,7 @@ impl SemanticMemoryServer {
     fn sm_import_envelope(
         &self,
         Parameters(ImportEnvelopeParams { envelope_json }): Parameters<ImportEnvelopeParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let envelope: semantic_memory::projection_import::ImportEnvelope =
             serde_json::from_str(&envelope_json).map_err(|e| {
                 ErrorData::invalid_params(format!("Failed to parse envelope JSON: {e}"), None)
@@ -5285,7 +5326,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.import_envelope(&envelope))
         });
         match result {
-            Ok(receipt) => json_to_string(&serde_json::json!({
+            Ok(receipt) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "envelope_id": receipt.envelope_id,
                 "was_duplicate": receipt.was_duplicate,
@@ -5307,7 +5348,7 @@ impl SemanticMemoryServer {
     fn sm_import_status(
         &self,
         Parameters(ImportStatusParams { envelope_id }): Parameters<ImportStatusParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::projection_import::EnvelopeId;
         let store = &self.bridge.store;
         let env_id = EnvelopeId::new(&envelope_id);
@@ -5315,7 +5356,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.import_status(&env_id))
         });
         match result {
-            Ok(receipts) => json_to_string(&serde_json::json!({
+            Ok(receipts) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "envelope_id": envelope_id,
                 "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
@@ -5336,14 +5377,14 @@ impl SemanticMemoryServer {
     fn sm_list_imports(
         &self,
         Parameters(ListImportsParams { namespace, limit }): Parameters<ListImportsParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
         let lim = limit.unwrap_or(20) as usize;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.list_imports(namespace.as_deref(), lim))
         });
         match result {
-            Ok(receipts) => json_to_string(&serde_json::json!({
+            Ok(receipts) => json_to_output(&serde_json::json!({
                 "ok": true,
                 "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
                 "count": receipts.len(),
@@ -5364,12 +5405,10 @@ impl SemanticMemoryServer {
     fn sm_parse_json(
         &self,
         Parameters(ParseJsonParams { raw_output }): Parameters<ParseJsonParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         match llm_output_parser::parse_json::<serde_json::Value>(&raw_output) {
-            Ok(value) => {
-                Ok(serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".to_string()))
-            }
-            Err(e) => Ok(json_to_string(&serde_json::json!({
+            Ok(value) => Ok(structured_output(value)),
+            Err(e) => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
                 "input_preview": &raw_output.chars().take(200).collect::<String>(),
@@ -5385,12 +5424,10 @@ impl SemanticMemoryServer {
     fn sm_parse_json_value(
         &self,
         Parameters(ParseJsonValueParams { raw_output }): Parameters<ParseJsonValueParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         match llm_output_parser::parse_json_value(&raw_output) {
-            Ok(value) => {
-                Ok(serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".to_string()))
-            }
-            Err(e) => Ok(json_to_string(&serde_json::json!({
+            Ok(value) => Ok(structured_output(value)),
+            Err(e) => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
             }))?),
@@ -5405,8 +5442,11 @@ impl SemanticMemoryServer {
     fn sm_strip_think_tags(
         &self,
         Parameters(StripThinkTagsParams { text }): Parameters<StripThinkTagsParams>,
-    ) -> Result<String, ErrorData> {
-        Ok(llm_output_parser::strip_think_tags(&text))
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
+        Ok(structured_output(serde_json::json!({
+            "ok": true,
+            "text": llm_output_parser::strip_think_tags(&text),
+        })))
     }
 
     #[cfg(feature = "llm-parser")]
@@ -5417,10 +5457,13 @@ impl SemanticMemoryServer {
     fn sm_repair_json(
         &self,
         Parameters(RepairJsonParams { json_string }): Parameters<RepairJsonParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         match llm_output_parser::try_repair_json(&json_string) {
-            Some(repaired) => Ok(repaired),
-            None => Ok(json_to_string(&serde_json::json!({
+            Some(repaired) => Ok(structured_output(serde_json::json!({
+                "ok": true,
+                "repaired_json": repaired,
+            }))),
+            None => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": "Could not repair JSON. The input may not be valid JSON even after common fixes.",
             }))?),
@@ -5435,12 +5478,13 @@ impl SemanticMemoryServer {
     fn sm_parse_string_list(
         &self,
         Parameters(ParseStringListParams { raw_output }): Parameters<ParseStringListParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         match llm_output_parser::parse_string_list(&raw_output) {
-            Ok(list) => {
-                Ok(serde_json::to_string_pretty(&list).unwrap_or_else(|_| "[]".to_string()))
-            }
-            Err(e) => Ok(json_to_string(&serde_json::json!({
+            Ok(list) => Ok(structured_output(serde_json::json!({
+                "ok": true,
+                "values": list,
+            }))),
+            Err(e) => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
             }))?),
@@ -5458,11 +5502,14 @@ impl SemanticMemoryServer {
             raw_output,
             options,
         }): Parameters<ParseChoiceParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         let opt_refs: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
         match llm_output_parser::parse_choice(&raw_output, &opt_refs) {
-            Ok(choice) => Ok(choice.to_string()),
-            Err(e) => Ok(json_to_string(&serde_json::json!({
+            Ok(choice) => Ok(structured_output(serde_json::json!({
+                "ok": true,
+                "choice": choice,
+            }))),
+            Err(e) => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
                 "options": options,
@@ -5478,10 +5525,17 @@ impl SemanticMemoryServer {
     fn sm_parse_number(
         &self,
         Parameters(ParseNumberParams { raw_output }): Parameters<ParseNumberParams>,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         match llm_output_parser::parse_number::<f64>(&raw_output) {
-            Ok(n) => Ok(n.to_string()),
-            Err(e) => Ok(json_to_string(&serde_json::json!({
+            Ok(n) if n.is_finite() => Ok(structured_output(serde_json::json!({
+                "ok": true,
+                "number": n,
+            }))),
+            Ok(_) => Ok(structured_output(serde_json::json!({
+                "ok": false,
+                "error": "Parsed number must be finite",
+            }))),
+            Err(e) => Ok(json_to_output(&serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
             }))?),
@@ -5571,6 +5625,98 @@ fn typed_graph_path(
 mod correctness_contract_tests {
     use super::*;
     use crate::bridge::{BridgeConfig, EmbedderBackend};
+
+    fn structured_value(body: &Json<StructuredOutput>) -> serde_json::Value {
+        serde_json::to_value(&body.0).expect("structured tool output JSON")
+    }
+
+    #[test]
+    fn structured_output_preserves_object_shape_and_populates_protocol_field() {
+        use rmcp::handler::server::tool::IntoCallToolResult;
+
+        let output = structured_output(serde_json::json!({
+            "ok": true,
+            "fact_id": "fact-1",
+        }));
+        let result = output.into_call_tool_result().expect("tool result");
+
+        assert_eq!(
+            result.structured_content,
+            Some(serde_json::json!({"ok": true, "fact_id": "fact-1"}))
+        );
+        assert_eq!(
+            result.content.len(),
+            1,
+            "rmcp emits compatibility text content"
+        );
+        assert_eq!(result.is_error, Some(false));
+    }
+
+    #[test]
+    fn structured_output_wraps_non_object_values() {
+        assert_eq!(
+            structured_value(&structured_output(serde_json::json!(["a", "b"]))),
+            serde_json::json!({"value": ["a", "b"]})
+        );
+    }
+
+    #[cfg(feature = "llm-parser")]
+    #[test]
+    fn parse_number_rejects_non_finite_values_without_panicking() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SemanticMemoryServer::new(
+            MemoryBridge::open(BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+            })
+            .unwrap(),
+            "full",
+        );
+
+        let output = server
+            .sm_parse_number(Parameters(ParseNumberParams {
+                raw_output: "NaN".into(),
+            }))
+            .expect("non-finite parse must return a structured result");
+        let value = structured_value(&output);
+
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("finite")));
+    }
+
+    #[test]
+    fn every_registered_tool_declares_object_output_schema() {
+        let tools = SemanticMemoryServer::tool_router().list_all();
+        assert!(!tools.is_empty(), "tool router must register tools");
+
+        let missing: Vec<_> = tools
+            .iter()
+            .filter_map(|tool| {
+                let schema = tool.output_schema.as_deref()?;
+                (schema.get("type").and_then(serde_json::Value::as_str) != Some("object"))
+                    .then(|| tool.name.to_string())
+            })
+            .chain(
+                tools
+                    .iter()
+                    .filter(|tool| tool.output_schema.is_none())
+                    .map(|tool| tool.name.to_string()),
+            )
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "every tool must expose a root object outputSchema; missing/invalid: {missing:?}"
+        );
+    }
     use semantic_memory::{GraphDirection, GraphEdge, GraphEdgeType, GraphView, MemoryError};
 
     struct TestGraph(Vec<(&'static str, &'static str)>);
@@ -5592,7 +5738,7 @@ mod correctness_contract_tests {
         runtime: &tokio::runtime::Runtime,
         server: &SemanticMemoryServer,
         params: AddFactParams,
-    ) -> Result<String, ErrorData> {
+    ) -> Result<Json<StructuredOutput>, ErrorData> {
         runtime.block_on(async {
             tokio::task::block_in_place(|| server.sm_add_fact(Parameters(params)))
         })
@@ -5614,7 +5760,7 @@ mod correctness_contract_tests {
                 })
             })
             .expect("record routing outcome");
-        serde_json::from_str(&body).expect("routing outcome JSON")
+        structured_value(&body)
     }
 
     #[test]
@@ -5662,7 +5808,7 @@ mod correctness_contract_tests {
         let policy_json = runtime
             .block_on(async { tokio::task::block_in_place(|| server.sm_get_routing_policy()) })
             .unwrap();
-        let policy_json: serde_json::Value = serde_json::from_str(&policy_json).unwrap();
+        let policy_json: serde_json::Value = structured_value(&policy_json);
         assert_eq!(
             policy_json["policy"]["training_examples_count"],
             ROUTING_POLICY_PERSIST_BATCH
@@ -5776,7 +5922,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        serde_json::from_str(&body).unwrap()
+        structured_value(&body)
     }
 
     #[test]
@@ -5992,7 +6138,8 @@ mod correctness_contract_tests {
             &server,
             add_fact_params("must pass through authority", Some("mcp-authority-fault")),
         )
-        .unwrap_err();
+        .err()
+        .expect("expected tool error");
         assert!(error.message.contains("authority fault injected"));
         assert_eq!(
             runtime
@@ -6008,7 +6155,7 @@ mod correctness_contract_tests {
             add_fact_params("must pass through authority", Some("mcp-authority-success")),
         )
         .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = structured_value(&body);
         assert_eq!(json["ok"], true);
         assert_eq!(json["namespace"], "authority-test");
         assert_eq!(json["message"], "Fact added successfully");
@@ -6052,11 +6199,11 @@ mod correctness_contract_tests {
         .unwrap();
         // Compare fact_id rather than full JSON: receipt_id and recorded_at
         // are unique per call by design, so full-string equality would fail.
-        let first_fact = serde_json::from_str::<serde_json::Value>(&first).unwrap()["fact_id"]
+        let first_fact = structured_value(&first)["fact_id"]
             .as_str()
             .unwrap()
             .to_string();
-        let retry_fact = serde_json::from_str::<serde_json::Value>(&retry).unwrap()["fact_id"]
+        let retry_fact = structured_value(&retry)["fact_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -6074,8 +6221,8 @@ mod correctness_contract_tests {
             add_fact_params("legitimate duplicate", None),
         )
         .unwrap();
-        let fact_id = |body: &str| {
-            serde_json::from_str::<serde_json::Value>(body).unwrap()["fact_id"]
+        let fact_id = |body: &Json<StructuredOutput>| {
+            structured_value(body)["fact_id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -6114,7 +6261,7 @@ mod correctness_contract_tests {
             add_fact_params("forget through MCP", Some("mcp-forget-source")),
         )
         .unwrap();
-        let fact_id = serde_json::from_str::<serde_json::Value>(&added).unwrap()["fact_id"]
+        let fact_id = structured_value(&added)["fact_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -6127,7 +6274,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let json: serde_json::Value = structured_value(&response);
         assert_eq!(json["forgotten"], true);
         assert_eq!(json["deleted"], false);
         assert_eq!(
@@ -6171,7 +6318,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let json: serde_json::Value = structured_value(&response);
         assert_eq!(json["forgotten"], true);
         assert_eq!(
             runtime
@@ -6205,7 +6352,9 @@ mod correctness_contract_tests {
         params.memory_kind = Some("ephemeral_inference".into());
         params.evidence_refs = None;
 
-        let error = invoke_add_fact(&runtime, &server, params).unwrap_err();
+        let error = invoke_add_fact(&runtime, &server, params)
+            .err()
+            .expect("expected tool error");
         assert!(error.message.contains("requires evidence_refs"));
         assert_eq!(
             runtime
@@ -6268,6 +6417,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
+        let body = structured_value(&body).to_string();
         assert!(body.contains("saffron"));
         assert!(!body.contains("violet"));
     }
@@ -6310,7 +6460,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = structured_value(&body);
         let hit = json["results"]
             .as_array()
             .unwrap()
@@ -6366,7 +6516,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = structured_value(&body);
         assert!(json["results"].as_array().unwrap().is_empty());
     }
 
@@ -6415,7 +6565,7 @@ mod correctness_contract_tests {
                 })
             })
             .unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let json: serde_json::Value = structured_value(&body);
 
         assert_eq!(json["retrieval_mode"], "hybrid");
         assert!(json["authority"]["snapshot_id"].as_str().is_some());
@@ -6499,7 +6649,7 @@ mod correctness_contract_tests {
                     }))
                 })
                 .unwrap();
-            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let json: serde_json::Value = structured_value(&body);
             assert_eq!(json["ok"], true);
             assert!(json["receipt_id"].is_string());
             assert_eq!(
@@ -6545,7 +6695,7 @@ mod correctness_contract_tests {
                 }))
             })
             .unwrap();
-        let witnessed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let witnessed: serde_json::Value = structured_value(&body);
         assert_eq!(witnessed["complete_replay_available"], true);
         assert_eq!(witnessed["stage_outcomes"]["replay"]["outcome"], "Applied");
 
@@ -6556,7 +6706,7 @@ mod correctness_contract_tests {
                 }))
             })
             .unwrap();
-        let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+        let replay: serde_json::Value = structured_value(&replay);
         assert_eq!(replay["result_ids_match"], true);
         assert_eq!(replay["query_embedding_digest_matches"], true);
     }
@@ -6700,7 +6850,7 @@ mod correctness_contract_tests {
                 max_backups: Some(2),
             }))
             .unwrap();
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let response: serde_json::Value = structured_value(&response);
         assert_eq!(response["dry_run"], true);
         assert_eq!(response["compacted"], false);
         assert_eq!(

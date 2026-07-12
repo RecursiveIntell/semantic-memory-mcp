@@ -58,10 +58,7 @@ fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
         "sm_set_provenance",
         "sm_record_outcome",
     ] {
-        assert!(
-            !server.exposes_tool(forbidden),
-            "lean exposed {forbidden}"
-        );
+        assert!(!server.exposes_tool(forbidden), "lean exposed {forbidden}");
     }
 
     // Standard is the operator profile: includes sm_search, sm_add_fact,
@@ -74,11 +71,7 @@ fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
     assert!(server2.exposes_tool("sm_decide_action_authority"));
     assert!(server2.exposes_tool("sm_search"));
     assert!(server2.exposes_tool("sm_add_fact"));
-    for forbidden in [
-        "sm_delete_fact",
-        "sm_delete_namespace",
-        "sm_record_outcome",
-    ] {
+    for forbidden in ["sm_delete_fact", "sm_delete_namespace", "sm_record_outcome"] {
         assert!(
             !server2.exposes_tool(forbidden),
             "standard exposed {forbidden}"
@@ -664,7 +657,10 @@ mod http_server_tests {
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
-        assert!(response.contains("401 Unauthorized"), "expected 401, got: {response}");
+        assert!(
+            response.contains("401 Unauthorized"),
+            "expected 401, got: {response}"
+        );
     }
 
     #[test]
@@ -677,7 +673,10 @@ mod http_server_tests {
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
-        assert!(response.contains("401 Unauthorized"), "expected 401, got: {response}");
+        assert!(
+            response.contains("401 Unauthorized"),
+            "expected 401, got: {response}"
+        );
     }
 }
 

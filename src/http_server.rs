@@ -99,7 +99,12 @@ pub fn start_http_server(port: u16, auth_token: &str, bridge: MemoryBridge, hand
     });
 }
 
-fn handle_connection(mut stream: std::net::TcpStream, auth_token: &str, bridge: MemoryBridge, handle: Handle) {
+fn handle_connection(
+    mut stream: std::net::TcpStream,
+    auth_token: &str,
+    bridge: MemoryBridge,
+    handle: Handle,
+) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone"));
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
@@ -150,7 +155,8 @@ fn handle_connection(mut stream: std::net::TcpStream, auth_token: &str, bridge: 
         .map(|h| h == format!("Bearer {}", auth_token))
         .unwrap_or(false);
     if !authorized {
-        let response = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let response =
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let _ = stream.write_all(response.as_bytes());
         return;
     }
@@ -169,7 +175,8 @@ fn handle_connection(mut stream: std::net::TcpStream, auth_token: &str, bridge: 
     // Content-Length cap: 10MB
     const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
     if content_length > MAX_BODY_SIZE {
-        let response = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let response =
+            "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let _ = stream.write_all(response.as_bytes());
         return;
     }
