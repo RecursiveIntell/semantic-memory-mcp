@@ -10,6 +10,7 @@ pub mod http_server;
 #[cfg(all(feature = "stable", not(feature = "full")))]
 #[path = "http_server_stable.rs"]
 pub mod http_server;
+pub mod profile;
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
 pub mod server;
 #[cfg(all(feature = "stable", not(feature = "full")))]

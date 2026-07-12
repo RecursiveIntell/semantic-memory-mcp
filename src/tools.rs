@@ -151,11 +151,11 @@ pub struct AddFactParams {
     /// correction, observation, episode_summary, skill_procedure, ephemeral_inference.
     /// Default: durable_fact. Ephemeral inferences require evidence_refs to promote.
     #[serde(default)]
-    pub memory_kind: Option<String>,
+    pub memory_kind: Option<MemoryKind>,
     /// Sensitivity class: public, internal, confidential, restricted.
     /// Default: internal. Confidential/restricted facts are blocked from autocapture.
     #[serde(default)]
-    pub sensitivity: Option<String>,
+    pub sensitivity: Option<Sensitivity>,
     /// Evidence references supporting this fact (URLs, fact IDs, source paths).
     #[serde(default)]
     pub evidence_refs: Option<Vec<String>>,
@@ -163,6 +163,42 @@ pub struct AddFactParams {
     /// payload return the original fact; omit it for a distinct append.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    DurableFact,
+    Preference,
+    ProjectState,
+    InstructionPolicy,
+    Correction,
+    Observation,
+    EpisodeSummary,
+    SkillProcedure,
+    EphemeralInference,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Sensitivity {
+    Public,
+    Internal,
+    Confidential,
+    Restricted,
+}
+
+impl From<&str> for MemoryKind {
+    fn from(value: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(value.to_owned()))
+            .expect("canonical memory kind")
+    }
+}
+impl From<&str> for Sensitivity {
+    fn from(value: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(value.to_owned()))
+            .expect("canonical sensitivity")
+    }
 }
 
 #[cfg(test)]
@@ -698,9 +734,11 @@ pub struct VerifyClaimParams {
     pub risk_class: String,
     /// Optional evidence references supporting the claim.
     #[serde(default)]
+    #[allow(dead_code)]
     pub evidence_refs: Option<Vec<String>>,
     /// Whether refutation was attempted (if false, high/critical claims cannot be promoted).
     #[serde(default)]
+    #[allow(dead_code)]
     pub refutation_attempted: Option<bool>,
 }
 

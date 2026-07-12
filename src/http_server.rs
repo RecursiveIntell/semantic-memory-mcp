@@ -12,7 +12,12 @@
 //!   GET  /health   -> {"ok": true}
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::task::block_in_place;
 
@@ -69,45 +74,84 @@ fn rerank_results(
         .collect()
 }
 
-pub fn start_http_server(port: u16, auth_token: &str, bridge: MemoryBridge, handle: Handle) {
-    let auth_token = auth_token.to_string();
-    std::thread::spawn(move || {
-        let listener = match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(l) => {
-                eprintln!("HTTP search server listening on 127.0.0.1:{}", port);
-                l
-            }
-            Err(e) => {
-                eprintln!("Failed to bind HTTP port {}: {}", port, e);
-                return;
-            }
-        };
+pub struct HttpServerHandle {
+    pub local_addr: std::net::SocketAddr,
+    _thread: std::thread::JoinHandle<()>,
+}
 
+struct ConnectionSlot {
+    active: Arc<AtomicUsize>,
+}
+
+impl ConnectionSlot {
+    fn new(active: Arc<AtomicUsize>) -> Self {
+        Self { active }
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub fn start_http_server(
+    port: u16,
+    auth_token: &str,
+    bridge: MemoryBridge,
+    handle: Handle,
+    profile: crate::profile::ToolProfile,
+) -> std::io::Result<HttpServerHandle> {
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let local_addr = listener.local_addr()?;
+    let auth_token = auth_token.to_string();
+    let active = Arc::new(AtomicUsize::new(0));
+    let thread = std::thread::spawn(move || {
+        eprintln!("HTTP search server listening on {local_addr}");
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(s) => s,
                 Err(_) => continue,
             };
 
+            if active.fetch_add(1, Ordering::AcqRel) >= 32 {
+                active.fetch_sub(1, Ordering::AcqRel);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                continue;
+            }
             let bridge = bridge.clone();
             let h = handle.clone();
             let token = auth_token.clone();
+            let active = active.clone();
             std::thread::spawn(move || {
-                handle_connection(stream, &token, bridge, h);
+                let _slot = ConnectionSlot::new(active);
+                handle_connection(stream, &token, bridge, h, profile);
             });
         }
     });
+    Ok(HttpServerHandle {
+        local_addr,
+        _thread: thread,
+    })
 }
 
 fn handle_connection(
-    mut stream: std::net::TcpStream,
+    mut stream: TcpStream,
     auth_token: &str,
     bridge: MemoryBridge,
     handle: Handle,
+    profile: crate::profile::ToolProfile,
 ) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    const MAX_HEADER_BYTES: usize = 16 * 1024;
+    const MAX_HEADER_COUNT: usize = 64;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let Ok(reader_stream) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(reader_stream);
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
+    if !read_bounded_line(&mut reader, 4096, &mut request_line) {
         return;
     }
 
@@ -121,31 +165,38 @@ fn handle_connection(
     let mut content_length = 0;
     let mut auth_header: Option<String> = None;
     let mut host_header: Option<String> = None;
+    let mut origin_header: Option<String> = None;
+    let mut header_bytes = request_line.len();
+    let mut header_count = 0usize;
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header).is_err() {
+        let remaining = MAX_HEADER_BYTES.saturating_sub(header_bytes);
+        if !read_bounded_line(&mut reader, remaining, &mut header) {
             return;
         }
         if header.trim().is_empty() {
             break;
         }
-        if let Some(len_str) = header
-            .strip_prefix("Content-Length:")
-            .or_else(|| header.strip_prefix("content-length:"))
-        {
-            content_length = len_str.trim().parse().unwrap_or(0);
+        header_count += 1;
+        header_bytes += header.len();
+        if header_count > MAX_HEADER_COUNT || header_bytes > MAX_HEADER_BYTES {
+            let _ = stream.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            return;
         }
-        if let Some(val) = header
-            .strip_prefix("Authorization:")
-            .or_else(|| header.strip_prefix("authorization:"))
-        {
-            auth_header = Some(val.trim().to_string());
-        }
-        if let Some(val) = header
-            .strip_prefix("Host:")
-            .or_else(|| header.strip_prefix("host:"))
-        {
-            host_header = Some(val.trim().to_string());
+        let Some((name, value)) = header.split_once(':') else {
+            return;
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => {
+                content_length = match value.trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                }
+            }
+            "authorization" => auth_header = Some(value.trim().to_string()),
+            "host" => host_header = Some(value.trim().to_string()),
+            "origin" => origin_header = Some(value.trim().to_string()),
+            _ => {}
         }
     }
 
@@ -162,11 +213,9 @@ fn handle_connection(
     }
 
     // Host check
-    let host_ok = host_header
-        .as_deref()
-        .map(|h| h.starts_with("127.0.0.1") || h.starts_with("localhost"))
-        .unwrap_or(false);
-    if !host_ok {
+    let host_ok = host_header.as_deref().is_some_and(is_loopback_authority);
+    let origin_ok = origin_header.as_deref().map_or(true, is_loopback_origin);
+    if !host_ok || !origin_ok {
         let response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let _ = stream.write_all(response.as_bytes());
         return;
@@ -196,18 +245,32 @@ fn handle_connection(
         ("POST", "/search-routed") => handle_search_routed(&body_str, &bridge, &handle),
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
-        ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
-        ("POST", "/record-outcome") => handle_record_outcome(&body_str, &bridge, &handle),
+        ("POST", "/add") if profile.allows_http_write() => {
+            handle_add_fact(&body_str, &bridge, &handle)
+        }
+        ("POST", "/record-outcome") if profile.allows_http_write() => {
+            handle_record_outcome(&body_str, &bridge, &handle)
+        }
         ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
         ("POST", "/discord") => handle_discord(&body_str, &bridge, &handle),
-        ("POST", "/maintenance/check") => handle_maintenance_check(&bridge, &handle),
-        ("POST", "/maintenance/vacuum") => handle_maintenance_vacuum(&bridge, &handle),
-        ("POST", "/maintenance/reembed") => handle_maintenance_reembed(&bridge, &handle),
-        ("POST", "/maintenance/reconcile") => {
+        ("POST", "/maintenance/check") if profile.allows_http_maintenance() => {
+            handle_maintenance_check(&bridge, &handle)
+        }
+        ("POST", "/maintenance/vacuum") if profile.allows_http_maintenance() => {
+            handle_maintenance_vacuum(&bridge, &handle)
+        }
+        ("POST", "/maintenance/reembed") if profile.allows_http_maintenance() => {
+            handle_maintenance_reembed(&bridge, &handle)
+        }
+        ("POST", "/maintenance/reconcile") if profile.allows_http_maintenance() => {
             handle_maintenance_reconcile(&body_str, &bridge, &handle)
         }
-        ("POST", "/maintenance/rebuild-hnsw") => handle_maintenance_rebuild_hnsw(&bridge, &handle),
-        ("POST", "/maintenance/compact-hnsw") => handle_maintenance_compact_hnsw(&bridge, &handle),
+        ("POST", "/maintenance/rebuild-hnsw") if profile.allows_http_maintenance() => {
+            handle_maintenance_rebuild_hnsw(&bridge, &handle)
+        }
+        ("POST", "/maintenance/compact-hnsw") if profile.allows_http_maintenance() => {
+            handle_maintenance_compact_hnsw(&bridge, &handle)
+        }
         _ => (
             "404 Not Found",
             serde_json::json!({"error": "not found", "path": path}),
@@ -225,6 +288,36 @@ fn handle_connection(
     let _ = stream.write_all(http_response.as_bytes());
     let _ = stream.write_all(response_bytes);
     let _ = stream.flush();
+}
+
+fn read_bounded_line(reader: &mut BufReader<TcpStream>, max: usize, output: &mut String) -> bool {
+    if max == 0 {
+        return false;
+    }
+    let Ok(read) = reader.take((max + 1) as u64).read_line(output) else {
+        return false;
+    };
+    read > 0 && read <= max && output.ends_with('\n')
+}
+
+fn is_loopback_authority(value: &str) -> bool {
+    matches!(value, "localhost" | "127.0.0.1" | "[::1]")
+        || value.strip_prefix("localhost:").is_some_and(valid_port)
+        || value.strip_prefix("127.0.0.1:").is_some_and(valid_port)
+        || value.strip_prefix("[::1]:").is_some_and(valid_port)
+}
+
+fn valid_port(value: &str) -> bool {
+    value.parse::<u16>().is_ok()
+}
+
+fn is_loopback_origin(value: &str) -> bool {
+    value
+        .strip_prefix("http://")
+        .is_some_and(is_loopback_authority)
+        || value
+            .strip_prefix("https://")
+            .is_some_and(is_loopback_authority)
 }
 
 fn handle_search(
@@ -801,102 +894,17 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
 }
 
 fn handle_add_fact(
-    body: &str,
-    bridge: &MemoryBridge,
-    handle: &Handle,
+    _body: &str,
+    _bridge: &MemoryBridge,
+    _handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
-    let params: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                "400 Bad Request",
-                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
-            )
-        }
-    };
-
-    let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let namespace = params
-        .get("namespace")
-        .and_then(|v| v.as_str())
-        .unwrap_or("general");
-    let source = params.get("source").and_then(|v| v.as_str());
-    let idempotency_key = params
-        .get("idempotency_key")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("http-add:{}", uuid::Uuid::new_v4()));
-
-    if content.is_empty() {
-        return (
-            "400 Bad Request",
-            serde_json::json!({"ok": false, "error": "missing 'content' field"}),
-        );
-    }
-
-    let store = &bridge.store;
-    let source_ref = source.filter(|value| !value.trim().is_empty());
-    let origin = match source_ref {
-        Some(value) => semantic_memory::OriginAuthorityLabelV1::new(
-            semantic_memory::OriginClassV1::ExternalEvidence,
-            "principal:semantic-memory-http",
-            "caller:http-add",
-            format!("blake3:{}", blake3::hash(value.as_bytes()).to_hex()),
-            semantic_memory::OriginRiskV1::Medium,
-            semantic_memory::AuthorityScopesV1 {
-                recall: semantic_memory::AuthorityScopeV1::Universal,
-                assertion: semantic_memory::AuthorityScopeV1::Denied,
-                action: semantic_memory::AuthorityScopeV1::Denied,
-            },
-            semantic_memory::ElevationRequirementV1::ExplicitOperatorApproval,
-            None,
-            semantic_memory::RevocationStatusV1::Active,
-            vec!["principal:semantic-memory-http".into()],
-        )
-        .expect("HTTP external-evidence origin constants are valid"),
-        None => semantic_memory::OriginAuthorityLabelV1::operator_system(
-            "principal:semantic-memory-http",
-            "caller:http-add",
-        ),
-    };
-    let permit = match source_ref {
-        Some(source_ref) => semantic_memory::AuthorityPermit::with_evidence(
-            "principal:semantic-memory-http",
-            "caller:http-add",
-            semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
-            vec![source_ref.to_owned()],
-        ),
-        None => semantic_memory::AuthorityPermit::operator_system(
-            "principal:semantic-memory-http",
-            "caller:http-add",
-            semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
-        ),
-    }
-    .with_origin(origin);
-    let result = block_in_place(|| {
-        handle.block_on(store.authority().append(
-            permit,
-            idempotency_key,
-            namespace.to_owned(),
-            content.to_owned(),
-            source.map(str::to_owned),
-        ))
-    });
-
-    match result {
-        Ok(receipt) => {
-            let fact_id = receipt.affected_ids.first().cloned();
-            (
-                "200 OK",
-                serde_json::json!({"ok": true, "fact_id": fact_id, "authority_receipt": receipt}),
-            )
-        }
-        Err(e) => (
-            "500 Internal Server Error",
-            serde_json::json!({"ok": false, "error": format!("{e}")}),
-        ),
-    }
+    (
+        "503 Service Unavailable",
+        serde_json::json!({
+            "ok": false,
+            "error": "HTTP evidence admission is disabled: no trusted authenticated authority issuer or immutable evidence resolver is configured"
+        }),
+    )
 }
 
 /// Handle /record-outcome: record a search outcome for RL routing feedback.
@@ -1413,5 +1421,24 @@ fn handle_maintenance_compact_hnsw(
                 "skipped": true,
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod connection_slot_tests {
+    use super::*;
+
+    #[test]
+    fn connection_slot_is_released_when_handler_unwinds() {
+        let active = Arc::new(AtomicUsize::new(1));
+        let result = std::panic::catch_unwind({
+            let active = active.clone();
+            move || {
+                let _slot = ConnectionSlot::new(active);
+                panic!("injected handler panic");
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(active.load(Ordering::Acquire), 0);
     }
 }

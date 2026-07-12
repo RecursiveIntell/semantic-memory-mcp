@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 use semantic_memory_mcp::bridge::{self, EmbedderBackend};
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
 use semantic_memory_mcp::http_server;
+use semantic_memory_mcp::profile::ToolProfile;
 use semantic_memory_mcp::server;
 
 /// semantic-memory MCP server configuration.
@@ -96,8 +97,8 @@ struct Cli {
     #[arg(long)]
     turbo_quant_projections: Option<usize>,
 
-    /// Tool profile: lean/standard (3 governed read-only tools; lean is default),
-    /// agent (15 bounded daily tools), or full (60 operator/admin tools).
+    /// Tool profile: lean/standard (four governed read-only tools; lean is default),
+    /// agent (bounded daily surface), stable, or full (all compiled tools).
     #[cfg_attr(
         all(feature = "stable", not(feature = "full")),
         arg(long, default_value = "stable")
@@ -106,7 +107,7 @@ struct Cli {
         not(all(feature = "stable", not(feature = "full"))),
         arg(long, default_value = "lean")
     )]
-    tool_profile: String,
+    tool_profile: ToolProfile,
 }
 
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
@@ -211,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     // Create the MCP server
-    let server = server::SemanticMemoryServer::new(bridge.clone(), &cli.tool_profile);
+    let server = server::SemanticMemoryServer::from_profile(bridge.clone(), cli.tool_profile);
 
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
@@ -231,7 +232,13 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| {
             anyhow::anyhow!("--http-port requires --http-auth-token or --http-auth-token-file. Refusing to start HTTP server without authorization.")
         })?;
-        http_server::start_http_server(port, &auth_token, bridge, rt.handle().clone());
+        http_server::start_http_server(
+            port,
+            &auth_token,
+            bridge,
+            rt.handle().clone(),
+            cli.tool_profile,
+        )?;
     }
 
     // If --http-only was set, skip stdio MCP and just keep the process alive
@@ -266,6 +273,19 @@ fn main() -> anyhow::Result<()> {
 #[cfg(all(test, not(all(feature = "stable", not(feature = "full")))))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_profile_is_rejected_by_clap() {
+        let error = Cli::try_parse_from([
+            "semantic-memory-mcp",
+            "--memory-dir",
+            "/must/not/be/opened",
+            "--tool-profile",
+            "unknown",
+        ])
+        .expect_err("unknown profile must fail typed parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
 
     #[test]
     fn token_file_trims_surrounding_whitespace() {

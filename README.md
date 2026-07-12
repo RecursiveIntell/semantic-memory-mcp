@@ -44,7 +44,7 @@ Or install the published package when its registry dependencies match the
 release you intend to run:
 
 ```bash
-cargo install semantic-memory-mcp
+cargo install semantic-memory-mcp --locked --version '=0.5.4'
 ```
 
 The Candle model defaults to `nomic-ai/nomic-embed-text-v1.5` through the
@@ -78,12 +78,12 @@ The options below match `src/main.rs` and the generated `--help` surface.
 | `--turbo-quant` | false | Request TurboQuant candidate generation with exact `f32` reranking. The local `full` feature must be active for the bridge wiring to run. |
 | `--turbo-quant-bits <TURBO_QUANT_BITS>` | codec default `8` | Polar angle bits, used only with `--turbo-quant`. |
 | `--turbo-quant-projections <TURBO_QUANT_PROJECTIONS>` | codec default `16` | QJL projection count, used only with `--turbo-quant`. |
-| `--tool-profile <TOOL_PROFILE>` | `lean` | `lean`, `standard`, `agent`, or `full`. Unknown values follow the same restricted branch as `lean`. |
+| `--tool-profile <TOOL_PROFILE>` | `lean` | `stable`, `lean`, `standard`, `agent`, or `full`. Unknown values are rejected by typed CLI parsing before the store is opened. |
 | `-h`, `--help` | — | Print generated help. |
 
-The prose count embedded in the current generated help is stale; the router and
-integration tests establish the profile lists below. Use `tools/list`, not a
-hard-coded count, when automating against a deployed binary.
+The typed profile manifest in `src/profile.rs` supplies profile names, bounded
+allowlists, effect classes, and HTTP effect capabilities. Use `tools/list` when
+automating against a deployed binary.
 
 ## Tool profiles
 
@@ -299,9 +299,10 @@ POST /maintenance/rebuild-hnsw
 POST /maintenance/compact-hnsw
 ```
 
-The HTTP sidecar does not apply the MCP tool profile. Treat it as a local
-operator interface: do not expose the port to an untrusted network, and do not
-assume MCP approvals protect HTTP mutations.
+The HTTP sidecar applies the selected profile's effect capabilities. Lean and
+standard credentials cannot mutate; agent permits bounded writes; maintenance
+routes require full. All requests still require loopback Host/Origin and bearer
+authentication.
 
 ## Agent integrations
 

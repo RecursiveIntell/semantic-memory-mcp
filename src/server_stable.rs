@@ -66,6 +66,14 @@ pub struct SemanticMemoryServer {
 }
 
 impl SemanticMemoryServer {
+    pub fn from_profile(bridge: MemoryBridge, profile: crate::profile::ToolProfile) -> Self {
+        assert_eq!(
+            profile,
+            crate::profile::ToolProfile::Stable,
+            "compile-time stable build accepts only --tool-profile stable"
+        );
+        Self::new(bridge, "stable")
+    }
     pub fn new(bridge: MemoryBridge, tool_profile: &str) -> Self {
         if tool_profile != "stable" {
             panic!("compile-time stable build accepts only --tool-profile stable; got '{tool_profile}'");
