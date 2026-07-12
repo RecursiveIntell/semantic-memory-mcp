@@ -3767,7 +3767,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "bitemporal-runtime",
  "blake3",
@@ -3817,7 +3817,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory-mcp"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "blake3",
