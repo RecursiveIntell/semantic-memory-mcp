@@ -35,5 +35,5 @@ hermes mcp configure semantic_memory
 ```
 
 `--args` must be last because it consumes the remaining argv. Prefer `agent`
-for a trusted coding agent and `lean` for read-only autonomous use. The `full`
-profile is an operator surface.
+for a bounded 11-tool read-only surface and `lean` for autonomous read-only
+use. The `full` profile is an operator surface.

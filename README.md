@@ -21,7 +21,7 @@ The current Rust source and `Cargo.toml` are authoritative. In particular:
   HTTP surface; `--http-only` disables stdio.
 - `lean` and `standard` are aliases in behavior and expose four governed,
   read-only tools.
-- `agent` exposes a bounded 16-tool daily-use surface.
+- `agent` exposes a bounded 11-tool read-only surface.
 - `full` exposes every tool compiled into that build. Its size can change with
   feature selection, so this README does not freeze a full-profile tool count.
 - MCP `tools/list` is the source of truth for the tools available in a specific
@@ -100,7 +100,7 @@ They do not expose raw search, mutation, maintenance, import, or administration.
 
 ### `agent`
 
-The daily coding-agent profile exposes:
+The daily coding-agent profile exposes 11 read-only tools:
 
 ```text
 sm_decide_action_authority     sm_decide_assertion_authority
@@ -113,7 +113,8 @@ sm_stats
 
 It is read-only until a trusted authenticated authority issuer is injected. It
 excludes mutation, deletion, raw/unwitnessed search, imports, lifecycle
-administration, reconciliation, vacuuming, and re-embedding.
+administration, reconciliation, vacuuming, and re-embedding. Use `lean` for
+autonomous recall and authority decisions; use `full` for operator mutation.
 
 ### `full`
 
@@ -300,9 +301,9 @@ POST /maintenance/compact-hnsw
 
 The HTTP sidecar applies the selected profile below transport. Lean, standard,
 and agent expose only `/health`; the explicit full operator profile exposes the
-authenticated non-health surface. Mutation handlers without a trusted authority
-issuer fail closed. All requests still require loopback Host/Origin and bearer
-authentication.
+authenticated non-health surface. All non-health requests require a valid bearer
+token. Mutation handlers without a trusted authority issuer fail closed. All
+requests still require loopback Host/Origin validation.
 
 ## Agent integrations
 
@@ -332,8 +333,9 @@ First-class packages live in [`integrations/`](integrations/):
 - The `full` profile and HTTP maintenance routes include mutation, permanent
   deletion, model-feedback, import, vacuum, and rebuild operations. Grant them
   only to an operator context with explicit approval controls.
-- `agent` is the recommended profile for trusted coding agents that need durable
-  writes. Use `lean` for autonomous read-only recall/authority decisions.
+- `agent` is the recommended profile for trusted coding agents. It is read-only
+  until a trusted authority issuer is injected. Use `lean` for autonomous
+  read-only recall and authority decisions.
 - Do not place secrets in facts, sources, metadata, replay inputs, plugin config,
   or command-line arguments. Process lists and logs may expose arguments.
 

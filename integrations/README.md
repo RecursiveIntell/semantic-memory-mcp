@@ -15,7 +15,7 @@ remains authoritative for the selected build and runtime profile.
 | Profile | Visible intent | Recommended use |
 | --- | --- | --- |
 | `lean` / `standard` | Four governed read-only tools: witnessed search, stored replay, assertion decision, action decision | Autonomous or least-privilege recall |
-| `agent` | Sixteen bounded recall/capture/provenance/graph tools | Trusted coding agents |
+| `agent` | Eleven bounded read-only tools: witnessed search, replay, authority decisions, fact reads, graph, namespaces, conversations, stats | Trusted coding agents (read-only until trusted issuer injected) |
 | `full` | Every compiled router tool, including operator/admin surfaces | Interactive operators with explicit approvals |
 
 Do not infer the full profile's count from this repository: compile-time
