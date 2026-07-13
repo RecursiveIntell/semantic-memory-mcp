@@ -10,14 +10,20 @@
 
 use clap::Parser;
 use rmcp::ServiceExt;
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+use std::path::Path;
+use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
 use semantic_memory_mcp::bridge::{self, EmbedderBackend};
-use semantic_memory_mcp::{http_server, server};
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+use semantic_memory_mcp::http_server;
+use semantic_memory_mcp::profile::ToolProfile;
+use semantic_memory_mcp::server;
 
 /// semantic-memory MCP server configuration.
 #[derive(Parser, Debug)]
-#[command(name = "semantic-memory-mcp")]
+#[command(name = "semantic-memory-mcp", version)]
 #[command(about = "MCP server for semantic-memory — local-first knowledge management")]
 struct Cli {
     /// Path to the memory store directory (created if it does not exist)
@@ -60,6 +66,17 @@ struct Cli {
     #[arg(long)]
     http_port: Option<u16>,
 
+    /// Authorization token required for HTTP server access.
+    /// If --http-port is set, this token must be provided via the
+    /// Authorization: Bearer header on all HTTP requests.
+    #[arg(long)]
+    http_auth_token: Option<String>,
+
+    /// Read the HTTP authorization token from a private file instead of argv.
+    /// The file must contain one non-empty token with no internal whitespace.
+    #[arg(long)]
+    http_auth_token_file: Option<PathBuf>,
+
     /// Run only the HTTP server (skip stdio MCP). Requires --http-port.
     /// Use this for standalone warm-server mode (benchmarks, hooks).
     #[arg(long)]
@@ -80,10 +97,47 @@ struct Cli {
     #[arg(long)]
     turbo_quant_projections: Option<usize>,
 
-    /// Tool profile: lean (33 tools, default), standard (39 tools), full (48 tools).
-    /// Lean hides admin/audit/bitemporal/import tools for better agent efficiency.
-    #[arg(long, default_value = "lean")]
-    tool_profile: String,
+    /// Tool profile: lean/standard (four governed read-only tools; lean is default),
+    /// agent (bounded daily surface), stable, or full (all compiled tools).
+    #[cfg_attr(
+        all(feature = "stable", not(feature = "full")),
+        arg(long, default_value = "stable")
+    )]
+    #[cfg_attr(
+        not(all(feature = "stable", not(feature = "full"))),
+        arg(long, default_value = "lean")
+    )]
+    tool_profile: ToolProfile,
+}
+
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+fn normalize_http_auth_token(raw: &str, source: &str) -> anyhow::Result<String> {
+    let token = raw.trim();
+    if token.is_empty() {
+        anyhow::bail!("HTTP authorization token from {source} is empty");
+    }
+    if token.chars().any(char::is_whitespace) {
+        anyhow::bail!("HTTP authorization token from {source} contains whitespace");
+    }
+    Ok(token.to_string())
+}
+
+#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+fn resolve_http_auth_token(
+    explicit: Option<&str>,
+    token_file: Option<&Path>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(token) = explicit {
+        if !token.is_empty() {
+            return normalize_http_auth_token(token, "--http-auth-token").map(Some);
+        }
+    }
+    if let Some(path) = token_file {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
+        return normalize_http_auth_token(&raw, &path.display().to_string()).map(Some);
+    }
+    Ok(None)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -107,7 +161,10 @@ fn main() -> anyhow::Result<()> {
             );
         }
         EmbedderBackend::Ollama => {
-            let url = cli.embedding_url.as_deref().unwrap_or("http://localhost:11434");
+            let url = cli
+                .embedding_url
+                .as_deref()
+                .unwrap_or("http://localhost:11434");
             eprintln!(
                 "  embedding: {} @ {} ({}d) — Ollama GPU-accelerated",
                 cli.embedding_model.as_deref().unwrap_or("nomic-embed-text"),
@@ -155,16 +212,38 @@ fn main() -> anyhow::Result<()> {
         .build()?;
 
     // Create the MCP server
-    let server = server::SemanticMemoryServer::new(bridge.clone(), &cli.tool_profile);
+    let server = server::SemanticMemoryServer::from_profile(bridge.clone(), cli.tool_profile);
 
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
+    #[cfg(all(feature = "stable", not(feature = "full")))]
+    if cli.http_port.is_some() || cli.http_only {
+        anyhow::bail!(
+            "HTTP transport is unavailable in the compile-time stable build; use stdio MCP or rebuild with --features full"
+        );
+    }
+
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
     if let Some(port) = cli.http_port {
-        http_server::start_http_server(port, bridge, rt.handle().clone());
+        let auth_token = resolve_http_auth_token(
+            cli.http_auth_token.as_deref(),
+            cli.http_auth_token_file.as_deref(),
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!("--http-port requires --http-auth-token or --http-auth-token-file. Refusing to start HTTP server without authorization.")
+        })?;
+        http_server::start_http_server(
+            port,
+            &auth_token,
+            bridge,
+            rt.handle().clone(),
+            cli.tool_profile,
+        )?;
     }
 
     // If --http-only was set, skip stdio MCP and just keep the process alive
     // for the HTTP server.
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
     if cli.http_only {
         eprintln!("HTTP-only mode: stdio MCP disabled, serving HTTP requests.");
         // Park the main thread -- the HTTP server runs in its own thread
@@ -189,4 +268,81 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(all(test, not(all(feature = "stable", not(feature = "full")))))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_profile_is_rejected_by_clap() {
+        let error = Cli::try_parse_from([
+            "semantic-memory-mcp",
+            "--memory-dir",
+            "/must/not/be/opened",
+            "--tool-profile",
+            "unknown",
+        ])
+        .expect_err("unknown profile must fail typed parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn token_file_trims_surrounding_whitespace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "  file-token\n").expect("write token");
+        let token = resolve_http_auth_token(None, Some(&path))
+            .expect("valid token file")
+            .expect("resolved token");
+        assert_eq!(token, "file-token");
+    }
+
+    #[test]
+    fn explicit_token_precedes_token_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "file-token\n").expect("write token");
+        let token = resolve_http_auth_token(Some("explicit-token"), Some(&path))
+            .expect("valid explicit token")
+            .expect("resolved token");
+        assert_eq!(token, "explicit-token");
+    }
+
+    #[test]
+    fn exactly_empty_explicit_token_falls_back_to_file() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "file-token\n").expect("write token");
+        let token = resolve_http_auth_token(Some(""), Some(&path))
+            .expect("empty explicit token falls back")
+            .expect("resolved token");
+        assert_eq!(token, "file-token");
+    }
+
+    #[test]
+    fn explicit_token_rejects_unicode_internal_whitespace() {
+        let error = resolve_http_auth_token(Some("first\u{a0}second"), None)
+            .expect_err("Unicode whitespace must fail")
+            .to_string();
+        assert!(error.contains("contains whitespace"));
+    }
+
+    #[test]
+    fn token_file_rejects_internal_whitespace() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        std::fs::write(&path, "first\nsecond\n").expect("write token");
+        let error = resolve_http_auth_token(None, Some(&path))
+            .expect_err("multiline token must fail")
+            .to_string();
+        assert!(error.contains("contains whitespace"));
+    }
+
+    #[test]
+    fn missing_token_sources_resolve_to_none() {
+        assert!(resolve_http_auth_token(None, None)
+            .expect("missing token is not a parse error")
+            .is_none());
+    }
 }

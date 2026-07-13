@@ -8,15 +8,41 @@
 //! Endpoints:
 //!   POST /search   {"query": "...", "top_k": 10} -> search results
 //!   POST /stats    {} -> DB stats
-//!   POST /add      {"content": "...", "namespace": "..."} -> fact_id
+//!   POST /add      {"content": "...", "namespace": "...", "source": "..."} -> authority receipt
 //!   GET  /health   -> {"ok": true}
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tokio::runtime::Handle;
 use tokio::task::block_in_place;
 
 use crate::bridge::MemoryBridge;
+
+const MAX_TOP_K: u64 = 100;
+const MAX_DIRECT_IDS: usize = 100;
+const MAX_RERANK_RESULTS: usize = 50;
+const MAX_RERANK_CONTENT_BYTES: usize = 2_000;
+const RERANK_MODEL: &str = "granite4.1:3b";
+
+fn truncate_rerank_content(content: &str) -> &str {
+    if content.len() <= MAX_RERANK_CONTENT_BYTES {
+        return content;
+    }
+    let mut end = MAX_RERANK_CONTENT_BYTES;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    &content[..end]
+}
+
+fn rerank_candidate_limit(top_k: usize) -> usize {
+    top_k.saturating_mul(2).min(MAX_RERANK_RESULTS)
+}
 
 /// Call Ollama to rate each result's relevance to the query (1-5) and sort descending.
 /// Returns a new vec with a `rerank_score` field added to each result object.
@@ -24,13 +50,29 @@ fn rerank_results(
     query: &str,
     results: &[serde_json::Value],
     model: &str,
-) -> Vec<serde_json::Value> {
-    let client = reqwest::blocking::Client::new();
-    let mut scored: Vec<(f64, serde_json::Value)> = results
+) -> (Vec<serde_json::Value>, &'static str) {
+    rerank_results_at(query, results, model, "http://127.0.0.1:11434")
+}
+
+fn rerank_results_at(
+    query: &str,
+    results: &[serde_json::Value],
+    model: &str,
+    base_url: &str,
+) -> (Vec<serde_json::Value>, &'static str) {
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return (results.to_vec(), "degraded"),
+    };
+    let scored: Result<Vec<(f64, serde_json::Value)>, ()> = results
         .iter()
-        .map(|r| {
+        .map(|r| -> Result<(f64, serde_json::Value), ()> {
             let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let truncated: String = content.chars().take(500).collect();
+            let truncated = truncate_rerank_content(content);
             let prompt = format!(
                 "Rate the relevance of this document to the query on a scale of 1-5. Reply with ONLY the number.\nQuery: {query}\nDocument: {truncated}\nRating:"
             );
@@ -40,71 +82,123 @@ fn rerank_results(
                 "stream": false,
                 "options": {"temperature": 0, "num_predict": 1}
             });
-            let rating = client
-                .post("http://127.0.0.1:11434/api/generate")
+            let response = client
+                .post(format!("{base_url}/api/generate"))
                 .json(&body)
                 .send()
-                .ok()
-                .and_then(|resp| resp.json::<serde_json::Value>().ok())
-                .and_then(|v| {
-                    v.get("response")
-                        .and_then(|r| r.as_str())
-                        .and_then(|s| s.trim().chars().next())
-                        .and_then(|c| c.to_digit(10))
-                        .map(|d| d as f64)
-                })
-                .unwrap_or(1.0);
-            (rating, r.clone())
+                .map_err(|_| ())?
+                .error_for_status()
+                .map_err(|_| ())?
+                .json::<serde_json::Value>()
+                .map_err(|_| ())?;
+            let rating = response
+                .get("response")
+                .and_then(|r| r.as_str())
+                .and_then(|s| s.trim().chars().next())
+                .and_then(|c| c.to_digit(10))
+                .map(|d| d as f64)
+                /* parsed values must be an actual 1–5 rating */
+                .filter(|rating| (1.0..=5.0).contains(rating))
+                .ok_or(())?;
+            Ok((rating, r.clone()))
         })
-        .collect();
+        .collect::<Result<_, _>>();
+    let Ok(mut scored) = scored else {
+        return (results.to_vec(), "degraded");
+    };
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored
-        .into_iter()
-        .map(|(score, mut r)| {
-            if let Some(obj) = r.as_object_mut() {
-                obj.insert("rerank_score".to_string(), serde_json::json!(score));
-            }
-            r
-        })
-        .collect()
+    (
+        scored
+            .into_iter()
+            .map(|(score, mut r)| {
+                if let Some(obj) = r.as_object_mut() {
+                    obj.insert("rerank_score".to_string(), serde_json::json!(score));
+                }
+                r
+            })
+            .collect::<Vec<_>>(),
+        "applied",
+    )
 }
 
-pub fn start_http_server(port: u16, bridge: MemoryBridge, handle: Handle) {
-    std::thread::spawn(move || {
-        let listener = match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(l) => {
-                eprintln!("HTTP search server listening on 127.0.0.1:{}", port);
-                l
-            }
-            Err(e) => {
-                eprintln!("Failed to bind HTTP port {}: {}", port, e);
-                return;
-            }
-        };
+pub struct HttpServerHandle {
+    pub local_addr: std::net::SocketAddr,
+    _thread: std::thread::JoinHandle<()>,
+}
 
+struct ConnectionSlot {
+    active: Arc<AtomicUsize>,
+}
+
+impl ConnectionSlot {
+    fn new(active: Arc<AtomicUsize>) -> Self {
+        Self { active }
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub fn start_http_server(
+    port: u16,
+    auth_token: &str,
+    bridge: MemoryBridge,
+    handle: Handle,
+    profile: crate::profile::ToolProfile,
+) -> std::io::Result<HttpServerHandle> {
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let local_addr = listener.local_addr()?;
+    let auth_token = auth_token.to_string();
+    let active = Arc::new(AtomicUsize::new(0));
+    let thread = std::thread::spawn(move || {
+        eprintln!("HTTP search server listening on {local_addr}");
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(s) => s,
                 Err(_) => continue,
             };
 
+            if active.fetch_add(1, Ordering::AcqRel) >= 32 {
+                active.fetch_sub(1, Ordering::AcqRel);
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                continue;
+            }
             let bridge = bridge.clone();
             let h = handle.clone();
+            let token = auth_token.clone();
+            let active = active.clone();
             std::thread::spawn(move || {
-                handle_connection(stream, bridge, h);
+                let _slot = ConnectionSlot::new(active);
+                handle_connection(stream, &token, bridge, h, profile);
             });
         }
     });
+    Ok(HttpServerHandle {
+        local_addr,
+        _thread: thread,
+    })
 }
 
 fn handle_connection(
-    mut stream: std::net::TcpStream,
+    mut stream: TcpStream,
+    auth_token: &str,
     bridge: MemoryBridge,
     handle: Handle,
+    profile: crate::profile::ToolProfile,
 ) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+    const MAX_HEADER_BYTES: usize = 16 * 1024;
+    const MAX_HEADER_COUNT: usize = 64;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let Ok(reader_stream) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(reader_stream);
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
+    if !read_bounded_line(&mut reader, 4096, &mut request_line) {
         return;
     }
 
@@ -116,20 +210,71 @@ fn handle_connection(
     let path = parts[1];
 
     let mut content_length = 0;
+    let mut auth_header: Option<String> = None;
+    let mut host_header: Option<String> = None;
+    let mut origin_header: Option<String> = None;
+    let mut header_bytes = request_line.len();
+    let mut header_count = 0usize;
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header).is_err() {
+        let remaining = MAX_HEADER_BYTES.saturating_sub(header_bytes);
+        if !read_bounded_line(&mut reader, remaining, &mut header) {
             return;
         }
         if header.trim().is_empty() {
             break;
         }
-        if let Some(len_str) = header
-            .strip_prefix("Content-Length:")
-            .or_else(|| header.strip_prefix("content-length:"))
-        {
-            content_length = len_str.trim().parse().unwrap_or(0);
+        header_count += 1;
+        header_bytes += header.len();
+        if header_count > MAX_HEADER_COUNT || header_bytes > MAX_HEADER_BYTES {
+            let _ = stream.write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            return;
         }
+        let Some((name, value)) = header.split_once(':') else {
+            return;
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => {
+                content_length = match value.trim().parse() {
+                    Ok(v) => v,
+                    Err(_) => return,
+                }
+            }
+            "authorization" => auth_header = Some(value.trim().to_string()),
+            "host" => host_header = Some(value.trim().to_string()),
+            "origin" => origin_header = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+
+    // Auth check
+    let authorized = auth_header
+        .as_deref()
+        .map(|h| h == format!("Bearer {}", auth_token))
+        .unwrap_or(false);
+    if !authorized {
+        let response =
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
+    // Host check
+    let host_ok = host_header.as_deref().is_some_and(is_loopback_authority);
+    let origin_ok = origin_header.as_deref().map_or(true, is_loopback_origin);
+    if !host_ok || !origin_ok {
+        let response = "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
+    // Content-Length cap: 10MB
+    const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+    if content_length > MAX_BODY_SIZE {
+        let response =
+            "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        return;
     }
 
     let mut body = vec![0u8; content_length];
@@ -143,19 +288,40 @@ fn handle_connection(
             "200 OK",
             serde_json::json!({"ok": true, "service": "semantic-memory-mcp"}),
         ),
+        (_, _) if !profile.allows_http_route() => (
+            "404 Not Found",
+            serde_json::json!({"error": "not found", "path": path}),
+        ),
         ("POST", "/search") => handle_search(&body_str, &bridge, &handle),
         ("POST", "/search-routed") => handle_search_routed(&body_str, &bridge, &handle),
         ("POST", "/rerank") => handle_rerank(&body_str),
         ("POST", "/stats") => handle_stats(&bridge, &handle),
-        ("POST", "/add") => handle_add_fact(&body_str, &bridge, &handle),
-        ("POST", "/record-outcome") => handle_record_outcome(&body_str, &bridge, &handle),
+        ("POST", "/add") if profile.allows_http_write() => {
+            handle_add_fact(&body_str, &bridge, &handle)
+        }
+        ("POST", "/record-outcome") if profile.allows_http_write() => {
+            handle_record_outcome(&body_str, &bridge, &handle)
+        }
         ("GET", "/verify-integrity") => handle_verify_integrity(&bridge, &handle),
         ("POST", "/discord") => handle_discord(&body_str, &bridge, &handle),
-        ("POST", "/maintenance/check") => handle_maintenance_check(&bridge, &handle),
-        ("POST", "/maintenance/vacuum") => handle_maintenance_vacuum(&bridge, &handle),
-        ("POST", "/maintenance/reembed") => handle_maintenance_reembed(&bridge, &handle),
-        ("POST", "/maintenance/reconcile") => handle_maintenance_reconcile(&body_str, &bridge, &handle),
-        ("POST", "/maintenance/compact-hnsw") => handle_maintenance_compact_hnsw(&bridge, &handle),
+        ("POST", "/maintenance/check") if profile.allows_http_maintenance() => {
+            handle_maintenance_check(&bridge, &handle)
+        }
+        ("POST", "/maintenance/vacuum") if profile.allows_http_maintenance() => {
+            handle_maintenance_vacuum(&bridge, &handle)
+        }
+        ("POST", "/maintenance/reembed") if profile.allows_http_maintenance() => {
+            handle_maintenance_reembed(&bridge, &handle)
+        }
+        ("POST", "/maintenance/reconcile") if profile.allows_http_maintenance() => {
+            handle_maintenance_reconcile(&body_str, &bridge, &handle)
+        }
+        ("POST", "/maintenance/rebuild-hnsw") if profile.allows_http_maintenance() => {
+            handle_maintenance_rebuild_hnsw(&bridge, &handle)
+        }
+        ("POST", "/maintenance/compact-hnsw") if profile.allows_http_maintenance() => {
+            handle_maintenance_compact_hnsw(&bridge, &handle)
+        }
         _ => (
             "404 Not Found",
             serde_json::json!({"error": "not found", "path": path}),
@@ -175,6 +341,36 @@ fn handle_connection(
     let _ = stream.flush();
 }
 
+fn read_bounded_line(reader: &mut BufReader<TcpStream>, max: usize, output: &mut String) -> bool {
+    if max == 0 {
+        return false;
+    }
+    let Ok(read) = reader.take((max + 1) as u64).read_line(output) else {
+        return false;
+    };
+    read > 0 && read <= max && output.ends_with('\n')
+}
+
+fn is_loopback_authority(value: &str) -> bool {
+    matches!(value, "localhost" | "127.0.0.1" | "[::1]")
+        || value.strip_prefix("localhost:").is_some_and(valid_port)
+        || value.strip_prefix("127.0.0.1:").is_some_and(valid_port)
+        || value.strip_prefix("[::1]:").is_some_and(valid_port)
+}
+
+fn valid_port(value: &str) -> bool {
+    value.parse::<u16>().is_ok()
+}
+
+fn is_loopback_origin(value: &str) -> bool {
+    value
+        .strip_prefix("http://")
+        .is_some_and(is_loopback_authority)
+        || value
+            .strip_prefix("https://")
+            .is_some_and(is_loopback_authority)
+}
+
 fn handle_search(
     body: &str,
     bridge: &MemoryBridge,
@@ -191,11 +387,17 @@ fn handle_search(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let top_k = match bounded_top_k(&params, 5) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let do_rerank = params.get("rerank").and_then(|v| v.as_bool()).unwrap_or(false);
+    let do_rerank = params
+        .get("rerank")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -209,7 +411,11 @@ fn handle_search(
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
     // Fetch top_k * 2 candidates when reranking so the LLM has a richer pool to sort.
-    let fetch_k = if do_rerank { top_k * 2 } else { top_k };
+    let fetch_k = if do_rerank {
+        rerank_candidate_limit(top_k)
+    } else {
+        top_k
+    };
     let result = block_in_place(|| {
         handle.block_on(store.search(query, Some(fetch_k), ns_slice.as_deref(), None))
     });
@@ -221,7 +427,9 @@ fn handle_search(
                 .map(|r| {
                     let namespace = match &r.source {
                         semantic_memory::SearchSource::Fact { namespace, .. } => namespace.clone(),
-                        semantic_memory::SearchSource::Chunk { document_title, .. } => document_title.clone(),
+                        semantic_memory::SearchSource::Chunk { document_title, .. } => {
+                            document_title.clone()
+                        }
                         _ => String::new(),
                     };
                     serde_json::json!({
@@ -234,14 +442,13 @@ fn handle_search(
                 })
                 .collect();
 
-            let final_results: Vec<serde_json::Value> = if do_rerank && !json_results.is_empty() {
-                rerank_results(query, &json_results, "granite4.1:3b")
-                    .into_iter()
-                    .take(top_k)
-                    .collect()
-            } else {
-                json_results
-            };
+            let (final_results, rerank_status): (Vec<serde_json::Value>, &str) =
+                if do_rerank && !json_results.is_empty() {
+                    let (results, status) = rerank_results(query, &json_results, RERANK_MODEL);
+                    (results.into_iter().take(top_k).collect(), status)
+                } else {
+                    (json_results, "not_applicable")
+                };
 
             let count = final_results.len();
             let provenance = serde_json::json!({
@@ -249,13 +456,15 @@ fn handle_search(
                     "bm25": true,
                     "vector": true,
                     "late_interaction": false,
-                    "rerank": do_rerank,
+                    "rerank": rerank_status == "applied",
                 },
+                "rerank_requested": do_rerank,
                 "result_count": count,
                 "view": "semantic",
-                "widening_occurred": false,
+                "widening_occurred": null,
                 "widening_reason": null,
-                "verification_status": "verified",
+                "verification_status": "unverified",
+                "proof_reference": null,
             });
             (
                 "200 OK",
@@ -265,7 +474,8 @@ fn handle_search(
                     "top_k": top_k,
                     "results": final_results,
                     "count": count,
-                    "reranked": do_rerank,
+                    "reranked": rerank_status == "applied",
+                    "rerank_status": rerank_status,
                     "provenance": provenance,
                 }),
             )
@@ -290,7 +500,8 @@ fn handle_search_routed(
     handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
     use semantic_memory::integration::plan_execution;
-    use semantic_memory::routing::RetrievalRouter;
+    use semantic_memory::rl_routing::{is_trained, route_with_policy};
+    use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
     let params: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -303,8 +514,14 @@ fn handle_search_routed(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let base_top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(12) as usize;
-    let query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let base_top_k = match bounded_top_k(&params, 12) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
+    let query_class = params
+        .get("query_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("A");
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -312,7 +529,10 @@ fn handle_search_routed(
         .get("contradictions")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
-    let group_by_community = params.get("group_by_community").and_then(|v| v.as_bool()).unwrap_or(false);
+    let group_by_community = params
+        .get("group_by_community")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     if query.is_empty() {
         return (
@@ -328,7 +548,21 @@ fn handle_search_routed(
         corpus_density: 0.5,
         ..Default::default()
     };
-    let decision = router.route_query(query);
+    let store = &bridge.store;
+    let policy = match block_in_place(|| handle.block_on(store.load_routing_policy())) {
+        Ok(policy) => policy,
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("load routing policy error: {e}")}),
+            )
+        }
+    };
+    let profile = QueryProfile::from_query(query);
+    let (decision, routing_source) = match policy.as_ref().filter(|p| is_trained(p)) {
+        Some(policy) => (route_with_policy(policy, &profile), "trained_policy"),
+        None => (router.route(&profile), "heuristic"),
+    };
     let contras = contradictions.clone();
     let plan = plan_execution(&decision, contras.clone());
 
@@ -339,7 +573,6 @@ fn handle_search_routed(
         base_top_k
     };
 
-    let store = &bridge.store;
     let ns_slice: Option<Vec<&str>> = namespaces
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -402,11 +635,12 @@ fn handle_search_routed(
             if decision.decoder {
                 #[cfg(feature = "full")]
                 {
-                    use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
+                    use semantic_memory::factor_graph::{
+                        factors_from_edges, FactorGraph, FactorGraphConfig,
+                    };
 
-                    let graph_edges = block_in_place(|| {
-                        handle.block_on(store.list_all_graph_edges())
-                    });
+                    let graph_edges =
+                        block_in_place(|| handle.block_on(store.list_all_graph_edges()));
 
                     if let Ok(edges) = graph_edges {
                         let raw_edges: Vec<(
@@ -440,8 +674,7 @@ fn handle_search_routed(
                             .map(|r| (r.source.result_id(), r.score))
                             .collect();
                         let factors = factors_from_edges(&raw_edges);
-                        let graph =
-                            FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
+                        let graph = FactorGraph::new(&nodes, factors, FactorGraphConfig::default());
                         let propagated = graph.propagate();
                         let top_beliefs = propagated.top_k(top_k);
 
@@ -485,7 +718,8 @@ fn handle_search_routed(
             // Discord second-order retrieval
             if plan.use_discord {
                 use semantic_memory::discord::DiscordScorer;
-                let direct_ids: Vec<String> = results.iter().map(|r| r.source.result_id()).collect();
+                let direct_ids: Vec<String> =
+                    results.iter().map(|r| r.source.result_id()).collect();
                 let existing_ids: std::collections::HashSet<String> =
                     direct_ids.iter().cloned().collect();
                 let edges_result = block_in_place(|| {
@@ -563,33 +797,23 @@ fn handle_search_routed(
                             member_to_comm.insert(m.clone(), c.id.clone());
                         }
                     }
-                    let mut groups: std::collections::HashMap<
-                        String,
-                        Vec<serde_json::Value>,
-                    > = std::collections::HashMap::new();
+                    let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
+                        std::collections::HashMap::new();
                     let mut ungrouped: Vec<serde_json::Value> = Vec::new();
                     for r in &json_results {
                         if let Some(rid) = r.get("result_id").and_then(|v| v.as_str()) {
                             match member_to_comm.get(rid).cloned() {
-                                Some(cid) => {
-                                    groups.entry(cid).or_default().push(r.clone())
-                                }
+                                Some(cid) => groups.entry(cid).or_default().push(r.clone()),
                                 None => ungrouped.push(r.clone()),
                             }
                         }
                     }
                     let mut map = serde_json::Map::new();
                     for (cid, items) in groups {
-                        map.insert(
-                            format!("community_{cid}"),
-                            serde_json::json!(items),
-                        );
+                        map.insert(format!("community_{cid}"), serde_json::json!(items));
                     }
                     if !ungrouped.is_empty() {
-                        map.insert(
-                            "ungrouped".to_string(),
-                            serde_json::json!(ungrouped),
-                        );
+                        map.insert("ungrouped".to_string(), serde_json::json!(ungrouped));
                     }
                     serde_json::Value::Object(map)
                 } else {
@@ -611,9 +835,10 @@ fn handle_search_routed(
                 "result_count": results.len(),
                 "view": "routed",
                 "query_class": query_class,
-                "widening_occurred": false,
+                "widening_occurred": null, // TODO: derive from execution receipt
                 "widening_reason": null,
-                "verification_status": "verified",
+                "verification_status": "unverified",
+                "proof_reference": null,
             });
 
             (
@@ -627,6 +852,7 @@ fn handle_search_routed(
                     "query_class": query_class,
                     "routed": true,
                     "routing_decision": {
+                        "source": routing_source,
                         "bm25_coarse": decision.bm25_coarse,
                         "vector_medium": decision.vector_medium,
                         "rerank_fine": decision.rerank_fine,
@@ -653,28 +879,37 @@ fn handle_search_routed(
     }
 }
 
-fn handle_stats(
-    bridge: &MemoryBridge,
-    handle: &Handle,
-) -> (&'static str, serde_json::Value) {
+fn handle_stats(bridge: &MemoryBridge, handle: &Handle) -> (&'static str, serde_json::Value) {
     let store = &bridge.store;
-    let result = block_in_place(|| handle.block_on(store.stats()));
-    match result {
-        Ok(stats) => (
-            "200 OK",
-            serde_json::json!({
-                "ok": true,
-                "facts": stats.total_facts,
-                "documents": stats.total_documents,
-                "chunks": stats.total_chunks,
-                "db_size_mb": (stats.database_size_bytes as f64) / (1024.0 * 1024.0),
-            }),
-        ),
-        Err(e) => (
-            "500 Internal Server Error",
-            serde_json::json!({"ok": false, "error": format!("{e}")}),
-        ),
-    }
+    let core = block_in_place(|| handle.block_on(store.stats()));
+    let graph = block_in_place(|| handle.block_on(store.list_all_graph_edges()));
+    let core_health = match &core {
+        Ok(_) => serde_json::json!({"health":"healthy","error":null}),
+        Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
+    };
+    let graph_health = match &graph {
+        Ok(_) => serde_json::json!({"health":"healthy","error":null}),
+        Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
+    };
+    let stats = core.ok();
+    let graph_edges = graph.ok().map(|edges| edges.len());
+    let ok = stats.is_some() && graph_edges.is_some();
+    (
+        if ok {
+            "200 OK"
+        } else {
+            "503 Service Unavailable"
+        },
+        serde_json::json!({
+            "ok": ok,
+            "components": {"core": core_health, "graph": graph_health},
+            "facts": stats.as_ref().map(|s| s.total_facts),
+            "documents": stats.as_ref().map(|s| s.total_documents),
+            "chunks": stats.as_ref().map(|s| s.total_chunks),
+            "graph_edges": graph_edges,
+            "db_size_mb": stats.as_ref().map(|s| (s.database_size_bytes as f64) / (1024.0 * 1024.0)),
+        }),
+    )
 }
 
 fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
@@ -689,10 +924,6 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let model = params
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("granite4.1:3b");
     let results = match params.get("results").and_then(|v| v.as_array()) {
         Some(r) => r.clone(),
         None => {
@@ -709,8 +940,24 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
             serde_json::json!({"ok": false, "error": "missing 'query' field"}),
         );
     }
+    if results.len() > MAX_RERANK_RESULTS {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("results exceeds maximum of {MAX_RERANK_RESULTS}")}),
+        );
+    }
+    if results.iter().any(|r| {
+        r.get("content")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.len() > MAX_RERANK_CONTENT_BYTES)
+    }) {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("result content exceeds maximum of {MAX_RERANK_CONTENT_BYTES} bytes")}),
+        );
+    }
 
-    let reranked = rerank_results(query, &results, model);
+    let (reranked, rerank_status) = rerank_results(query, &results, RERANK_MODEL);
     let count = reranked.len();
     (
         "200 OK",
@@ -718,53 +965,24 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
             "ok": true,
             "results": reranked,
             "count": count,
+            "rerank_status": rerank_status,
+            "model": RERANK_MODEL,
         }),
     )
 }
 
 fn handle_add_fact(
-    body: &str,
-    bridge: &MemoryBridge,
-    handle: &Handle,
+    _body: &str,
+    _bridge: &MemoryBridge,
+    _handle: &Handle,
 ) -> (&'static str, serde_json::Value) {
-    let params: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                "400 Bad Request",
-                serde_json::json!({"ok": false, "error": format!("invalid JSON: {e}")}),
-            )
-        }
-    };
-
-    let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let namespace = params
-        .get("namespace")
-        .and_then(|v| v.as_str())
-        .unwrap_or("general");
-    let source = params.get("source").and_then(|v| v.as_str());
-
-    if content.is_empty() {
-        return (
-            "400 Bad Request",
-            serde_json::json!({"ok": false, "error": "missing 'content' field"}),
-        );
-    }
-
-    let store = &bridge.store;
-    let result =
-        block_in_place(|| handle.block_on(store.add_fact(namespace, content, source, None)));
-
-    match result {
-        Ok(fact_id) => (
-            "200 OK",
-            serde_json::json!({"ok": true, "fact_id": fact_id}),
-        ),
-        Err(e) => (
-            "500 Internal Server Error",
-            serde_json::json!({"ok": false, "error": format!("{e}")}),
-        ),
-    }
+    (
+        "503 Service Unavailable",
+        serde_json::json!({
+            "ok": false,
+            "error": "HTTP evidence admission is disabled: no trusted authenticated authority issuer or immutable evidence resolver is configured"
+        }),
+    )
 }
 
 /// Handle /record-outcome: record a search outcome for RL routing feedback.
@@ -787,8 +1005,14 @@ fn handle_record_outcome(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let outcome = params.get("outcome").and_then(|v| v.as_str()).unwrap_or("neutral");
-    let _query_class = params.get("query_class").and_then(|v| v.as_str()).unwrap_or("A");
+    let outcome = params
+        .get("outcome")
+        .and_then(|v| v.as_str())
+        .unwrap_or("neutral");
+    let _query_class = params
+        .get("query_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("A");
 
     if query.is_empty() {
         return (
@@ -815,20 +1039,31 @@ fn handle_record_outcome(
 
     let store = &bridge.store;
     // Load persisted policy (or default if none saved yet)
-    let mut policy = block_in_place(|| handle.block_on(store.load_routing_policy()))
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let mut policy = match block_in_place(|| handle.block_on(store.load_routing_policy())) {
+        Ok(policy) => policy.unwrap_or_default(),
+        Err(e) => {
+            return (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("load routing policy error: {e}")}),
+            )
+        }
+    };
     record_routing_outcome(&mut policy, &profile, &decision, outcome_enum);
     // Save updated policy
-    let _ = block_in_place(|| handle.block_on(store.save_routing_policy(&policy)));
+    if let Err(e) = block_in_place(|| handle.block_on(store.save_routing_policy(&policy))) {
+        return (
+            "500 Internal Server Error",
+            serde_json::json!({"ok": false, "error": format!("persist routing policy error: {e}")}),
+        );
+    }
 
     (
         "200 OK",
         serde_json::json!({
             "ok": true,
+            "mutating": true,
             "recorded": true,
-            "outcome": outcome,
+            "feedback": {"kind": "ProxyLabel", "label": outcome},
             "routing_decision": {
                 "bm25_coarse": decision.bm25_coarse,
                 "vector_medium": decision.vector_medium,
@@ -903,14 +1138,24 @@ fn handle_discord(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let top_k = match bounded_top_k(&params, 5) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
 
     // Get direct_ids from params, or run a search to get them
     let direct_ids: Vec<String> = match params.get("direct_ids").and_then(|v| v.as_array()) {
-        Some(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
+        Some(arr) => {
+            if arr.len() > MAX_DIRECT_IDS || arr.iter().any(|v| !v.is_string()) {
+                return (
+                    "400 Bad Request",
+                    serde_json::json!({"ok": false, "error": format!("direct_ids must contain at most {MAX_DIRECT_IDS} strings")}),
+                );
+            }
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        }
         None => {
             // Need a query to search
             if query.is_empty() {
@@ -920,9 +1165,8 @@ fn handle_discord(
                 );
             }
             let store = &bridge.store;
-            let search_result = block_in_place(|| {
-                handle.block_on(store.search(query, Some(top_k), None, None))
-            });
+            let search_result =
+                block_in_place(|| handle.block_on(store.search(query, Some(top_k), None, None)));
             match search_result {
                 Ok(results) => results.iter().map(|r| r.source.result_id()).collect(),
                 Err(e) => {
@@ -945,11 +1189,7 @@ fn handle_discord(
     let store = &bridge.store;
     // Load graph edges for the neighborhood
     let edges_result = block_in_place(|| {
-        handle.block_on(store.list_graph_edges_for_neighborhood(
-            direct_ids.clone(),
-            2,
-            200,
-        ))
+        handle.block_on(store.list_graph_edges_for_neighborhood(direct_ids.clone(), 2, 200))
     });
 
     let edges: Vec<semantic_memory::discord::GraphEdgeRef> = match edges_result {
@@ -1014,6 +1254,28 @@ fn handle_discord(
             "direct_ids": direct_ids,
         }),
     )
+}
+
+fn bounded_top_k(
+    params: &serde_json::Value,
+    default: usize,
+) -> Result<usize, (&'static str, serde_json::Value)> {
+    let Some(value) = params.get("top_k") else {
+        return Ok(default);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err((
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "top_k must be an unsigned integer"}),
+        ));
+    };
+    if value == 0 || value > MAX_TOP_K {
+        return Err((
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("top_k must be between 1 and {MAX_TOP_K}")}),
+        ));
+    }
+    Ok(value as usize)
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,6 +1445,54 @@ fn handle_maintenance_reconcile(
     }
 }
 
+/// Handle POST /maintenance/rebuild-hnsw: calls store.rebuild_hnsw_index().
+///
+/// Rebuilds the HNSW sidecar from current SQLite embeddings. Use this when
+/// the index is stale (e.g. after bulk imports, model changes, or long periods
+/// without automatic sync).
+fn handle_maintenance_rebuild_hnsw(
+    bridge: &MemoryBridge,
+    handle: &Handle,
+) -> (&'static str, serde_json::Value) {
+    #[cfg(feature = "hnsw")]
+    {
+        let store = &bridge.store;
+        let result = block_in_place(|| handle.block_on(store.rebuild_hnsw_index()));
+
+        match result {
+            Ok(receipt) => (
+                "200 OK",
+                serde_json::json!({
+                    "ok": true,
+                    "action": "rebuild-hnsw",
+                    "message": "HNSW index rebuilt successfully",
+                    "generation_id": receipt.generation_id,
+                    "vector_count": receipt.source_row_count,
+                }),
+            ),
+            Err(e) => (
+                "500 Internal Server Error",
+                serde_json::json!({"ok": false, "error": format!("rebuild_hnsw error: {e}")}),
+            ),
+        }
+    }
+
+    #[cfg(not(feature = "hnsw"))]
+    {
+        let _ = bridge;
+        let _ = handle;
+        (
+            "200 OK",
+            serde_json::json!({
+                "ok": true,
+                "action": "rebuild-hnsw",
+                "message": "HNSW rebuild not applicable — usearch backend does not require rebuild",
+                "skipped": true,
+            }),
+        )
+    }
+}
+
 /// Handle POST /maintenance/compact-hnsw: calls store.compact_hnsw(). Returns ok.
 ///
 /// Only available when the `hnsw` feature is enabled. The default backend is
@@ -1196,7 +1506,7 @@ fn handle_maintenance_compact_hnsw(
         let store = &bridge.store;
         let result = block_in_place(|| handle.block_on(store.compact_hnsw()));
 
-        return match result {
+        match result {
             Ok(()) => (
                 "200 OK",
                 serde_json::json!({"ok": true, "action": "compact-hnsw", "message": "HNSW index compacted successfully"}),
@@ -1205,7 +1515,7 @@ fn handle_maintenance_compact_hnsw(
                 "500 Internal Server Error",
                 serde_json::json!({"ok": false, "error": format!("compact_hnsw error: {e}")}),
             ),
-        };
+        }
     }
 
     #[cfg(not(feature = "hnsw"))]
@@ -1221,5 +1531,54 @@ fn handle_maintenance_compact_hnsw(
                 "skipped": true,
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod connection_slot_tests {
+    use super::*;
+
+    #[test]
+    fn connection_slot_is_released_when_handler_unwinds() {
+        let active = Arc::new(AtomicUsize::new(1));
+        let result = std::panic::catch_unwind({
+            let active = active.clone();
+            move || {
+                let _slot = ConnectionSlot::new(active);
+                panic!("injected handler panic");
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn rerank_failure_preserves_original_order_and_scores() {
+        let results = vec![
+            serde_json::json!({"result_id": "fact:first", "score": 0.9, "content": "first"}),
+            serde_json::json!({"result_id": "fact:second", "score": 0.8, "content": "second"}),
+        ];
+        let (reranked, status) =
+            rerank_results_at("query", &results, RERANK_MODEL, "http://127.0.0.1:0");
+
+        assert_eq!(status, "degraded");
+        assert_eq!(reranked, results);
+        assert!(reranked
+            .iter()
+            .all(|result| result.get("rerank_score").is_none()));
+    }
+
+    #[test]
+    fn rerank_limits_use_utf8_bytes_and_bound_search_candidates() {
+        let content = "🦀".repeat(MAX_RERANK_CONTENT_BYTES);
+        let truncated = truncate_rerank_content(&content);
+        assert!(truncated.len() <= MAX_RERANK_CONTENT_BYTES);
+        assert!(truncated.is_char_boundary(truncated.len()));
+
+        assert_eq!(rerank_candidate_limit(1), 2);
+        assert_eq!(
+            rerank_candidate_limit(MAX_TOP_K as usize),
+            MAX_RERANK_RESULTS
+        );
     }
 }

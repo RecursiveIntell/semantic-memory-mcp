@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "semantic-memory": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/semantic-memory-server"
+    }
+  }
+}

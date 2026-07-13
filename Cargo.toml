@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.4.0"
+version = "0.5.4"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -28,21 +28,18 @@ path = "src/main.rs"
 # provenance, factor_graph, topology, and community modules unconditionally in
 # server.rs. These are all behind `full` features in semantic-memory. Making
 # `full` the default ensures the advertised 18-tool surface compiles and works
-# out of the box. A minimal `search`-only profile can be built with
-# `--no-default-features --features search` but will not expose advanced tools.
+# out of the box. The `search` profile composes every capability referenced by
+# the currently unified tool router; it is a supported build profile, not a
+# minimal tool surface.
 default = ["full"]
 # Core: usearch 2.25 backend (the default and recommended backend for
 # semantic-memory — won the benchmark vs hnsw_rs by 2-78x on every metric
 # that matters for a desktop RAG app, +4pp better recall@10 at D=768).
 # No brute-force — usearch is the production backend.
 # Includes candle-embedder so the default build needs no Ollama.
-search = ["semantic-memory/usearch-backend", "semantic-memory/candle-embedder", "candle-embedder"]
-# Local feature that forwards to semantic-memory's candle-embedder.
-# Used for cfg gates in bridge.rs.
-candle-embedder = ["semantic-memory/candle-embedder"]
-# Full: all knowledge management features + codec integration
-full = [
-    "search",
+search = [
+    "semantic-memory/usearch-backend",
+    "semantic-memory/candle-embedder",
     "semantic-memory/provenance",
     "semantic-memory/temporal",
     "semantic-memory/multiscale",
@@ -51,15 +48,43 @@ full = [
     "semantic-memory/subtraction",
     "semantic-memory/compression-governor",
     "semantic-memory/routing",
-    "semantic-memory/integration",
+    "integration",
+    "subgraph-pruning",
     "semantic-memory/admin-ops",
     "semantic-memory/late-interaction",
     "semantic-memory/turbo-quant-codec",
     "semantic-memory/rl-routing",
+    "candle-embedder",
     "claim-integration",
     "llm-parser",
     "orchestration",
 ]
+# Stable minimal feature set: no experimental/advanced modules.
+stable = [
+    "semantic-memory/usearch-backend",
+    "semantic-memory/candle-embedder",
+    "semantic-memory/provenance",
+    "semantic-memory/temporal",
+    "candle-embedder",
+]
+# Local feature forwarders for cfg-gated semantic-memory modules.
+discord = ["semantic-memory/discord"]
+routing = ["semantic-memory/routing"]
+decoder = ["semantic-memory/decoder"]
+integration = ["semantic-memory/integration"]
+turbo-quant-codec = ["semantic-memory/turbo-quant-codec"]
+rl-routing = ["semantic-memory/rl-routing"]
+late-interaction = ["semantic-memory/late-interaction"]
+multiscale = ["semantic-memory/multiscale"]
+subtraction = ["semantic-memory/subtraction"]
+compression-governor = ["semantic-memory/compression-governor"]
+# Local feature forwarding for the sm_subgraph_prune implementation.
+subgraph-pruning = ["semantic-memory/subgraph-pruning"]
+# Local feature that forwards to semantic-memory's candle-embedder.
+# Used for cfg gates in bridge.rs.
+candle-embedder = ["semantic-memory/candle-embedder"]
+# Full is currently an alias for the honestly composed search/tool-router profile.
+full = ["search"]
 
 # Claim-ledger integration: sm_create_claim, sm_add_evidence, sm_judge_support,
 # sm_verify_claim, sm_proof_debt_status, sm_record_contradiction, etc.
@@ -79,9 +104,9 @@ orchestration = [
 hnsw = ["semantic-memory/hnsw"]
 
 [dependencies]
-semantic-memory = { version = "0.5.8", path = "../semantic-memory", default-features = false }
+semantic-memory = { version = "0.5.10", path = "../semantic-memory", default-features = false }
 stack-ids = { version = "0.1.1", path = "../stack-ids" }
-claim-ledger = { version = "0.1.0", path = "../claim-ledger", optional = true }
+claim-ledger = { version = "0.2.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
 knowledge-runtime = { version = "0.1.0", path = "../knowledge-runtime", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
@@ -94,8 +119,11 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 schemars = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+blake3 = "1"
+uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
+semantic-memory = { path = "../semantic-memory", default-features = false, features = ["testing"] }

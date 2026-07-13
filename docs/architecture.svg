@@ -1,126 +1,121 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 720" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
-  <style>
-    .bg { fill: #0d1117; }
-    .card { fill: #161b22; stroke: #30363d; stroke-width: 1; rx: 8; }
-    .card-mcp { fill: #0f2438; stroke: #1f6feb; stroke-width: 1.5; rx: 8; }
-    .card-lib { fill: #161b22; stroke: #39d0d8; stroke-width: 1.5; rx: 8; }
-    .card-embed { fill: #1a1a2e; stroke: #8b949e; stroke-width: 1; rx: 8; }
-    .module { fill: #1c2331; stroke: #30363d; stroke-width: 0.75; rx: 4; }
-    .tool { fill: #0f2438; stroke: #1f6feb; stroke-width: 0.75; rx: 3; }
-    .title { fill: #f0f6fc; font-weight: 700; font-size: 15px; }
-    .subtitle { fill: #8b949e; font-size: 11px; }
-    .label { fill: #c9d1d9; font-size: 11px; }
-    .label-sm { fill: #8b949e; font-size: 9.5px; }
-    .label-tool { fill: #79c0ff; font-size: 9px; font-weight: 600; }
-    .accent { fill: #39d0d8; }
-    .accent-blue { fill: #1f6feb; }
-    .arrow { stroke: #484f58; stroke-width: 1.5; fill: none; }
-    .arrow-label { fill: #8b949e; font-size: 9.5px; text-anchor: middle; }
-  </style>
-
-  <rect width="880" height="720" class="bg"/>
-
-  <!-- Client layer -->
-  <rect x="20" y="20" width="840" height="70" class="card"/>
-  <text x="440" y="42" text-anchor="middle" class="title">MCP Client (Hermes Agent, Claude Desktop, Cursor, Windsurf)</text>
-  <text x="440" y="58" text-anchor="middle" class="subtitle">Discovers and calls tools via JSON-RPC over stdio</text>
-  <text x="440" y="75" text-anchor="middle" class="label-sm">tools/list → 28 tools discovered · tools/call → tool executes and returns JSON</text>
-
-  <!-- Arrow: client -> mcp -->
-  <path d="M 440 90 L 440 115" class="arrow" marker-end="url(#arrowhead)"/>
-  <text x="460" y="105" class="label-sm">MCP Protocol</text>
-
-  <!-- MCP server layer -->
-  <rect x="40" y="115" width="800" height="115" class="card-mcp"/>
-  <text x="440" y="135" text-anchor="middle" class="title" fill="#79c0ff">semantic-memory-mcp (1,710 LOC, 4 source files)</text>
-  <text x="440" y="149" text-anchor="middle" class="subtitle">MCP stdio server using rmcp SDK · #[tool_router] macro auto-generates JSON Schema</text>
-
-  <!-- Tool grid -->
-  <g transform="translate(55, 158)">
-    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_search</text>
-    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_explained</text>
-    <rect x="190" width="88" height="16" class="tool"/><text x="234" y="11" text-anchor="middle" class="label-tool">sm_add_fact</text>
-    <rect x="285" width="88" height="16" class="tool"/><text x="329" y="11" text-anchor="middle" class="label-tool">sm_ingest_doc</text>
-    <rect x="380" width="88" height="16" class="tool"/><text x="424" y="11" text-anchor="middle" class="label-tool">sm_stats</text>
-    <rect x="475" width="88" height="16" class="tool"/><text x="519" y="11" text-anchor="middle" class="label-tool">sm_graph_path</text>
-    <rect x="570" width="88" height="16" class="tool"/><text x="614" y="11" text-anchor="middle" class="label-tool">sm_provenance</text>
-    <rect x="665" width="88" height="16" class="tool"/><text x="709" y="11" text-anchor="middle" class="label-tool">sm_route_q</text>
-  </g>
-  <g transform="translate(55, 178)">
-    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_routing</text>
-    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_decoder</text>
-    <rect x="190" width="88" height="16" class="tool"/><text x="234" y="11" text-anchor="middle" class="label-tool">sm_discord</text>
-    <rect x="285" width="88" height="16" class="tool"/><text x="329" y="11" text-anchor="middle" class="label-tool">sm_lifecycle</text>
-    <rect x="380" width="88" height="16" class="tool"/><text x="424" y="11" text-anchor="middle" class="label-tool">sm_add_edge</text>
-    <rect x="475" width="88" height="16" class="tool"/><text x="519" y="11" text-anchor="middle" class="label-tool">sm_list_edges</text>
-    <rect x="570" width="88" height="16" class="tool"/><text x="614" y="11" text-anchor="middle" class="label-tool">sm_inval_edge</text>
-    <rect x="665" width="88" height="16" class="tool"/><text x="709" y="11" text-anchor="middle" class="label-tool">sm_factor_g</text>
-  </g>
-  <g transform="translate(55, 198)">
-    <rect width="88" height="16" class="tool"/><text x="44" y="11" text-anchor="middle" class="label-tool">sm_topology</text>
-    <rect x="95" width="88" height="16" class="tool"/><text x="139" y="11" text-anchor="middle" class="label-tool">sm_community</text>
-  </g>
-
-  <!-- Arrow: mcp -> library -->
-  <path d="M 440 230 L 440 255" class="arrow" marker-end="url(#arrowhead)"/>
-  <text x="460" y="248" class="label-sm">Rust API calls</text>
-
-  <!-- Library layer -->
-  <rect x="40" y="255" width="800" height="395" class="card-lib"/>
-  <text x="440" y="275" text-anchor="middle" class="title" fill="#39d0d8">semantic-memory (0.5.2 · 51 source files · ~51K LOC)</text>
-  <text x="440" y="289" text-anchor="middle" class="subtitle">Local-first hybrid search · SQLite authoritative · usearch 2.25 sidecar · 321 tests pass</text>
-
-  <!-- Left column: Storage + Search -->
-  <text x="100" y="308" text-anchor="middle" class="label" font-weight="700">Storage</text>
-  <rect x="50" y="312" width="200" height="22" class="module"/><text x="150" y="327" text-anchor="middle" class="label">SQLite + WAL (authoritative)</text>
-  <rect x="50" y="338" width="200" height="22" class="module"/><text x="150" y="353" text-anchor="middle" class="label">FTS5 (BM25 full-text search)</text>
-  <rect x="50" y="364" width="200" height="22" class="module"/><text x="150" y="379" text-anchor="middle" class="label">usearch 2.25 (vector sidecar)</text>
-  <rect x="50" y="390" width="200" height="22" class="module"/><text x="150" y="405" text-anchor="middle" class="label">Bitemporal truth (valid/recorded)</text>
-  <rect x="50" y="416" width="200" height="22" class="module"/><text x="150" y="431" text-anchor="middle" class="label">Typed receipts (blake3-digested)</text>
-
-  <text x="150" y="455" text-anchor="middle" class="label" font-weight="700">Search Pipeline</text>
-  <rect x="50" y="459" width="200" height="22" class="module"/><text x="150" y="474" text-anchor="middle" class="label">BM25 + Vector + RRF Fusion</text>
-  <rect x="50" y="485" width="200" height="22" class="module"/><text x="150" y="500" text-anchor="middle" class="label">search_explained() breakdown</text>
-  <rect x="50" y="511" width="200" height="22" class="module"/><text x="150" y="526" text-anchor="middle" class="label">Adaptive routing (query profiling)</text>
-  <rect x="50" y="537" width="200" height="22" class="module"/><text x="150" y="552" text-anchor="middle" class="label">Reconcile (rebuild from SQLite)</text>
-
-  <!-- Middle column: Reasoning -->
-  <text x="440" y="308" text-anchor="middle" class="label" font-weight="700">Graph + Reasoning</text>
-  <rect x="270" y="312" width="340" height="22" class="module"/><text x="440" y="327" text-anchor="middle" class="label">Graph edges (semantic, temporal, causal, entity)</text>
-  <rect x="270" y="338" width="340" height="22" class="module"/><text x="440" y="353" text-anchor="middle" class="label">Factor graph (belief propagation over all 4 edge types)</text>
-  <rect x="270" y="364" width="340" height="22" class="module"/><text x="440" y="379" text-anchor="middle" class="label">Decoder (syndromes + corrections + message passing)</text>
-  <rect x="270" y="390" width="340" height="22" class="module"/><text x="440" y="405" text-anchor="middle" class="label">Discord (second-order graph-neighbor retrieval)</text>
-  <rect x="270" y="416" width="340" height="22" class="module"/><text x="440" y="431" text-anchor="middle" class="label">Topology (Betti numbers, void detection)</text>
-  <rect x="270" y="442" width="340" height="22" class="module"/><text x="440" y="457" text-anchor="middle" class="label">Community (Leiden detection, contradiction scan)</text>
-  <rect x="270" y="468" width="340" height="22" class="module"/><text x="440" y="483" text-anchor="middle" class="label">Subtraction (lawful forgetting + invariant verification)</text>
-  <rect x="270" y="494" width="340" height="22" class="module"/><text x="440" y="509" text-anchor="middle" class="label">Compression governor (importance-driven quantization)</text>
-
-  <!-- Right column: Provenance + Temporal -->
-  <text x="720" y="308" text-anchor="middle" class="label" font-weight="700">Provenance</text>
-  <rect x="630" y="312" width="200" height="22" class="module"/><text x="730" y="327" text-anchor="middle" class="label">ConfidenceSemiring</text>
-  <rect x="630" y="338" width="200" height="22" class="module"/><text x="730" y="353" text-anchor="middle" class="label">Temporal weight (age + supersession)</text>
-  <rect x="630" y="364" width="200" height="22" class="module"/><text x="730" y="379" text-anchor="middle" class="label">Subgraph pruning (access-based)</text>
-  <rect x="630" y="390" width="200" height="22" class="module"/><text x="730" y="405" text-anchor="middle" class="label">Matryoshka (multi-resolution)</text>
-
-  <text x="730" y="455" text-anchor="middle" class="label" font-weight="700">Integration</text>
-  <rect x="630" y="459" width="200" height="22" class="module"/><text x="730" y="474" text-anchor="middle" class="label">routing → decoder → subtraction</text>
-  <rect x="630" y="485" width="200" height="22" class="module"/><text x="730" y="500" text-anchor="middle" class="label">subtraction → compression</text>
-  <rect x="630" y="511" width="200" height="22" class="module"/><text x="730" y="526" text-anchor="middle" class="label">discord → provenance feedback</text>
-  <rect x="630" y="537" width="200" height="22" class="module"/><text x="730" y="552" text-anchor="middle" class="label">provenance → temporal weight</text>
-
-  <!-- Arrow: library -> ollama -->
-  <path d="M 440 650 L 440 675" class="arrow" marker-end="url(#arrowhead)"/>
-  <text x="460" y="672" class="label-sm">POST /api/embed</text>
-
-  <!-- Ollama layer -->
-  <rect x="250" y="675" width="380" height="35" class="card-embed"/>
-  <text x="440" y="693" text-anchor="middle" class="title" font-size="13px">Ollama (nomic-embed-text · 768-dim · localhost:11434)</text>
-  <text x="440" y="706" text-anchor="middle" class="label-sm">Separate process · crash-isolated · no in-process embedder</text>
-
-  <!-- Arrowhead marker -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">semantic-memory-mcp architecture</title>
+  <desc id="desc">Agents connect over MCP stdio to runtime tool profiles. Lean, standard, and agent profiles are read-only; only the full operator profile exposes mutation and maintenance. The HTTP sidecar requires bearer auth and profile enforcement. Searchable memory uses SQLite, FTS5, and usearch vectors. A separately verified claim ledger derives an in-memory trust index. Mutation fails closed without a trusted authority issuer.</desc>
   <defs>
-    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#484f58"/>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17304A" stroke-width="0.5" opacity="0.35"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64748B"/>
+    </marker>
+    <marker id="trustArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#D7A8FF"/>
     </marker>
   </defs>
+  <rect width="1440" height="900" rx="24" fill="#07111F"/>
+  <rect width="1440" height="900" rx="24" fill="url(#grid)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="70" y="66" fill="#E2E8F0" font-size="28" font-weight="700">semantic-memory-mcp</text>
+    <text x="70" y="94" fill="#94A3B8" font-size="14">Local-first retrieval, receipts, governed authority, and optional claim-ledger trust</text>
+
+    <!-- Arrows behind boxes -->
+    <g fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M340 275H425"/>
+      <path d="M875 275H960"/>
+    </g>
+    <path d="M1165 420V500" fill="none" stroke="#64748B" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M960 788H875" fill="none" stroke="#D7A8FF" stroke-width="2" marker-end="url(#trustArrow)"/>
+
+    <!-- Agent clients -->
+    <rect x="70" y="140" width="270" height="270" rx="22" fill="#0F1D2E" stroke="#94A3B8" stroke-width="1.5"/>
+    <text x="95" y="178" fill="#CBD5E1" font-size="18" font-weight="700">Agent clients</text>
+    <g>
+      <rect x="95" y="204" width="220" height="48" rx="12" fill="#172842" stroke="#315172"/>
+      <text x="115" y="234" fill="#E8F1FF" font-size="15" font-weight="600">Hermes Agent</text>
+    </g>
+    <g>
+      <rect x="95" y="267" width="220" height="48" rx="12" fill="#172842" stroke="#315172"/>
+      <text x="115" y="297" fill="#E8F1FF" font-size="15" font-weight="600">Claude Code</text>
+    </g>
+    <g>
+      <rect x="95" y="330" width="220" height="48" rx="12" fill="#172842" stroke="#315172"/>
+      <text x="115" y="360" fill="#E8F1FF" font-size="15" font-weight="600">Codex / MCP clients</text>
+    </g>
+    <text x="95" y="397" fill="#94A3B8" font-size="12">Client approvals remain client policy</text>
+
+    <!-- MCP server -->
+    <rect x="425" y="132" width="450" height="288" rx="24" fill="#132B4F" stroke="#3979A8" stroke-width="1.5"/>
+    <text x="453" y="172" fill="#67E8F9" font-size="18" font-weight="700">MCP server · rmcp · stdio</text>
+    <text x="453" y="197" fill="#A9BDD7" font-size="13">Schema discovery and protocol over JSON-RPC</text>
+
+    <rect x="453" y="220" width="188" height="72" rx="13" fill="#10243E" stroke="#3B82B8"/>
+    <text x="471" y="247" fill="#67E8F9" font-size="15" font-weight="600">lean / standard</text>
+    <text x="471" y="270" fill="#A9BDD7" font-size="13">4 read-only governed tools</text>
+
+    <rect x="659" y="220" width="188" height="72" rx="13" fill="#10243E" stroke="#3B82B8"/>
+    <text x="677" y="247" fill="#67E8F9" font-size="15" font-weight="600">agent</text>
+    <text x="677" y="270" fill="#A9BDD7" font-size="13">11 read-only tools</text>
+
+    <rect x="453" y="310" width="394" height="78" rx="13" fill="#10243E" stroke="#F1A958"/>
+    <text x="471" y="338" fill="#FDE68A" font-size="15" font-weight="600">full operator profile</text>
+    <text x="471" y="361" fill="#A9BDD7" font-size="13">All compiled tools · tools/list is source of truth</text>
+    <text x="471" y="381" fill="#94A3B8" font-size="12">Mutation fails closed without trusted issuer</text>
+
+    <!-- Runtime entrypoints -->
+    <rect x="960" y="132" width="410" height="288" rx="24" fill="#131F33" stroke="#3D5575" stroke-width="1.5"/>
+    <text x="988" y="172" fill="#7DD3FC" font-size="18" font-weight="700">Runtime entrypoints</text>
+
+    <rect x="988" y="207" width="354" height="72" rx="13" fill="#172942" stroke="#3C678E"/>
+    <text x="1007" y="234" fill="#E0F2FE" font-size="15" font-weight="600">MemoryBridge</text>
+    <text x="1007" y="257" fill="#A9BDD7" font-size="13">Candle · Ollama · mock (tests)</text>
+
+    <rect x="988" y="298" width="354" height="90" rx="13" fill="#172942" stroke="#3C678E"/>
+    <text x="1007" y="326" fill="#E0F2FE" font-size="15" font-weight="600">Optional HTTP sidecar</text>
+    <text x="1007" y="349" fill="#A9BDD7" font-size="13">127.0.0.1 · bearer auth required</text>
+    <text x="1007" y="371" fill="#94A3B8" font-size="12">Profile-enforced: lean/agent = /health only</text>
+
+    <!-- semantic-memory -->
+    <rect x="70" y="500" width="805" height="330" rx="24" fill="#123C3B" stroke="#32A6A0" stroke-width="1.5"/>
+    <text x="100" y="542" fill="#6EE7B7" font-size="18" font-weight="700">semantic-memory · searchable state</text>
+    <text x="100" y="568" fill="#A7F3D0" font-size="13">Ordinary semantic search continues even if trust enrichment is disabled</text>
+
+    <rect x="100" y="602" width="225" height="104" rx="15" fill="#102E35" stroke="#2BA79E"/>
+    <text x="120" y="633" fill="#6EE7B7" font-size="15" font-weight="600">SQLite · memory.db</text>
+    <text x="120" y="658" fill="#A7F3D0" font-size="13">facts · chunks · sessions</text>
+    <text x="120" y="681" fill="#A7F3D0" font-size="13">receipts · FTS5 / BM25</text>
+
+    <rect x="352" y="602" width="225" height="104" rx="15" fill="#102E35" stroke="#2BA79E"/>
+    <text x="372" y="633" fill="#6EE7B7" font-size="15" font-weight="600">Vector candidates</text>
+    <text x="372" y="658" fill="#A7F3D0" font-size="13">usearch (default)</text>
+    <text x="372" y="681" fill="#A7F3D0" font-size="13">HNSW optional</text>
+
+    <rect x="604" y="602" width="241" height="104" rx="15" fill="#102E35" stroke="#2BA79E"/>
+    <text x="624" y="633" fill="#6EE7B7" font-size="15" font-weight="600">V36 sparse vectors</text>
+    <text x="624" y="658" fill="#A7F3D0" font-size="13">SQLite dot-product lane</text>
+    <text x="624" y="681" fill="#94A3B8" font-size="12">Default weight 0 · inherited</text>
+
+    <rect x="100" y="733" width="745" height="65" rx="14" fill="#102735" stroke="#34879A"/>
+    <text x="120" y="759" fill="#6EE7B7" font-size="15" font-weight="600">Retrieval + policy</text>
+    <text x="120" y="782" fill="#A7F3D0" font-size="13">RRF · temporal/provenance · supersession · graph · routing · durable receipts · V35 replay (opt-in)</text>
+
+    <!-- Claim trust -->
+    <rect x="960" y="500" width="410" height="330" rx="24" fill="#3B2449" stroke="#A66BD3" stroke-width="1.5"/>
+    <text x="988" y="542" fill="#D7A8FF" font-size="18" font-weight="700">Claim trust · separate authority</text>
+
+    <rect x="988" y="581" width="354" height="66" rx="13" fill="#271D38" stroke="#A66BD3"/>
+    <text x="1007" y="607" fill="#D7A8FF" font-size="15" font-weight="600">Before compaction</text>
+    <text x="1007" y="630" fill="#C4B5FD" font-size="13">claim_ledger.jsonl · hash-chained</text>
+
+    <rect x="988" y="666" width="354" height="82" rx="13" fill="#271D38" stroke="#A66BD3"/>
+    <text x="1007" y="692" fill="#D7A8FF" font-size="15" font-weight="600">After atomic publication</text>
+    <text x="1007" y="715" fill="#C4B5FD" font-size="13">verified snapshot + retained tail + receipt</text>
+    <text x="1007" y="736" fill="#94A3B8" font-size="12">Manifest selects one generation</text>
+
+    <rect x="988" y="767" width="354" height="42" rx="12" fill="#352443" stroke="#D7A8FF"/>
+    <text x="1007" y="793" fill="#D7A8FF" font-size="15" font-weight="600">Derived in-memory ClaimTrustIndex</text>
+
+    <text x="70" y="870" fill="#FBBF24" font-size="12">Verification failure → disable trust enrichment and ledger writes; never promote derived state</text>
+    <text x="700" y="870" fill="#F472B6" font-size="12">Mutation without trusted issuer → fail closed</text>
+  </g>
 </svg>

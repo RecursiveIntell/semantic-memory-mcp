@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "semantic-memory",
+  "description": "Local-first semantic memory over MCP with witnessed recall, durable capture, provenance, and governed authority decisions",
+  "version": "0.1.0",
+  "author": {
+    "name": "RecursiveIntell"
+  },
+  "repository": "https://github.com/RecursiveIntell/semantic-memory-mcp",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "memory", "semantic-search", "provenance"]
+}

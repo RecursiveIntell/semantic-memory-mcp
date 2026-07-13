@@ -1,89 +1,116 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 460" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
-  <style>
-    .bg { fill: #0d1117; }
-    .box { fill: #161b22; stroke: #30363d; stroke-width: 1; rx: 6; }
-    .box-blue { fill: #0f2438; stroke: #1f6feb; stroke-width: 1; rx: 6; }
-    .box-teal { fill: #0f2d2d; stroke: #39d0d8; stroke-width: 1; rx: 6; }
-    .box-green { fill: #0f2d18; stroke: #3fb950; stroke-width: 1; rx: 6; }
-    .box-orange { fill: #2d2008; stroke: #d29922; stroke-width: 1; rx: 6; }
-    .label { fill: #c9d1d9; font-size: 12px; }
-    .label-bold { fill: #f0f6fc; font-size: 12px; font-weight: 700; }
-    .label-sm { fill: #8b949e; font-size: 10px; }
-    .arrow { stroke: #484f58; stroke-width: 1.5; fill: none; }
-    .arrow-teal { stroke: #39d0d8; stroke-width: 1.5; fill: none; }
-    .arrow-label { fill: #79c0ff; font-size: 10px; text-anchor: middle; }
-  </style>
-
-  <rect width="880" height="460" class="bg"/>
-
-  <text x="440" y="25" text-anchor="middle" fill="#f0f6fc" font-size="16px" font-weight="700">Hybrid Search Pipeline: How a Query Flows</text>
-
-  <!-- Step 1: Query input -->
-  <rect x="330" y="45" width="220" height="30" class="box-blue"/>
-  <text x="440" y="65" text-anchor="middle" class="label-bold" fill="#79c0ff">1. Query arrives (sm_search)</text>
-
-  <path d="M 440 75 L 440 95" class="arrow" marker-end="url(#arr)"/>
-
-  <!-- Step 2: Embedding -->
-  <rect x="330" y="95" width="220" height="40" class="box"/>
-  <text x="440" y="112" text-anchor="middle" class="label-bold">2. Embed query</text>
-  <text x="440" y="127" text-anchor="middle" class="label-sm">Ollama /api/embed → Vec&lt;f32&gt; (768-dim)</text>
-
-  <path d="M 440 135 L 440 150" class="arrow" marker-end="url(#arr)"/>
-
-  <!-- Step 3: Parallel BM25 + Vector -->
-  <text x="180" y="165" text-anchor="middle" class="label-sm" font-weight="600">BM25 path</text>
-  <text x="700" y="165" text-anchor="middle" class="label-sm" font-weight="600">Vector path</text>
-
-  <!-- BM25 branch arrow -->
-  <path d="M 440 150 L 440 160 L 180 160 L 180 175" class="arrow" marker-end="url(#arr)"/>
-  <!-- Vector branch arrow -->
-  <path d="M 440 150 L 440 160 L 700 160 L 700 175" class="arrow-teal" marker-end="url(#arr)"/>
-
-  <!-- BM25 box -->
-  <rect x="80" y="175" width="200" height="55" class="box"/>
-  <text x="180" y="193" text-anchor="middle" class="label-bold">3a. FTS5 BM25 search</text>
-  <text x="180" y="208" text-anchor="middle" class="label-sm">SQLite MATCH against content</text>
-  <text x="180" y="222" text-anchor="middle" class="label-sm">→ ranked by BM25 score</text>
-
-  <!-- Vector box -->
-  <rect x="600" y="175" width="200" height="55" class="box-teal"/>
-  <text x="700" y="193" text-anchor="middle" class="label-bold" fill="#39d0d8">3b. Vector search</text>
-  <text x="700" y="208" text-anchor="middle" class="label-sm">usearch HNSW k-NN</text>
-  <text x="700" y="222" text-anchor="middle" class="label-sm">→ ranked by cosine similarity</text>
-
-  <!-- Merge arrows -->
-  <path d="M 180 230 L 180 250 L 440 250 L 440 260" class="arrow" marker-end="url(#arr)"/>
-  <path d="M 700 230 L 700 250 L 440 250" class="arrow-teal" marker-end="url(#arr)"/>
-
-  <!-- Step 4: RRF -->
-  <rect x="300" y="260" width="280" height="40" class="box"/>
-  <text x="440" y="278" text-anchor="middle" class="label-bold">4. Reciprocal Rank Fusion</text>
-  <text x="440" y="293" text-anchor="middle" class="label-sm">score = 1/(k+bm25_rank) + 1/(k+vec_rank) + recency</text>
-
-  <path d="M 440 300 L 440 315" class="arrow" marker-end="url(#arr)"/>
-
-  <!-- Step 5: Optional routing/decoder -->
-  <rect x="200" y="315" width="480" height="40" class="box-green"/>
-  <text x="440" y="333" text-anchor="middle" class="label-bold" fill="#3fb950">5. (Optional) Routing → Decoder → Factor Graph</text>
-  <text x="440" y="348" text-anchor="middle" class="label-sm">Profile query → activate stages → detect contradictions → refine confidence</text>
-
-  <path d="M 440 355 L 440 370" class="arrow" marker-end="url(#arr)"/>
-
-  <!-- Step 6: Results -->
-  <rect x="300" y="370" width="280" height="40" class="box-orange"/>
-  <text x="440" y="388" text-anchor="middle" class="label-bold" fill="#d29922">6. Results + Receipt</text>
-  <text x="440" y="403" text-anchor="middle" class="label-sm">Vec&lt;SearchResult&gt; + content-addressed receipt</text>
-
-  <path d="M 440 410 L 440 425" class="arrow" marker-end="url(#arr)"/>
-
-  <!-- Output -->
-  <rect x="330" y="425" width="220" height="25" class="box-blue"/>
-  <text x="440" y="442" text-anchor="middle" class="label-bold" fill="#79c0ff">JSON response to MCP client</text>
-
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="940" viewBox="0 0 1500 940" role="img" aria-labelledby="title desc">
+  <title id="title">semantic-memory-mcp witnessed retrieval pipeline</title>
+  <desc id="desc">A query selects witnessed retrieval mode, runs BM25, vector, and optional sparse candidate lanes, fuses ranks, applies policy, persists a durable receipt, hydrates source provenance, and returns trust-enriched results. The receipt bypasses cache and verifies durable persistence before returning.</desc>
   <defs>
-    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#484f58"/>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#17304A" stroke-width="0.5" opacity="0.35"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#6DD5FA"/>
+    </marker>
+    <marker id="violetArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#D1A6FF"/>
     </marker>
   </defs>
+  <rect width="1500" height="940" rx="24" fill="#07101F"/>
+  <rect width="1500" height="940" rx="24" fill="url(#grid)"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="65" y="65" fill="#E8F1FF" font-size="28" font-weight="700">Witnessed retrieval pipeline</text>
+    <text x="65" y="93" fill="#91A8C5" font-size="14">Production dense + lexical search, inherited V36 sparse lane, durable evidence, and privacy-aware V35 replay</text>
+
+    <!-- Row 1: query, mode, replay, context -->
+    <g fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M285 183H345"/>
+      <path d="M625 183H685"/>
+      <path d="M1035 183H1095"/>
+    </g>
+
+    <rect x="65" y="140" width="220" height="86" rx="18" fill="#12324B" stroke="#3D89AF"/>
+    <text x="88" y="174" fill="#67E8F9" font-size="18" font-weight="700">1 · Query</text>
+    <text x="88" y="199" fill="#ACC0D8" font-size="13">text · top_k · namespaces</text>
+
+    <rect x="345" y="140" width="280" height="86" rx="18" fill="#12324B" stroke="#3D89AF"/>
+    <text x="368" y="174" fill="#67E8F9" font-size="18" font-weight="700">2 · Retrieval mode</text>
+    <text x="368" y="199" fill="#ACC0D8" font-size="13">hybrid · fts_only · vector_only</text>
+
+    <rect x="685" y="140" width="350" height="86" rx="18" fill="#322148" stroke="#8D68BB"/>
+    <text x="708" y="174" fill="#D1A6FF" font-size="18" font-weight="700">V35 replay policy</text>
+    <text x="708" y="199" fill="#C4B5FD" font-size="13">no_replay (default) · store_inputs (explicit)</text>
+
+    <rect x="1095" y="140" width="340" height="86" rx="18" fill="#18263D" stroke="#476482"/>
+    <text x="1118" y="174" fill="#7DD3FC" font-size="18" font-weight="700">Search context</text>
+    <text x="1118" y="199" fill="#ACC0D8" font-size="13">current state · bypass cache · request ID</text>
+
+    <!-- Row 2: candidate generation -->
+    <text x="65" y="292" fill="#67E8F9" font-size="18" font-weight="700">3 · Candidate generation</text>
+
+    <g fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M240 480V540H670"/>
+      <path d="M750 480V540H750"/>
+    </g>
+    <path d="M1260 480V540H830" fill="none" stroke="#D1A6FF" stroke-width="2" stroke-dasharray="7 7" marker-end="url(#violetArrow)"/>
+
+    <rect x="65" y="326" width="350" height="154" rx="20" fill="#112D3C" stroke="#3194AD"/>
+    <text x="90" y="363" fill="#67E8F9" font-size="18" font-weight="700">FTS5 / BM25</text>
+    <text x="90" y="390" fill="#ACC0D8" font-size="13">SQLite lexical ranking</text>
+    <rect x="90" y="414" width="300" height="42" rx="10" fill="#0D2333" stroke="#285E78"/>
+    <text x="108" y="440" fill="#ACC0D8" font-size="13">Always available in hybrid / fts_only</text>
+
+    <rect x="575" y="326" width="350" height="154" rx="20" fill="#112D3C" stroke="#3194AD"/>
+    <text x="600" y="363" fill="#67E8F9" font-size="18" font-weight="700">Dense vector</text>
+    <text x="600" y="390" fill="#ACC0D8" font-size="13">Candle or Ollama query embedding</text>
+    <rect x="600" y="414" width="300" height="42" rx="10" fill="#0D2333" stroke="#285E78"/>
+    <text x="618" y="440" fill="#ACC0D8" font-size="13">usearch default · HNSW optional</text>
+
+    <rect x="1085" y="326" width="350" height="154" rx="20" fill="#1D273D" stroke="#8B78B5"/>
+    <text x="1110" y="363" fill="#D1A6FF" font-size="18" font-weight="700">V36 sparse vector</text>
+    <text x="1110" y="390" fill="#C4B5FD" font-size="13">SQLite sparse dot product</text>
+    <rect x="1110" y="414" width="300" height="42" rx="10" fill="#171D32" stroke="#6D5C91"/>
+    <text x="1128" y="433" fill="#94A3B8" font-size="12">Inherited from semantic-memory</text>
+    <text x="1128" y="449" fill="#94A3B8" font-size="12">default sparse_weight = 0</text>
+
+    <!-- Row 3: RRF -->
+    <path d="M750 644V692" fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <rect x="500" y="540" width="500" height="104" rx="21" fill="#12324B" stroke="#38A8AD"/>
+    <text x="527" y="578" fill="#67E8F9" font-size="18" font-weight="700">4 · Reciprocal Rank Fusion</text>
+    <text x="527" y="605" fill="#ACC0D8" font-size="13">Merge candidate ranks without cross-lane score calibration</text>
+    <text x="527" y="626" fill="#94A3B8" font-size="12">Receipts retain rank and contribution evidence, including sparse ranks when active</text>
+
+    <!-- Row 4: policy, witness, trust -->
+    <g fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)">
+      <path d="M500 592H270V692"/>
+      <path d="M750 644V692"/>
+    </g>
+    <path d="M1000 592H1230V692" fill="none" stroke="#D1A6FF" stroke-width="2" marker-end="url(#violetArrow)"/>
+    <path d="M475 758H545" fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)"/>
+    <path d="M955 758H1025" fill="none" stroke="#D1A6FF" stroke-width="2" marker-end="url(#violetArrow)"/>
+
+    <rect x="65" y="692" width="410" height="132" rx="20" fill="#122D39" stroke="#3593A0"/>
+    <text x="90" y="728" fill="#67E8F9" font-size="18" font-weight="700">5 · Policy and state</text>
+    <text x="90" y="755" fill="#ACC0D8" font-size="13">temporal / provenance weighting</text>
+    <text x="90" y="778" fill="#ACC0D8" font-size="13">current-state and supersession filtering</text>
+    <text x="90" y="801" fill="#ACC0D8" font-size="13">optional routed / graph stages in full profile</text>
+
+    <rect x="545" y="692" width="410" height="132" rx="20" fill="#122D39" stroke="#3593A0"/>
+    <text x="570" y="728" fill="#67E8F9" font-size="18" font-weight="700">6 · Witness + receipt</text>
+    <text x="570" y="755" fill="#ACC0D8" font-size="13">persist durable receipt · verify it exists</text>
+    <text x="570" y="778" fill="#ACC0D8" font-size="13">hydrate fact row, namespace, and source</text>
+    <text x="570" y="801" fill="#ACC0D8" font-size="13">omit results without honest source provenance</text>
+
+    <rect x="1025" y="692" width="410" height="132" rx="20" fill="#322148" stroke="#9B72C8"/>
+    <text x="1050" y="728" fill="#D1A6FF" font-size="18" font-weight="700">7 · Trust + authority</text>
+    <text x="1050" y="755" fill="#C4B5FD" font-size="13">enrich from verified, derived claim index</text>
+    <text x="1050" y="778" fill="#C4B5FD" font-size="13">attach authority snapshot / stage outcomes</text>
+    <text x="1050" y="801" fill="#94A3B8" font-size="12">ledger failure disables enrichment, not search</text>
+
+    <!-- Result -->
+    <path d="M1230 824V842H750V866" fill="none" stroke="#6DD5FA" stroke-width="2" marker-end="url(#arrow)"/>
+
+    <rect x="405" y="866" width="690" height="48" rx="14" fill="#15263B" stroke="#4D708E"/>
+    <text x="430" y="896" fill="#67E8F9" font-size="15" font-weight="600">Ranked witnessed facts + source + trust + state + retrieval receipt reference</text>
+
+    <text x="1110" y="851" fill="#94A3B8" font-size="12">sm_replay_search uses stored inputs only when opted in</text>
+  </g>
 </svg>

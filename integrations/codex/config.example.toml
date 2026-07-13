@@ -1,0 +1,14 @@
+# Copy this table into ~/.codex/config.toml, then replace the placeholder path.
+# Project .codex/config.toml is also supported for trusted repositories.
+[mcp_servers.semantic_memory]
+command = "semantic-memory-mcp"
+args = [
+  "--memory-dir",
+  "/absolute/path/to/semantic-memory",
+  "--tool-profile",
+  "agent",
+]
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+enabled = true
+required = false

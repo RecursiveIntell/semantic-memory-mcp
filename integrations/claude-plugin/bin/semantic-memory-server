@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+binary="${SEMANTIC_MEMORY_MCP_BIN:-semantic-memory-mcp}"
+memory_dir="${SEMANTIC_MEMORY_DIR:-${HOME}/.local/share/semantic-memory}"
+tool_profile="${SEMANTIC_MEMORY_TOOL_PROFILE:-agent}"
+
+case "$tool_profile" in
+  lean|standard|agent|full) ;;
+  *)
+    echo "SEMANTIC_MEMORY_TOOL_PROFILE must be lean, standard, agent, or full" >&2
+    exit 64
+    ;;
+esac
+
+exec "$binary" \
+  --memory-dir "$memory_dir" \
+  --tool-profile "$tool_profile"

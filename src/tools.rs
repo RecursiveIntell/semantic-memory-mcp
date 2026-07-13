@@ -3,7 +3,7 @@
 //! the JSON Schema for the tool's inputSchema.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Edge type for graph edges. JSON Schema enum helps LLMs pick the
 /// right value without guessing.
@@ -34,6 +34,95 @@ pub struct SearchParams {
     pub namespaces: Option<Vec<String>>,
 }
 
+/// Parameters for mandatory witnessed autonomous retrieval.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchWitnessedParams {
+    pub query: String,
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+    /// Optional caller correlation ID; generated when omitted.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// Retrieval stage selection. Defaults to the current hybrid behavior.
+    #[serde(default)]
+    pub retrieval_mode: Option<RetrievalModeParam>,
+    /// Replay input retention. Defaults to no_replay for privacy.
+    #[serde(default)]
+    pub replay_mode: Option<ReplayModeParam>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalModeParam {
+    Hybrid,
+    FtsOnly,
+    VectorOnly,
+}
+
+/// Opt-in retention policy for complete search replay.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayModeParam {
+    NoReplay,
+    StoreInputs,
+}
+
+/// Exact namespace/resource scope used by governed authority decisions.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedNamespaceScopeParams {
+    pub namespace: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub repo_id: Option<String>,
+}
+
+/// Purpose values carried by a delegation/elevation lease. The MCP tool fixes
+/// the decision purpose independently, so callers cannot substitute recall.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernedAccessPurposeParam {
+    Recall,
+    Assertion,
+    Action,
+    Export,
+    Replay,
+    Admin,
+}
+
+/// Existing multi-principal delegation/elevation lease contract in MCP-safe fields.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedLeaseParams {
+    pub lease_id: String,
+    pub delegator: String,
+    pub delegatee: String,
+    pub purposes: Vec<GovernedAccessPurposeParam>,
+    pub scope: GovernedNamespaceScopeParams,
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    pub expires_at: String,
+    #[serde(default)]
+    pub revoked: bool,
+    #[serde(default)]
+    pub elevation: bool,
+}
+
+/// Multi-principal request for a fixed-purpose assertion or action decision.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GovernedDecisionParams {
+    pub fact_id: String,
+    pub caller: String,
+    pub subject: String,
+    pub audiences: Vec<String>,
+    pub scope: GovernedNamespaceScopeParams,
+    #[serde(default)]
+    pub delegation_or_elevation: Option<GovernedLeaseParams>,
+}
+
 /// Parameters for sm_search_explained
 #[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -62,14 +151,72 @@ pub struct AddFactParams {
     /// correction, observation, episode_summary, skill_procedure, ephemeral_inference.
     /// Default: durable_fact. Ephemeral inferences require evidence_refs to promote.
     #[serde(default)]
-    pub memory_kind: Option<String>,
+    pub memory_kind: Option<MemoryKind>,
     /// Sensitivity class: public, internal, confidential, restricted.
     /// Default: internal. Confidential/restricted facts are blocked from autocapture.
     #[serde(default)]
-    pub sensitivity: Option<String>,
+    pub sensitivity: Option<Sensitivity>,
     /// Evidence references supporting this fact (URLs, fact IDs, source paths).
     #[serde(default)]
     pub evidence_refs: Option<Vec<String>>,
+    /// Optional caller-provided idempotency key. Retries with the same key and
+    /// payload return the original fact; omit it for a distinct append.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    DurableFact,
+    Preference,
+    ProjectState,
+    InstructionPolicy,
+    Correction,
+    Observation,
+    EpisodeSummary,
+    SkillProcedure,
+    EphemeralInference,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Sensitivity {
+    Public,
+    Internal,
+    Confidential,
+    Restricted,
+}
+
+impl From<&str> for MemoryKind {
+    fn from(value: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(value.to_owned()))
+            .expect("canonical memory kind")
+    }
+}
+impl From<&str> for Sensitivity {
+    fn from(value: &str) -> Self {
+        serde_json::from_value(serde_json::Value::String(value.to_owned()))
+            .expect("canonical sensitivity")
+    }
+}
+
+#[cfg(test)]
+mod add_fact_param_tests {
+    use super::AddFactParams;
+
+    #[test]
+    fn add_fact_idempotency_key_is_optional_and_backward_compatible() {
+        let legacy: AddFactParams =
+            serde_json::from_str(r#"{"content":"same fact","namespace":"general"}"#).unwrap();
+        assert_eq!(legacy.idempotency_key, None);
+
+        let keyed: AddFactParams = serde_json::from_str(
+            r#"{"content":"same fact","namespace":"general","idempotency_key":"request-42"}"#,
+        )
+        .unwrap();
+        assert_eq!(keyed.idempotency_key.as_deref(), Some("request-42"));
+    }
 }
 
 /// Parameters for sm_ingest_document
@@ -115,6 +262,11 @@ pub struct DetectContradictionsParams {
     /// How many top results to scan (default 10)
     #[serde(default)]
     pub top_k: Option<u32>,
+    /// When true, record each detected contradiction pair to the claim-ledger
+    /// as a hash-chained ContradictionCandidate entry (requires the
+    /// `claim-integration` feature). Default false.
+    #[serde(default)]
+    pub record_to_ledger: Option<bool>,
 }
 
 /// Parameters for sm_search_with_routing
@@ -455,7 +607,8 @@ pub struct ConsolidateFactsParams {
 pub struct RecordOutcomeParams {
     /// The query string that was routed.
     pub query: String,
-    /// The outcome of the routing decision: "good", "bad", or "neutral".
+    /// Caller-supplied proxy feedback label: "good", "bad", or "neutral".
+    /// This is training input, not a verified retrieval outcome.
     pub outcome: String,
 }
 
@@ -492,6 +645,68 @@ pub struct JudgeSupportParams {
     pub rationale: Option<String>,
 }
 
+/// Parameters for sm_compact_claim_ledger.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompactClaimLedgerParams {
+    /// Preview the verified compaction without writing. Defaults to true.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Compact only when the active tail exceeds this entry count (default 10,000).
+    #[serde(default)]
+    pub max_entries: Option<usize>,
+    /// Compact only when the active tail exceeds this byte count (default 16 MiB).
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+    /// Minimum number of recent entries retained verbatim (default 256).
+    #[serde(default)]
+    pub retain_tail_entries: Option<usize>,
+    /// Number of prior verified generations/backups to retain (default 3).
+    #[serde(default)]
+    pub max_backups: Option<usize>,
+}
+
+/// Parameters for sm_search_proof_debt
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchProofDebtParams {
+    /// The search query string.
+    pub query: String,
+    /// Maximum number of results to return (default 5).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// Optional namespace filter (restrict search to these namespaces).
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+    /// Proof-debt budget in micros for the gate check (default 500_000, one full proof unit).
+    #[serde(default)]
+    pub budget_micros: Option<u64>,
+}
+
+/// Parameters for sm_benchmark_trust
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BenchmarkTrustParams {
+    /// Number of benchmark queries to run (default 10).
+    #[serde(default)]
+    pub query_count: Option<u32>,
+    /// Top-k for each search (default 5).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// Optional namespace filter.
+    #[serde(default)]
+    pub namespaces: Option<Vec<String>>,
+}
+
+/// Parameters for sm_subgraph_prune
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubgraphPruneParams {
+    /// When true, only identify subgraphs and report priority without pruning.
+    /// Default: true (dry run).
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Maximum number of subgraphs to prune (default: 5).
+    #[serde(default)]
+    pub max_prune: Option<u32>,
+}
+
 // ─── Bitemporal search ─────────────────────────────────────────────────
 
 /// Parameters for sm_search_as_of
@@ -519,9 +734,11 @@ pub struct VerifyClaimParams {
     pub risk_class: String,
     /// Optional evidence references supporting the claim.
     #[serde(default)]
+    #[allow(dead_code)]
     pub evidence_refs: Option<Vec<String>>,
     /// Whether refutation was attempted (if false, high/critical claims cannot be promoted).
     #[serde(default)]
+    #[allow(dead_code)]
     pub refutation_attempted: Option<bool>,
 }
 
@@ -547,6 +764,13 @@ pub struct ReplaySearchReceiptParams {
     /// Optional namespace filter for replay.
     #[serde(default)]
     pub namespaces: Option<Vec<String>>,
+}
+
+/// Parameters for sm_replay_search using opt-in stored inputs.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReplayStoredSearchParams {
+    /// The receipt/request ID whose stored inputs should be replayed.
+    pub receipt_id: String,
 }
 
 // ─── Reconcile tool ───────────────────────────────────────────────────
@@ -587,6 +811,59 @@ pub struct ImportStatusParams {
 pub struct ImportEnvelopeParams {
     /// The import envelope as a JSON string.
     pub envelope_json: String,
+}
+
+// ─── LLM output parser tools ──────────────────────────────────────────
+
+/// Parameters for sm_parse_json
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseJsonParams {
+    /// The raw LLM output text that should contain JSON (may include think blocks, markdown fences, trailing text).
+    pub raw_output: String,
+}
+
+/// Parameters for sm_parse_json_value
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseJsonValueParams {
+    /// The raw LLM output text that should contain JSON.
+    pub raw_output: String,
+}
+
+/// Parameters for sm_strip_think_tags
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StripThinkTagsParams {
+    /// The text that may contain <think>...</think> blocks.
+    pub text: String,
+}
+
+/// Parameters for sm_repair_json
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RepairJsonParams {
+    /// The malformed JSON string to attempt repair on.
+    pub json_string: String,
+}
+
+/// Parameters for sm_parse_string_list
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseStringListParams {
+    /// The raw LLM output text that should contain a list of items.
+    pub raw_output: String,
+}
+
+/// Parameters for sm_parse_choice
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseChoiceParams {
+    /// The raw LLM output text that should contain a choice.
+    pub raw_output: String,
+    /// Valid options to choose from.
+    pub options: Vec<String>,
+}
+
+/// Parameters for sm_parse_number
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ParseNumberParams {
+    /// The raw LLM output text that should contain a number.
+    pub raw_output: String,
 }
 
 // ─── Projection query tools ───────────────────────────────────────────

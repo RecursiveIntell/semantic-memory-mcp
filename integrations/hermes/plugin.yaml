@@ -1,0 +1,3 @@
+name: semantic-memory-mcp
+version: "0.1.0"
+description: Guarded Hermes CLI helpers for installing and checking the semantic-memory MCP server

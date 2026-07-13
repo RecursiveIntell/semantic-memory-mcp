@@ -219,6 +219,7 @@ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 name = "bitemporal-runtime"
 version = "0.1.0"
 dependencies = [
+ "boundary-compiler",
  "chrono",
  "serde",
  "serde_json",
@@ -300,6 +301,7 @@ name = "boundary-compiler"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ryu-js",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -480,11 +482,9 @@ dependencies = [
 
 [[package]]
 name = "claim-ledger"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "blake3",
  "chrono",
- "digest 0.10.7",
  "hex",
  "serde",
  "serde_json",
@@ -1237,9 +1237,10 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fib-quant"
-version = "0.1.0-alpha.2"
+version = "0.1.0-beta.4"
 dependencies = [
  "blake3",
+ "cc",
  "gpu-backend",
  "half",
  "nalgebra 0.33.3",
@@ -1314,6 +1315,7 @@ dependencies = [
  "semantic-memory-forge",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "stack-ids",
  "thiserror 2.0.18",
  "uuid",
@@ -1636,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "gpu-backend"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "blake3",
  "serde",
@@ -3625,6 +3627,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
 name = "safe-transmute"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3769,7 +3777,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory"
-version = "0.5.8"
+version = "0.5.10"
 dependencies = [
  "bitemporal-runtime",
  "blake3",
@@ -3778,6 +3786,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "cc",
  "chrono",
  "cxx",
  "cxx-build",
@@ -3792,6 +3801,7 @@ dependencies = [
  "scr-runtime-compression",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "stack-ids",
  "thiserror 2.0.18",
  "tokenizers 0.23.1",
@@ -3818,9 +3828,10 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory-mcp"
-version = "0.4.0"
+version = "0.5.4"
 dependencies = [
  "anyhow",
+ "blake3",
  "boundary-compiler",
  "chrono",
  "claim-ledger",
@@ -3838,6 +3849,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -4618,8 +4630,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "turbo-quant"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
+ "cc",
  "nalgebra 0.33.3",
  "rand 0.8.6",
  "rand_chacha 0.3.1",

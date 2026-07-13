@@ -1,743 +1,422 @@
 # semantic-memory-mcp
 
-An MCP (Model Context Protocol) server that gives your AI agent a
-local-first knowledge base with hybrid search, evidence-scored
-retrieval, contradiction detection, and autonomous memory lifecycle
-management.
+`semantic-memory-mcp` is a local-first Model Context Protocol server for the
+[`semantic-memory`](../semantic-memory) Rust library. It gives MCP clients
+persistent semantic search, witnessed retrieval, durable receipts, governed
+authority decisions, graph and lifecycle tools, and optional claim-ledger trust
+enrichment over a store that remains on the operator's machine.
 
-All data stays on your machine. SQLite for storage, in-process Candle
-embedder (pure Rust, CPU-only), no cloud, no API keys, no telemetry.
-
-**No Ollama required.** The default embedder is Candle — a pure-Rust ML
-framework that runs nomic-embed-text-v1.5 in-process on CPU. The model
-downloads automatically from HuggingFace on first use (cached after).
-No external process, no model server, no GPU needed.
-
-**No cloud dependencies.** Every component runs locally: the SQLite
-database, the usearch vector index, the Candle embedding model, the
-MCP server process. There are no calls to OpenAI, Anthropic, Pinecone,
-Weaviase, Supabase, or any hosted service. The only network call is
-the one-time model download from HuggingFace (cached after). Your
-knowledge base never leaves your machine.
-
-**Ollama still supported.** If you prefer using an external Ollama
-instance, pass `--embedder ollama --embedding-url http://localhost:11434`.
+The default build uses SQLite/FTS5, the usearch vector backend, and an
+in-process Candle embedder. Ollama is an alternative embedder. The first Candle
+run downloads the configured Hugging Face model; after that, normal search and
+storage do not require a hosted database or API key.
 
 [![Architecture](docs/architecture.svg)](docs/architecture.svg)
 
-## What this gives your agent
+## Status at a glance
 
-Your agent gets a persistent knowledge base that:
+The current Rust source and `Cargo.toml` are authoritative. In particular:
 
-- **Searches by meaning, not just keywords** — hybrid BM25 + vector
-  similarity + Reciprocal Rank Fusion, with the full score breakdown
-  returned directly by `sm_search`.
-- **Tracks evidence confidence** — every item can carry algebraic
-  provenance (semiring confidence scores with support counts).
-- **Detects and corrects contradictions** — syndrome detection and
-  belief propagation on conflict graphs. The decoder identifies
-  inconsistent items and computes minimal corrections.
-- **Decays old knowledge** — temporal weight factors in age,
-  supersession, support, and contradiction signals.
-- **Discovers related knowledge** — second-order retrieval through
-  graph neighbors (discord search surfaces items related to your
-  direct hits but not themselves direct hits).
-- **Adapts search strategy per query** — adaptive routing profiles
-  each query and decides which retrieval stages to activate.
-- **Garbage-collects safely** — lawful subtraction with invariant
-  verification. The lifecycle pass identifies items safe to forget,
-  compress, or quarantine.
-- **Audits every operation** — blake3-digested receipts for every
-  mutation, replayable.
-- **Tracks causal history** — typed graph edges (semantic, temporal,
-  causal, entity) link items into a queryable knowledge graph.
-- **Reasons over the graph** — factor graph belief propagation
-  unifies all four edge types into a single probabilistic framework.
-- **Finds structural gaps** — topological analysis computes Betti
-  numbers and identifies voids in the knowledge graph.
-- **Detects communities** — Leiden-inspired community detection with
-  within-community contradiction scanning and compression-aware
-  recommendations.
-- **Self-edits memory** — `sm_update_fact` modifies facts in-place
-  with re-embedding. `sm_consolidate_facts` merges duplicates with
-  automatic supersession edges.
-- **Learns from outcomes** — `sm_record_outcome` feeds good/bad/neutral
-  signals to the RL routing policy, improving retrieval decisions over
-  time.
-- **Reranks with LLM** — optional `POST /rerank` endpoint uses an LLM
-  (granite4.1:3b via Ollama) to rate query-document relevance 1-5 and
-  reorder results for higher precision.
-- **Extracts entities** — when `extract_entities: true` is passed to
-  `sm_add_fact`, an LLM extracts named entities and auto-creates
-  `entity:{name}` graph edges.
-- **Generates community summaries** — when `summarize: true` is passed
-  to `sm_community`, each community gets an LLM-generated summary
-  paragraph.
-- **Groups by community** — `group_by_community: true` in
-  `sm_search_with_routing` clusters results by knowledge community for
-  synthesis queries.
-- **Routes adaptively** — `POST /search-routed` endpoint adjusts
-  top_k and exactness profile based on query complexity class
-  (A/B/C/D/E classification).
-- **Serves via HTTP** — `--http-port 1738` starts a warm HTTP server
-  alongside stdio MCP. Hooks, benchmarks, and scripts query it
-  directly without spawning new processes (4.9x faster).
-- **Compresses result content** — `compress_results` in SearchConfig
-  shortens search result content to first sentence + key terms,
-  reducing token cost by 30-50%.
-- **Does 2-stage search** — Matryoshka multi-resolution: 64d truncated
-  embeddings for fast candidate generation, 768d exact rerank.
+- The binary serves MCP over stdio. `--http-port` can add a loopback-only warm
+  HTTP surface; `--http-only` disables stdio.
+- `lean` and `standard` are aliases in behavior and expose four governed,
+  read-only tools.
+- `agent` exposes a bounded 11-tool read-only surface.
+- `full` exposes every tool compiled into that build. Its size can change with
+  feature selection, so this README does not freeze a full-profile tool count.
+- MCP `tools/list` is the source of truth for the tools available in a specific
+  binary, profile, and build.
+- The `full` Cargo feature is the default and is currently an alias for
+  `search`; it is unrelated to the runtime `--tool-profile full` switch.
 
-The combination of hybrid retrieval, provenance-weighted belief
-propagation, typed graph edges, and autonomous lifecycle management
-in a single local-first Rust substrate is uncommon. This is
-knowledge management, not just vector search.
+## Install
 
-## Installation
-
-### Option 1: Install from crates.io (recommended)
+From a checkout with the sibling path dependencies present:
 
 ```bash
-cargo install semantic-memory-mcp
-```
-
-This pulls semantic-memory 0.5.8 and all dependencies from crates.io
-automatically. No need to clone any repos.
-
-### Option 2: Build from source
-
-The source checkout is meant for full-stack development with sibling
-path dependencies. Clone `semantic-memory-mcp` alongside
-`semantic-memory` and the supporting RecursiveIntell crates, then build
-from the MCP repo.
-
-```bash
-mkdir semantic-memory-stack && cd semantic-memory-stack
-
-git clone https://github.com/RecursiveIntell/semantic-memory.git
-git clone https://github.com/RecursiveIntell/semantic-memory-mcp.git
-git clone https://github.com/RecursiveIntell/stack-ids.git
-git clone https://github.com/RecursiveIntell/bitemporal-runtime.git
-git clone https://github.com/RecursiveIntell/boundary-compiler.git
-git clone https://github.com/RecursiveIntell/forge-memory-bridge.git
-
-cd semantic-memory-mcp
 cargo build --release
-# Binary: target/release/semantic-memory-mcp
+./target/release/semantic-memory-mcp \
+  --memory-dir "$HOME/.local/share/semantic-memory" \
+  --tool-profile agent
 ```
 
-For normal users, `cargo install semantic-memory-mcp` is simpler because
-it resolves published registry crates automatically.
+Or install the published package when its registry dependencies match the
+release you intend to run:
 
-### Dependencies
+```bash
+cargo install semantic-memory-mcp --locked --version '=0.5.4'
+```
 
-The MCP server depends on one crate: `semantic-memory`. That crate
-in turn depends on several stack crates. All are on both crates.io
-and GitHub:
-
-| Crate | crates.io | GitHub | Purpose |
-|-------|-----------|--------|---------|
-| [semantic-memory](https://github.com/RecursiveIntell/semantic-memory) | [0.5.8](https://crates.io/crates/semantic-memory) | [GitHub](https://github.com/RecursiveIntell/semantic-memory) | Core search engine, storage, graph, reasoning |
-| [stack-ids](https://github.com/RecursiveIntell/stack-ids) | [0.1.1](https://crates.io/crates/stack-ids) | [GitHub](https://github.com/RecursiveIntell/stack-ids) | Typed IDs, scopes, trace context, BLAKE3 digests |
-| [bitemporal-runtime](https://github.com/RecursiveIntell/bitemporal-runtime) | [0.1.0](https://crates.io/crates/bitemporal-runtime) | [GitHub](https://github.com/RecursiveIntell/bitemporal-runtime) | Bitemporal truth (valid_time / recorded_time) |
-| [boundary-compiler](https://github.com/RecursiveIntell/boundary-compiler) | [0.1.0](https://crates.io/crates/boundary-compiler) | [GitHub](https://github.com/RecursiveIntell/boundary-compiler) | RFC 8785 JSON Canonicalization (JCS) |
-| [forge-memory-bridge](https://github.com/RecursiveIntell/forge-memory-bridge) | [0.1.1](https://crates.io/crates/forge-memory-bridge) | [GitHub](https://github.com/RecursiveIntell/forge-memory-bridge) | Projection import transforms |
-
-All of these are published on crates.io. If you install via
-`cargo install semantic-memory-mcp`, cargo resolves registry versions
-automatically — you do not need to clone anything. A source checkout
-uses sibling `path` dependencies when they are present, which is the
-recommended layout for full-stack development.
-
-### Building the full stack from source
-
-The `semantic-memory-mcp/Cargo.toml` and `semantic-memory/Cargo.toml`
-use sibling `path` dependencies for active development. Keep the stack
-repos cloned side-by-side so those paths resolve. If you only want to
-run the published server, prefer `cargo install semantic-memory-mcp`.
-
-## Prerequisites
-
-**Default (Candle embedder — no Ollama needed):**
-
-No prerequisites. The model (nomic-embed-text-v1.5) downloads
-automatically from HuggingFace on first use and is cached in
-`~/.cache/huggingface/hub`. Subsequent runs load from cache with no
-network access.
-
-**Ollama alternative:**
-
-If you prefer using Ollama, install it and pull an embedding model:
+The Candle model defaults to `nomic-ai/nomic-embed-text-v1.5` through the
+`nomic-embed-text` alias. To use Ollama instead:
 
 ```bash
 ollama pull nomic-embed-text
+semantic-memory-mcp \
+  --memory-dir "$HOME/.local/share/semantic-memory" \
+  --embedder ollama \
+  --embedding-url http://localhost:11434 \
+  --tool-profile agent
 ```
 
-Then pass `--embedder ollama` when starting the server.
+`--memory-dir` names a directory, not a database file. The store creates
+`memory.db` and its index sidecars below that directory.
 
-## Configuration
+## CLI reference
+
+The options below match `src/main.rs` and the generated `--help` surface.
+
+| Option | Required/default | Meaning |
+| --- | --- | --- |
+| `--memory-dir <MEMORY_DIR>` | required | Store directory, created when absent. |
+| `--embedder <EMBEDDER>` | `candle` | `candle`, `ollama`, or the test-only `mock` backend. |
+| `--embedding-url <EMBEDDING_URL>` | Ollama default `http://localhost:11434` | Used only by the Ollama backend. |
+| `--embedding-model <EMBEDDING_MODEL>` | `nomic-embed-text` | Candle Hugging Face model ID/alias or Ollama model name. |
+| `--embedding-dims <EMBEDDING_DIMS>` | `768` | Embedding dimensions. Must match the chosen model/store. |
+| `--http-port <HTTP_PORT>` | unset | Start the warm HTTP server on `127.0.0.1:<port>` alongside MCP. |
+| `--http-only` | false | Skip stdio MCP and keep only HTTP running. Requires `--http-port` for a useful process. |
+| `--turbo-quant` | false | Request TurboQuant candidate generation with exact `f32` reranking. The local `full` feature must be active for the bridge wiring to run. |
+| `--turbo-quant-bits <TURBO_QUANT_BITS>` | codec default `8` | Polar angle bits, used only with `--turbo-quant`. |
+| `--turbo-quant-projections <TURBO_QUANT_PROJECTIONS>` | codec default `16` | QJL projection count, used only with `--turbo-quant`. |
+| `--tool-profile <TOOL_PROFILE>` | `lean` | `stable`, `lean`, `standard`, `agent`, or `full`. Unknown values are rejected by typed CLI parsing before the store is opened. |
+| `-h`, `--help` | — | Print generated help. |
+
+The typed profile manifest in `src/profile.rs` supplies profile names, bounded
+allowlists, effect classes, and HTTP effect capabilities. Use `tools/list` when
+automating against a deployed binary.
+
+## Tool profiles
+
+### `lean` and `standard`
+
+These autonomous profiles expose exactly:
+
+- `sm_search_witnessed`
+- `sm_replay_search`
+- `sm_decide_assertion_authority`
+- `sm_decide_action_authority`
+
+They do not expose raw search, mutation, maintenance, import, or administration.
+
+### `agent`
+
+The daily coding-agent profile exposes 11 read-only tools:
+
+```text
+sm_decide_action_authority     sm_decide_assertion_authority
+sm_get_fact                    sm_get_fact_neighbors
+sm_get_search_receipt          sm_graph_path
+sm_list_namespaces             sm_replay_search
+sm_search_conversations        sm_search_witnessed
+sm_stats
+```
+
+It is read-only until a trusted authenticated authority issuer is injected. It
+excludes mutation, deletion, raw/unwitnessed search, imports, lifecycle
+administration, reconciliation, vacuuming, and re-embedding. Use `lean` for
+autonomous recall and authority decisions; use `full` for operator mutation.
+
+### `full`
+
+This is the operator profile. It exposes every tool registered by the compiled
+router, including mutating, destructive, experimental, and maintenance tools.
+Tool annotations describe read-only, idempotent, and destructive intent, but an
+MCP client must still enforce its own approval policy. Inspect `tools/list`
+before granting this profile to an autonomous process.
+
+## Witnessed retrieval, replay, and authority
+
+`sm_search_witnessed` is the safe autonomous retrieval surface. It bypasses the
+cache, requires a durable receipt, defaults to current state, and only returns
+persisted facts whose source provenance can be hydrated honestly. Its
+`retrieval_mode` is `hybrid`, `fts_only`, or `vector_only`.
+
+V35 complete replay is privacy-sensitive and opt-in. The default
+`replay_mode: "no_replay"` stores receipt digests and result evidence without
+retaining the query/filter inputs needed for complete replay. Set
+`replay_mode: "store_inputs"` on witnessed search only when that retention is
+acceptable, then call `sm_replay_search` with the original receipt ID.
+`sm_replay_search_receipt` remains a full-profile alternative that requires the
+caller to resupply the query and filters.
+
+Recall authority never implies permission to assert a result as true or to act
+on it. `sm_decide_assertion_authority` and `sm_decide_action_authority` make
+separate, fixed-purpose decisions from caller, subject, audience, namespace
+scope, and an optional delegation/elevation lease. They return a typed decision
+receipt and intentionally omit memory content; neither tool performs the
+assertion or action.
+
+## Trust architecture
+
+The semantic store and the trust ledger have different jobs:
+
+1. `memory.db`, FTS5, and vector/sparse indexes hold searchable memory.
+2. Before first compaction, `claim_ledger.jsonl` is the hash-chained trust
+   authority.
+3. After compaction, an atomically selected, digest-verified snapshot plus
+   retained JSONL tail represents the same ledger history. The snapshot is a
+   checkpoint, never an independent truth store.
+4. A process-local `ClaimTrustIndex` is derived from the verified snapshot and
+   tail (or the legacy JSONL) at startup. It is an acceleration structure and is
+   never persisted as authority.
+
+Search trust enrichment uses six quality states:
+
+| State | Meaning | Default proof debt |
+| --- | --- | --- |
+| `supported` | Recorded evidence supports the linked claim. | none |
+| `partially_supported` | Recorded evidence supports only part of it. | none in the current mapper |
+| `unsupported` | The judgment rejects support. | missing source basis |
+| `contradicted` | Contradictory evidence has been recorded. | missing source basis + missing reproduction |
+| `heuristic_only` | The judgment is heuristic rather than evidentiary. | missing source basis |
+| `persisted_unjudged` | The fact has no linked judgment, or claim integration is absent. | missing source basis only when a linked claim exists; no claim means no claim debt to score |
+
+`sm_search_proof_debt` exposes debt-aware retrieval and a budget gate;
+`sm_benchmark_trust` reports the distribution of the six states. Proof debt is
+an obligation signal, not a replacement for source inspection.
+
+If the legacy ledger, active manifest, snapshot, retained tail, or compaction
+receipt fails verification, the server disables claim trust enrichment and
+refuses ledger append/compaction. Ordinary semantic storage and search remain
+available. Results report trust enrichment as disabled where that path can
+surface it; corruption does not promote an unverified ledger or erase the
+semantic database.
+
+### Claim-ledger compaction
+
+`sm_compact_claim_ledger` is a destructive-annotated, full-profile,
+claim-integration tool. It defaults to a dry run:
+
+```json
+{
+  "dry_run": true,
+  "max_entries": 10000,
+  "max_bytes": 16777216,
+  "retain_tail_entries": 256,
+  "max_backups": 3
+}
+```
+
+No publication occurs unless a threshold is exceeded and `dry_run` is
+explicitly false. A real compaction writes and fsyncs a temporary generation
+containing `snapshot.json`, `tail.jsonl`, and `receipt.json`, renames that
+generation into place, then atomically replaces
+`claim_ledger.active_compaction.json`. That manifest rename is the publication
+boundary: startup ignores incomplete temporary generations and accepts only the
+manifest-selected generation after digest verification.
+
+## Search pipeline
+
+[![Search pipeline](docs/search-pipeline.svg)](docs/search-pipeline.svg)
+
+The production search path is implemented by `semantic-memory`:
+
+1. Embed or tokenize the query.
+2. Retrieve FTS5/BM25 and usearch vector candidates.
+3. When configured and represented by the active embedder, retrieve V36 sparse
+   dot-product candidates from SQLite.
+4. Fuse ranks with RRF and apply temporal/provenance policy.
+5. Filter superseded heads for the normal MCP search surfaces.
+6. Persist receipts and, for witnessed search, hydrate source provenance,
+   authority state, and optional claim-ledger trust.
+
+V36 sparse storage and ranking are inherited from `semantic-memory`; this MCP
+crate does not define a separate sparse feature or CLI switch. The default
+`SearchConfig` has `sparse_weight = 0`, so sparse retrieval is dormant unless a
+library-level configuration enables it. The active embedder must also provide a
+sparse representation, or explicit dense-to-sparse derivation must be enabled.
+
+Advanced full-profile tools can additionally route queries, explain ranking,
+traverse stored graph edges, detect contradictions, run factor-graph analysis,
+inspect topology/communities, and perform lifecycle or maintenance work. Those
+surfaces are not implied by the four-tool autonomous profile.
+
+## Cargo features
+
+These are the exact local features declared in `Cargo.toml`:
+
+| Feature | Default? | What it enables |
+| --- | --- | --- |
+| `default` | yes | `full` |
+| `full` | via default | Alias for `search`; also activates local `cfg(feature = "full")` wiring such as TurboQuant candidate selection. |
+| `search` | via `full` | The supported composed router build: usearch, Candle, provenance, temporal, multiscale, discord, decoder, subtraction, compression governor, routing, admin ops, late interaction, TurboQuant codec, RL routing, plus the local integration features below. |
+| `integration` | via `search` | Forwards `semantic-memory/integration`. |
+| `subgraph-pruning` | via `search` | Forwards `semantic-memory/subgraph-pruning` and enables `sm_subgraph_prune`. |
+| `candle-embedder` | via `search` | Forwards the in-process Candle backend. |
+| `claim-integration` | via `search` | Adds the optional `claim-ledger` dependency and claim/trust/compaction tools. |
+| `llm-parser` | via `search` | Adds the optional `llm-output-parser` dependency and parser tools. |
+| `orchestration` | via `search` | Adds `knowledge-runtime` and provenance/temporal orchestration tools. |
+| `hnsw` | no | Forwards the alternative `semantic-memory/hnsw` backend and enables compact/rebuild HNSW endpoint code where gated. |
+
+`cargo build --no-default-features --features search` compiles the composed
+search feature without setting the local `full` cfg. It is not a minimal tool
+surface. Builds assembled from narrower individual features are feature-gated
+development configurations, not the documented production default.
+
+## Production-wired and experimental surfaces
+
+Production-wired in the default build:
+
+- stdio MCP, runtime tool-profile filtering, SQLite/FTS5, usearch, Candle and
+  Ollama embedders;
+- witnessed retrieval, V35 opt-in replay, governed assertion/action decisions,
+  receipts, graph storage/traversal, claim-ledger verification and compaction;
+- the composed `semantic-memory` routing, provenance, temporal, decoder,
+  lifecycle, orchestration, parser, and admin capabilities exposed by the full
+  router.
+
+Opt-in, feature-gated, or operationally experimental:
+
+- the loopback HTTP server is an auxiliary API, not MCP and not authenticated;
+- `mock` embeddings are for tests;
+- `hnsw` is an optional alternative to the default usearch backend;
+- TurboQuant requires `--turbo-quant` and the local `full` cfg wiring;
+- LLM reranking, entity extraction, and community summaries call a local Ollama
+  service and are opt-in per operation;
+- V36 sparse retrieval is inherited and disabled by the default search weight;
+- broad maintenance, deletion, import, training-feedback, and lifecycle tools
+  are operator-only even when compiled.
+
+## HTTP sidecar
+
+With `--http-port`, the process binds only to `127.0.0.1`. Current routes are:
+
+```text
+GET  /health
+GET  /verify-integrity
+POST /search
+POST /search-routed
+POST /rerank
+POST /stats
+POST /add
+POST /record-outcome
+POST /discord
+POST /maintenance/check
+POST /maintenance/vacuum
+POST /maintenance/reembed
+POST /maintenance/reconcile
+POST /maintenance/rebuild-hnsw
+POST /maintenance/compact-hnsw
+```
+
+The HTTP sidecar applies the selected profile below transport. Lean, standard,
+and agent expose only `/health`; the explicit full operator profile exposes the
+authenticated non-health surface. All non-health requests require a valid bearer
+token. Mutation handlers without a trusted authority issuer fail closed. All
+requests still require loopback Host/Origin validation.
+
+## Agent integrations
+
+First-class packages live in [`integrations/`](integrations/):
+
+- [Hermes plugin](integrations/hermes/) — validates inputs and invokes the
+  current `hermes mcp add/list/test/configure` CLI workflow without reimplementing
+  any semantic-memory tools.
+- [Claude Code plugin](integrations/claude-plugin/) — manifest, plugin-scoped
+  MCP launcher, semantic-memory skill, and useful commands.
+- [Codex integration](integrations/codex/) — open Agent Skill layout plus stdio
+  MCP installation/config examples.
+- [Install/test matrix](integrations/README.md) — side-by-side setup and smoke
+  checks.
+
+## Security and privacy
+
+- Memory contents, sources, conversation messages, replay inputs, and claim
+  evidence may be sensitive. Protect the entire memory directory with OS-level
+  permissions and backups appropriate to its data classification.
+- Candle's model download contacts Hugging Face on first use. Ollama mode sends
+  text to the configured Ollama URL; a remote URL moves content off-host.
+- `store_inputs` retains query/filter material for complete replay. It is off by
+  default for privacy.
+- The claim ledger is tamper-evident, not encrypted. Verification detects
+  corruption; it does not stop a party with filesystem access from reading it.
+- The `full` profile and HTTP maintenance routes include mutation, permanent
+  deletion, model-feedback, import, vacuum, and rebuild operations. Grant them
+  only to an operator context with explicit approval controls.
+- `agent` is the recommended profile for trusted coding agents. It is read-only
+  until a trusted authority issuer is injected. Use `lean` for autonomous
+  read-only recall and authority decisions.
+- Do not place secrets in facts, sources, metadata, replay inputs, plugin config,
+  or command-line arguments. Process lists and logs may expose arguments.
+
+## Integration quick starts
 
 ### Hermes Agent
 
-Add to `~/.hermes/config.yaml`:
+Use the current CLI rather than hand-editing legacy YAML as the primary path:
 
-```yaml
-mcp_servers:
-  semantic_memory:
-    command: "semantic-memory-mcp"
-    args: ["--memory-dir", "/home/user/.local/share/semantic-memory"]
+```bash
+hermes mcp add semantic_memory \
+  --command semantic-memory-mcp \
+  --args --memory-dir "$HOME/.local/share/semantic-memory" --tool-profile agent
+hermes mcp list
+hermes mcp test semantic_memory
+hermes mcp configure semantic_memory
 ```
 
-### Claude Desktop
+`--args` consumes the remaining arguments, so it must come last. The configure
+step is interactive and controls which server-native tools Hermes exposes. The
+packaged Hermes plugin provides guarded wrappers for these commands; see its
+README.
 
-Add to `claude_desktop_config.json` (usually at
-`~/Library/Application Support/Claude/claude_desktop_config.json`
-on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
+### Claude Code
 
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "/home/user/.local/share/semantic-memory"]
-    }
-  }
-}
+Test the local plugin directly:
+
+```bash
+SEMANTIC_MEMORY_MCP_BIN="$(command -v semantic-memory-mcp)" \
+SEMANTIC_MEMORY_DIR="$HOME/.local/share/semantic-memory" \
+SEMANTIC_MEMORY_TOOL_PROFILE=agent \
+claude --plugin-dir ./integrations/claude-plugin
 ```
 
-### Cursor / Windsurf
+Inside Claude Code, run `/mcp`, then
+`/semantic-memory:semantic-memory-status`. Use `claude --debug --plugin-dir
+./integrations/claude-plugin` for startup diagnostics and `claude plugin
+validate ./integrations/claude-plugin` when supported by the installed Claude
+Code version.
 
-Add to your MCP settings (Settings → MCP):
+### Codex
 
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "/home/user/.local/share/semantic-memory"]
-    }
-  }
-}
+Install the stdio server with the CLI:
+
+```bash
+codex mcp add semantic_memory -- \
+  semantic-memory-mcp \
+  --memory-dir "$HOME/.local/share/semantic-memory" \
+  --tool-profile agent
+codex mcp list
 ```
 
-### Remote Ollama
+Copy or symlink `integrations/codex/.agents/skills/semantic-memory` into the
+repository's `.agents/skills/`, or keep the supplied structure at the project
+root. Codex discovers skills from `.agents/skills` between the working directory
+and repository root. See the Codex integration README for a TOML alternative.
 
-If you prefer Ollama on a different machine:
+## Development and validation
 
-```json
-{
-  "mcpServers": {
-    "semantic_memory": {
-      "command": "semantic-memory-mcp",
-      "args": [
-        "--memory-dir", "/home/user/.local/share/semantic-memory",
-        "--embedder", "ollama",
-        "--embedding-url", "http://192.168.1.50:11434",
-        "--embedding-model", "nomic-embed-text",
-        "--embedding-dims", "768"
-      ]
-    }
-  }
-}
+```bash
+cargo fmt --check
+cargo check
+cargo test
 ```
 
-## CLI options
+Integration asset validation is read-only:
 
+```bash
+python3 integrations/tests/validate_integrations.py
 ```
-semantic-memory-mcp --memory-dir <DIR> [OPTIONS]
-
-Options:
-  --memory-dir <DIR>         Path to the memory store directory (required, created if absent)
-  --embedder <BACKEND>       Embedding backend: candle (default), ollama, or mock
-  --embedding-url <URL>      Ollama server URL (only used with --embedder ollama, default: http://localhost:11434)
-  --embedding-model <NAME>   Embedding model name (default: nomic-embed-text)
-  --embedding-dims <N>       Embedding dimensions (default: 768)
-```
-
-`--memory-dir` is a directory path, not a SQLite file path. The
-SQLite database is created as `memory.db` inside this directory,
-alongside the usearch sidecar files (`.hnsw.data`, `.hnsw.graph`,
-`.hnsw.manifest.json`).
-
-### Embedder backends
-
-| Backend | Description | Requires |
-|---------|-------------|----------|
-| `candle` (default) | In-process pure-Rust ML (CPU-only). Downloads nomic-embed-text-v1.5 from HuggingFace on first use, cached after. | Nothing — just `cargo install` |
-| `ollama` | External Ollama server. Use if you already run Ollama or want GPU acceleration. | Ollama installed + model pulled |
-| `mock` | Deterministic hash-based embeddings for testing. | Nothing |
-
-## How search works
-
-[![Search Pipeline](docs/search-pipeline.svg)](docs/search-pipeline.svg)
-
-When the agent calls `sm_search`, the query flows through:
-
-1. **Embedding** — the query text is embedded by the configured backend
-   (Candle in-process by default, or Ollama if specified), producing a
-   768-dimensional vector.
-
-2. **Parallel retrieval** — two searches run simultaneously:
-   - **BM25 (FTS5)** — SQLite's full-text search ranks results by
-     keyword relevance using BM25 scoring.
-   - **Vector (usearch)** — the HNSW index finds the nearest neighbors
-     by cosine similarity to the query embedding.
-
-3. **Reciprocal Rank Fusion** — the two ranked lists are merged using
-   RRF: `score = 1/(k + bm25_rank) + 1/(k + vector_rank)`. This
-   doesn't require score calibration — it works off ranks alone,
-   which is why it's robust across different embedding models and
-   corpus sizes.
-
-4. **Optional advanced stages** — when `sm_search_with_routing` is
-   used, the query is profiled and additional stages may activate:
-   - **Routing** — decides whether to run the decoder, discord, or
-     graph expansion based on query characteristics.
-   - **Decoder** — detects contradictions in the results and computes
-     corrections via belief propagation.
-   - **Factor graph** — runs belief propagation over stored graph
-     edges to refine confidence scores using the knowledge graph's
-     structure.
-
-5. **Results + receipt** — returns ranked results with scores, source
-   types, and (optionally) a content-addressed receipt for audit.
-
-## Tools
-
-The server exposes 33 MCP tools in the default `lean` profile, 39 in
-`standard`, and 48 in `full`. Use `tools/list` as the source of
-truth for the available tool surface on your build.
-
-### Core tools (always available)
-
-#### sm_search
-
-Hybrid BM25 + vector + RRF semantic search over the knowledge base.
-By default, results targeted by `supersedes` graph edges are filtered
-when non-superseded alternatives exist. Queries that explicitly ask for
-stale, old, historical, or superseded facts keep those results available.
-
-```json
-{
-  "query": "rust async runtime tokio",
-  "top_k": 5,
-  "namespaces": ["general", "coding"]
-}
-```
-
-Returns ranked results with content, scores, and stable result IDs
-(`result_id` field) for downstream tool chaining (e.g., passing to
-`sm_graph_path` or `sm_set_provenance`).
-
-#### Search scoring
-
-`sm_search` returns the score fields needed to debug ranking: BM25,
-vector, recency, RRF, weights, and contribution percentages where the
-underlying store provides them. Superseded-result filtering is applied
-unless the query explicitly asks for stale, old, historical, or
-superseded facts.
-
-#### sm_add_fact
-
-Add a fact to the knowledge base. The fact is embedded by the configured
-backend (Candle by default) and indexed for both BM25 and vector search.
-
-```json
-{
-  "content": "Rust 1.75 stabilized async fn in traits",
-  "namespace": "rust-facts",
-  "source": "https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html"
-}
-```
-
-#### sm_supersede_fact
-
-Create a replacement fact and link it to an older stale fact with a
-durable entity edge using `relation: "supersedes"`. Use this for verified
-corrections so old facts remain auditable but no longer stand alone as
-unmarked stale context.
-
-```json
-{
-  "old_fact_id": "fact:a1b2c3d4-...",
-  "content": "The current verified fact as of 2026-06-21 is ...",
-  "namespace": "codex",
-  "source": "repo:/path/or/url",
-  "reason": "verified against current repository state"
-}
-```
-
-#### sm_ingest_document
-
-Ingest a longer document with automatic text chunking. Each chunk
-is embedded and indexed independently. Returns the document ID and
-chunk count.
-
-```json
-{
-  "title": "Tokio Tutorial",
-  "content": "Tokio is an asynchronous runtime for the Rust programming language...",
-  "namespace": "docs"
-}
-```
-
-#### sm_stats
-
-Get knowledge base statistics: fact count, chunk count, document
-count, session count, message count, graph edge count, database size,
-embedding model and dimensions.
-
-#### sm_graph_path
-
-Find the shortest path between two items in the knowledge graph.
-Traverses semantic, temporal, causal, entity, and stored graph
-edges. Returns the path as a list of node IDs with per-hop edge
-evidence (edge type, weight, metadata).
-
-```json
-{
-  "from_id": "fact:a1b2c3d4-...",
-  "to_id": "fact:e5f6g7h8-...",
-  "max_depth": 5
-}
-```
-
-#### sm_set_provenance
-
-Set evidence confidence for an item using the ConfidenceSemiring:
-confidence in [0.0, 1.0] with a support count of independent
-observations. Returns a provenance receipt.
-
-```json
-{
-  "item_id": "fact:a1b2c3d4-...",
-  "confidence": 0.92,
-  "support_count": 3
-}
-```
-
-#### sm_add_graph_edge
-
-Add a durable, typed graph edge between two nodes. Nodes use
-prefixed IDs (`fact:<uuid>`, `namespace:<name>`, `document:<id>`).
-Edge types: `semantic` (cosine_similarity), `temporal` (delta_secs),
-`causal` (confidence + evidence_ids), `entity` (relation name).
-Insertion is idempotent — same edge returns existing ID.
-
-```json
-{
-  "source": "fact:a1b2c3d4-...",
-  "target": "fact:e5f6g7h8-...",
-  "edge_type": "causal",
-  "confidence": 0.85,
-  "evidence_ids": ["fact:ev1-...", "fact:ev2-..."],
-  "weight": 1.0
-}
-```
-
-```json
-{
-  "source": "fact:a1b2c3d4-...",
-  "target": "namespace:rust-facts",
-  "edge_type": "entity",
-  "relation": "belongs_to",
-  "weight": 1.0
-}
-```
-
-#### sm_list_graph_edges
-
-List graph edges for a specific node (as source or target), or all
-stored graph edges if no node_id is provided. Returns non-invalidated
-edges only.
-
-```json
-{ "node_id": "fact:a1b2c3d4-..." }
-```
-
-#### sm_invalidate_graph_edge
-
-Invalidate a stored graph edge by ID. Append-only — the edge row is
-never deleted, only marked invalidated with a reason.
-
-```json
-{
-  "edge_id": "edge:abc123-...",
-  "reason": "superseded by newer evidence"
-}
-```
-
-### Advanced tools (full feature)
-
-#### sm_route_query
-
-Profile a query and get an adaptive routing decision. Determines
-which retrieval stages (BM25, vector, rerank, graph, decoder,
-discord) should be activated for this query. Useful for
-understanding why certain stages fire or don't.
-
-```json
-{ "query": "what changed between v0.4 and v0.5" }
-```
-
-#### sm_search_with_routing
-
-Adaptive search: profiles the query, routes to appropriate stages,
-and applies factor graph belief propagation if the decoder stage is
-activated. Returns results with routing decision, decoder status,
-factor graph analysis, and matryoshka multi-resolution routing
-payload.
-
-```json
-{
-  "query": "what changed between v0.4 and v0.5",
-  "top_k": 10,
-  "contradictions": [["fact:old-claim-...", "fact:new-claim-..."]]
-}
-```
-
-#### sm_decoder_analyze
-
-Detect contradictions and inconsistencies in search results. Runs
-syndrome detection, computes corrections, and applies belief
-propagation to refine confidence scores. Operates on caller-supplied
-results — does not require graph edges from the store.
-
-```json
-{
-  "results": [
-    ["fact:item-a-...", 0.9],
-    ["fact:item-b-...", 0.7]
-  ],
-  "contradictions": [["fact:item-a-...", "fact:item-b-..."]]
-}
-```
-
-#### sm_discord_search
-
-Second-order retrieval: find items related to your search results
-through the knowledge graph, but NOT themselves direct hits. Loads
-graph edges from the store automatically — caller supplies only the
-direct result IDs.
-
-```json
-{
-  "direct_result_ids": [
-    "fact:a1b2c3d4-...",
-    "fact:e5f6g7h8-..."
-  ]
-}
-```
-
-Returns items connected to your direct hits via graph edges, scored by
-relationship strength. Useful for discovering adjacent knowledge you
-didn't think to search for.
-
-#### sm_run_lifecycle
-
-Autonomous memory health check. Runs in one call:
-- Syndrome detection on the supplied items
-- Correction computation
-- Subtraction candidate identification (items safe to forget/compress)
-- Compression recompression trigger check
-- Topological analysis (Betti numbers + voids)
-- Community detection with contradiction scanning
-- Subgraph pruning assessment
-- Compression governor quantization assessment
-
-```json
-{
-  "item_ids": [
-    "fact:a1b2c3d4-...",
-    "fact:e5f6g7h8-...",
-    "fact:i9j0k1l2-..."
-  ]
-}
-```
-
-#### sm_factor_graph
-
-Run factor graph belief propagation on heterogeneous graph edges
-stored in the knowledge base. Models all 4 edge types (semantic,
-temporal, causal, entity) as factors in a single probabilistic
-reasoning framework. Loads edges from the store automatically — caller
-supplies only node initial beliefs and optional config overrides.
-
-```json
-{
-  "nodes": [
-    { "item_id": "fact:a1b2-...", "initial_belief": 0.8 },
-    { "item_id": "fact:e5f6-...", "initial_belief": 0.6 },
-    { "item_id": "fact:i9j0-...", "initial_belief": 0.3 }
-  ],
-  "semantic_weight": 0.35,
-  "causal_weight": 0.30,
-  "max_iterations": 100
-}
-```
-
-Returns unified confidence scores after message propagation
-converges, with per-edge-type factor counts and convergence metadata.
-
-#### sm_topology
-
-Find topological voids in the knowledge graph. Computes Betti numbers
-(connected components and independent cycles) and detects structural
-gaps. Loads edges from the store automatically.
-
-Returns Betti numbers, void descriptions with nearby items and
-suggested connections, and a gap report summary.
-
-#### sm_community
-
-Detect communities in the knowledge graph using a Leiden-inspired
-algorithm. Loads edges from the store automatically. Returns community
-assignments with member lists, optional within-community contradiction
-scans, and community-aware compression recommendations.
-
-```json
-{
-  "resolution": 1.0,
-  "seed": 42,
-  "contradictions": [["fact:a1b2-...", "fact:e5f6-..."]]
-}
-```
-
-## Tool chaining
-
-The tools are designed to chain. The `result_id` field returned by
-`sm_search` is a stable prefixed node ID (`fact:<uuid>`,
-`chunk:<uuid>`, etc.) that can be passed directly to downstream tools:
-
-```
-sm_search("tokio async runtime")
-  → results[0].result_id = "fact:abc123-..."
-
-sm_graph_path("fact:abc123-...", "fact:def456-...")
-  → path through the knowledge graph
-
-sm_set_provenance("fact:abc123-...", confidence=0.9, support_count=2)
-  → confidence recorded
-
-sm_add_graph_edge("fact:abc123-...", "namespace:rust", "entity", relation="belongs_to")
-  → edge added
-
-sm_discord_search(["fact:abc123-...", "fact:def456-..."])
-  → second-order neighbors discovered
-```
-
-## Feature flags
-
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `full` | yes | All features — the full 48-tool surface + Candle embedder + late-interaction + TurboQuant codec. This is the default build. |
-| `search` | no | Core search only (BM25 + vector + RRF, add facts, stats, graph path, graph edges, provenance) + Candle embedder. Minimal build with no external codec deps. |
-| `candle-embedder` | yes (via full/search) | In-process pure-Rust Candle embedder (CPU-only, no Ollama required). |
-
-Build with `--no-default-features --features search` for the minimal
-profile. The `full` feature enables all semantic-memory sub-features
-(provenance, temporal, decoder, discord, routing, subtraction,
-compression governor, integration, topology, community) plus the
-Candle embedder.
-
-The `full` feature does NOT pull in the `turbo-quant-codec` or
-`poly-kv-pool` features — those are experimental codec integrations
-that remain opt-in in the underlying library and are not needed for
-the MCP server's functionality.
-
-## Architecture
-
-[![Architecture](docs/architecture.svg)](docs/architecture.svg)
-
-```
-semantic-memory-mcp (MCP stdio server, rmcp SDK)
-  └── semantic-memory (Rust library, 0.5.8)
-        ├── Candle embedder (pure-Rust, CPU-only, default — no Ollama required)
-        ├── SQLite (authoritative storage, FTS5, WAL)
-        ├── usearch 2.25 (vector sidecar, default backend)
-        ├── Provenance (Boolean, Tropical, Probability, Confidence semirings)
-        ├── Temporal weight (age + supersession + support + contradiction)
-        ├── Decoder (syndromes + corrections + belief propagation)
-        ├── Subtraction (lawful forgetting + invariant verification)
-        ├── Compression governor (importance-driven quantization level decisions)
-        ├── Routing (query profiling + adaptive stage selection)
-        ├── Discord (second-order graph-neighbor retrieval)
-        ├── Stored graph edges (durable, typed, append-only with invalidation)
-        ├── Factor graph (unified probabilistic reasoning over all edge types)
-        ├── Topology (Betti numbers, void detection)
-        ├── Community detection (Leiden-inspired, contradiction-aware)
-        └── Integration (cross-feature wiring: routing → decoder → subtraction → compression → discord → provenance)
-```
-
-The server uses rmcp's `#[tool_router]` macro to auto-generate JSON
-Schema for each tool's parameters. All tool handlers return
-`Result<String, ErrorData>` — errors are protocol-level MCP errors,
-not string-encoded error messages.
-
-Graph edges and factor inputs are loaded from the store automatically
-— the caller never needs to supply edge arrays. This is a design
-decision: the store is the single source of truth for graph state.
-
-## Underlying crate
-
-This server wraps the [semantic-memory](https://crates.io/crates/semantic-memory)
-crate (0.5.8), which provides the storage engine, search pipeline,
-and all feature modules. See the
-[semantic-memory crate documentation](https://github.com/RecursiveIntell/Libraries/tree/main/semantic-memory)
-for the full library API, including direct usage without an MCP
-server.
-
-### Dependency crates
-
-The underlying library depends on several crates from the same
-stack, all published on crates.io:
-
-- [stack-ids](https://crates.io/crates/stack-ids) — typed IDs, scopes,
-  trace context, BLAKE3 content digests.
-- [bitemporal-runtime](https://crates.io/crates/bitemporal-runtime) —
-  bitemporal truth primitives (valid_time / recorded_time tracking,
-  append-supersede, as-of queries).
-- [boundary-compiler](https://crates.io/crates/boundary-compiler) —
-  RFC 8785 JSON Canonicalization (JCS) with strict duplicate-key
-  rejection.
-- [forge-memory-bridge](https://crates.io/crates/forge-memory-bridge)
-  — transformation layer from Forge export envelopes to memory import
-  batches.
-
-## Scope and limits
-
-- The default embedder (Candle) downloads nomic-embed-text-v1.5 from
-  HuggingFace on first use (~550MB, cached after). No Ollama required.
-  If you prefer Ollama, pass `--embedder ollama`.
-- The Candle embedder is CPU-only and pure-Rust (no C++ runtime, no
-  heap corruption risk). It processes embeddings one at a time to keep
-  memory bounded. First-run latency is higher (model download + load);
-  subsequent runs load from cache in ~1-2 seconds.
-- The `search`-only build (no `full` feature) does not expose advanced
-  tools (routing, decoder, discord, lifecycle, factor graph, topology,
-  community). The `full` feature is the default.
-- Graph-based tools (discord, factor graph, topology, community) load
-  edges from the store. With zero stored edges, these tools return
-  empty results — they are not broken, they have no graph to work
-  with. Add edges with `sm_add_graph_edge` to give them something to
-  traverse.
-- The `decoder_executed` field in `sm_search_with_routing` is
-  currently always `false` — the routing decision is computed and
-  reported, but the decoder does not yet re-rank search results in the
-  live search path. The factor graph analysis runs independently when
-  the decoder stage is planned. This is a known gap, not a bug.
-- All state is local. There is no sync, no federation, no network
-  calls beyond the one-time HuggingFace model download (cached after).
-  This is a feature, not a limitation — local-first is the design goal.
 
 ## License
 
-Apache-2.0
+Apache-2.0. See [LICENSE](LICENSE).
 
-## Links
+## Upstream documentation
 
-- [semantic-memory crate](https://crates.io/crates/semantic-memory)
-- [GitHub repository](https://github.com/RecursiveIntell/Libraries/tree/main/semantic-memory-mcp)
-- [MCP Protocol](https://modelcontextprotocol.io/)
-- [rmcp Rust SDK](https://github.com/modelcontextprotocol/rust-sdk)
-- [Ollama](https://ollama.ai/)
+- [Model Context Protocol](https://modelcontextprotocol.io/)
+- [Hermes plugins](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins)
+- [Hermes MCP CLI](https://hermes-agent.nousresearch.com/docs/reference/cli-commands#hermes-mcp)
+- [Claude Code plugins](https://code.claude.com/docs/en/plugins)
+- [Claude Code plugin reference](https://code.claude.com/docs/en/plugins-reference)
+- [Codex MCP](https://developers.openai.com/codex/mcp)
+- [Codex Agent Skills](https://developers.openai.com/codex/skills)
