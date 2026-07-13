@@ -82,8 +82,8 @@ impl SemanticMemoryServer {
             bridge: Arc::new(bridge),
             tool_router: Self::tool_router(),
         };
-        debug_assert_eq!(server.tool_router.list_all().len(), 13);
-        eprintln!("Tool profile: stable (13 compile-time tools visible)");
+        debug_assert_eq!(server.tool_router.list_all().len(), 10);
+        eprintln!("Tool profile: stable (10 read-only compile-time tools visible)");
         server
     }
 
@@ -1056,9 +1056,7 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[tool(
-        description = "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest."
-    )]
+    #[allow(dead_code)]
     fn sm_add_fact(
         &self,
         Parameters(AddFactParams {
@@ -1072,199 +1070,23 @@ impl SemanticMemoryServer {
             idempotency_key,
         }): Parameters<AddFactParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let store = &self.bridge.store;
-
-        // Admission gate: classify sensitivity
-        let sens = sensitivity.unwrap_or_else(|| "internal".to_string());
-        let kind = memory_kind.unwrap_or_else(|| "durable_fact".to_string());
-
-        // Block confidential/restricted content from autocapture
-        if sens == "confidential" || sens == "restricted" {
-            return Err(ErrorData::invalid_params(
-                format!("Admission gate BLOCKED: sensitivity='{sens}' content cannot be stored without explicit user request"),
-                None,
-            ));
-        }
-
-        // Block ephemeral_inference from becoming durable without evidence
-        let explicit_evidence: Vec<String> = evidence_refs
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|reference| !reference.trim().is_empty())
-            .cloned()
-            .collect();
-        if kind == "ephemeral_inference" && explicit_evidence.is_empty() {
-            return Err(ErrorData::invalid_params(
-                "Admission gate BLOCKED: ephemeral_inference requires evidence_refs to promote to durable".to_string(),
-                None,
-            ));
-        }
-
-        let mut authority_evidence = explicit_evidence;
-        if let Some(source_ref) = source.as_ref().filter(|value| !value.trim().is_empty()) {
-            if !authority_evidence.contains(source_ref) {
-                authority_evidence.push(source_ref.clone());
-            }
-        }
-
-        // Build metadata JSON with typed memory fields
-        let mut meta = serde_json::Map::new();
-        meta.insert("memory_kind".to_string(), serde_json::json!(kind));
-        meta.insert("sensitivity".to_string(), serde_json::json!(sens));
-        if let Some(refs) = evidence_refs {
-            meta.insert("evidence_refs".to_string(), serde_json::json!(refs));
-        }
-        let metadata = serde_json::Value::Object(meta);
-
-        let caller_idempotency_key = match idempotency_key {
-            Some(key) if !key.trim().is_empty() => key,
-            Some(_) => {
-                return Err(ErrorData::invalid_params(
-                    "idempotency_key must not be blank".to_string(),
-                    None,
-                ))
-            }
-            None => format!("mcp-sm-add-fact:{}", uuid::Uuid::new_v4()),
-        };
-        let origin = if authority_evidence.is_empty() {
-            semantic_memory::OriginAuthorityLabelV1::operator_system(
-                "principal:semantic-memory-mcp",
-                "caller:sm_add_fact",
-            )
-        } else {
-            semantic_memory::OriginAuthorityLabelV1::new(
-                semantic_memory::OriginClassV1::ExternalEvidence,
-                "principal:semantic-memory-mcp",
-                "caller:sm_add_fact",
-                format!(
-                    "blake3:{}",
-                    blake3::hash(authority_evidence.join("\n").as_bytes()).to_hex()
-                ),
-                semantic_memory::OriginRiskV1::Medium,
-                semantic_memory::AuthorityScopesV1 {
-                    recall: semantic_memory::AuthorityScopeV1::Universal,
-                    assertion: semantic_memory::AuthorityScopeV1::Denied,
-                    action: semantic_memory::AuthorityScopeV1::Denied,
-                },
-                semantic_memory::ElevationRequirementV1::ExplicitOperatorApproval,
-                None,
-                semantic_memory::RevocationStatusV1::Active,
-                vec!["principal:semantic-memory-mcp".into()],
-            )
-            .map_err(|error| {
-                ErrorData::internal_error(format!("invalid origin label: {error}"), None)
-            })?
-        };
-        let permit = if authority_evidence.is_empty() {
-            semantic_memory::AuthorityPermit::operator_system(
-                "principal:semantic-memory-mcp",
-                "caller:sm_add_fact",
-                semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
-            )
-        } else {
-            semantic_memory::AuthorityPermit::with_evidence(
-                "principal:semantic-memory-mcp",
-                "caller:sm_add_fact",
-                semantic_memory::AuthorityPermit::APPEND_CAPABILITY,
-                authority_evidence,
-            )
-        }
-        .with_origin(origin);
-
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.authority().append_with_metadata(
-                permit,
-                caller_idempotency_key,
-                namespace.clone(),
-                content.clone(),
-                source.clone(),
-                Some(metadata),
-            ))
-        });
-
-        match result {
-            Ok(receipt) => {
-                let id = receipt.affected_ids.first().cloned().ok_or_else(|| {
-                    ErrorData::internal_error(
-                        "authority append returned no affected fact id".to_string(),
-                        None,
-                    )
-                })?;
-                // D4: best-effort auto-link to an existing claim with matching
-                // normalized content. Never fails the whole operation.
-                self.auto_link_fact_to_claims(&id, &content);
-                // Optional entity extraction — best-effort, never fails the whole operation.
-                if extract_entities == Some(true) {
-                    let prompt = format!(
-                        "Extract entities from this text as JSON. Format: {{\"entities\": [{{\"name\": \"...\", \"type\": \"person|project|concept|tool|version|path\"}}]}}\nText: {content}\nJSON:"
-                    );
-                    let body = serde_json::json!({
-                        "model": "granite4.1:3b",
-                        "prompt": prompt,
-                        "stream": false,
-                        "options": {"temperature": 0, "num_predict": 200}
-                    });
-                    if let Ok(resp) = reqwest::blocking::Client::new()
-                        .post("http://127.0.0.1:11434/api/generate")
-                        .json(&body)
-                        .send()
-                    {
-                        if let Ok(v) = resp.json::<serde_json::Value>() {
-                            if let Some(response_str) = v.get("response").and_then(|r| r.as_str()) {
-                                // Use boundary compiler for robust JSON parsing with duplicate-key rejection
-                                let parsed_result =
-                                    boundary_compiler::parse_with_dup_check(response_str.trim());
-                                if let Ok(parsed) = parsed_result {
-                                    if let Some(entities) =
-                                        parsed.get("entities").and_then(|e| e.as_array())
-                                    {
-                                        let fact_node = format!("fact:{id}");
-                                        for entity in entities {
-                                            if let Some(name) =
-                                                entity.get("name").and_then(|n| n.as_str())
-                                            {
-                                                let entity_node = format!("entity:{name}");
-                                                let _ = tokio::task::block_in_place(|| {
-                                                    Handle::current()
-                                                        .block_on(store.add_graph_edge(
-                                                        &fact_node,
-                                                        &entity_node,
-                                                        semantic_memory::GraphEdgeType::Entity {
-                                                            relation: "mentions".to_string(),
-                                                        },
-                                                        1.0,
-                                                        None,
-                                                    ))
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                json_to_output(&serde_json::json!({
-                    "ok": true,
-                    "fact_id": id,
-                    "namespace": namespace,
-                    "receipt": mcp_receipt("sm_add_fact"),
-                    "message": "Fact added successfully",
-                }))
-            }
-            Err(e) => Err(ErrorData::internal_error(
-                format!("Error adding fact: {e}"),
-                None,
-            )),
-        }
+        let _ = (
+            content,
+            namespace,
+            source,
+            extract_entities,
+            memory_kind,
+            sensitivity,
+            evidence_refs,
+            idempotency_key,
+        );
+        Err(ErrorData::invalid_params(
+            "Admission gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler".to_string(),
+            None,
+        ))
     }
 
-    #[tool(
-        description = "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting outdated facts. Returns new fact id and edge id.",
-        annotations(idempotent_hint = true)
-    )]
+    #[allow(dead_code)]
     fn sm_supersede_fact(
         &self,
         Parameters(SupersedeFactParams {
@@ -1329,10 +1151,7 @@ impl SemanticMemoryServer {
         }))
     }
 
-    #[tool(
-        description = "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. Idempotent — same edge returns existing ID.",
-        annotations(idempotent_hint = true)
-    )]
+    #[allow(dead_code)]
     fn sm_add_graph_edge(
         &self,
         Parameters(params): Parameters<AddGraphEdgeParams>,
@@ -1482,9 +1301,6 @@ mod tests {
             "sm_get_fact_neighbors",
             "sm_graph_path",
             "sm_search_conversations",
-            "sm_add_fact",
-            "sm_supersede_fact",
-            "sm_add_graph_edge",
             "sm_decide_assertion_authority",
             "sm_decide_action_authority",
         ]
@@ -1503,6 +1319,9 @@ mod tests {
             );
         }
         for forbidden in [
+            "sm_add_fact",
+            "sm_supersede_fact",
+            "sm_add_graph_edge",
             "sm_delete_fact",
             "sm_route_query",
             "sm_create_claim",

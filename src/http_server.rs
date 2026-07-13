@@ -23,19 +23,56 @@ use tokio::task::block_in_place;
 
 use crate::bridge::MemoryBridge;
 
+const MAX_TOP_K: u64 = 100;
+const MAX_DIRECT_IDS: usize = 100;
+const MAX_RERANK_RESULTS: usize = 50;
+const MAX_RERANK_CONTENT_BYTES: usize = 2_000;
+const RERANK_MODEL: &str = "granite4.1:3b";
+
+fn truncate_rerank_content(content: &str) -> &str {
+    if content.len() <= MAX_RERANK_CONTENT_BYTES {
+        return content;
+    }
+    let mut end = MAX_RERANK_CONTENT_BYTES;
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    &content[..end]
+}
+
+fn rerank_candidate_limit(top_k: usize) -> usize {
+    top_k.saturating_mul(2).min(MAX_RERANK_RESULTS)
+}
+
 /// Call Ollama to rate each result's relevance to the query (1-5) and sort descending.
 /// Returns a new vec with a `rerank_score` field added to each result object.
 fn rerank_results(
     query: &str,
     results: &[serde_json::Value],
     model: &str,
-) -> Vec<serde_json::Value> {
-    let client = reqwest::blocking::Client::new();
-    let mut scored: Vec<(f64, serde_json::Value)> = results
+) -> (Vec<serde_json::Value>, &'static str) {
+    rerank_results_at(query, results, model, "http://127.0.0.1:11434")
+}
+
+fn rerank_results_at(
+    query: &str,
+    results: &[serde_json::Value],
+    model: &str,
+    base_url: &str,
+) -> (Vec<serde_json::Value>, &'static str) {
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return (results.to_vec(), "degraded"),
+    };
+    let scored: Result<Vec<(f64, serde_json::Value)>, ()> = results
         .iter()
-        .map(|r| {
+        .map(|r| -> Result<(f64, serde_json::Value), ()> {
             let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let truncated: String = content.chars().take(500).collect();
+            let truncated = truncate_rerank_content(content);
             let prompt = format!(
                 "Rate the relevance of this document to the query on a scale of 1-5. Reply with ONLY the number.\nQuery: {query}\nDocument: {truncated}\nRating:"
             );
@@ -45,33 +82,43 @@ fn rerank_results(
                 "stream": false,
                 "options": {"temperature": 0, "num_predict": 1}
             });
-            let rating = client
-                .post("http://127.0.0.1:11434/api/generate")
+            let response = client
+                .post(format!("{base_url}/api/generate"))
                 .json(&body)
                 .send()
-                .ok()
-                .and_then(|resp| resp.json::<serde_json::Value>().ok())
-                .and_then(|v| {
-                    v.get("response")
-                        .and_then(|r| r.as_str())
-                        .and_then(|s| s.trim().chars().next())
-                        .and_then(|c| c.to_digit(10))
-                        .map(|d| d as f64)
-                })
-                .unwrap_or(1.0);
-            (rating, r.clone())
+                .map_err(|_| ())?
+                .error_for_status()
+                .map_err(|_| ())?
+                .json::<serde_json::Value>()
+                .map_err(|_| ())?;
+            let rating = response
+                .get("response")
+                .and_then(|r| r.as_str())
+                .and_then(|s| s.trim().chars().next())
+                .and_then(|c| c.to_digit(10))
+                .map(|d| d as f64)
+                /* parsed values must be an actual 1–5 rating */
+                .filter(|rating| (1.0..=5.0).contains(rating))
+                .ok_or(())?;
+            Ok((rating, r.clone()))
         })
-        .collect();
+        .collect::<Result<_, _>>();
+    let Ok(mut scored) = scored else {
+        return (results.to_vec(), "degraded");
+    };
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored
-        .into_iter()
-        .map(|(score, mut r)| {
-            if let Some(obj) = r.as_object_mut() {
-                obj.insert("rerank_score".to_string(), serde_json::json!(score));
-            }
-            r
-        })
-        .collect()
+    (
+        scored
+            .into_iter()
+            .map(|(score, mut r)| {
+                if let Some(obj) = r.as_object_mut() {
+                    obj.insert("rerank_score".to_string(), serde_json::json!(score));
+                }
+                r
+            })
+            .collect::<Vec<_>>(),
+        "applied",
+    )
 }
 
 pub struct HttpServerHandle {
@@ -241,6 +288,10 @@ fn handle_connection(
             "200 OK",
             serde_json::json!({"ok": true, "service": "semantic-memory-mcp"}),
         ),
+        (_, _) if !profile.allows_http_route() => (
+            "404 Not Found",
+            serde_json::json!({"error": "not found", "path": path}),
+        ),
         ("POST", "/search") => handle_search(&body_str, &bridge, &handle),
         ("POST", "/search-routed") => handle_search_routed(&body_str, &bridge, &handle),
         ("POST", "/rerank") => handle_rerank(&body_str),
@@ -336,7 +387,10 @@ fn handle_search(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let top_k = match bounded_top_k(&params, 5) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
@@ -357,7 +411,11 @@ fn handle_search(
         .as_ref()
         .map(|v| v.iter().map(|s| s.as_str()).collect());
     // Fetch top_k * 2 candidates when reranking so the LLM has a richer pool to sort.
-    let fetch_k = if do_rerank { top_k * 2 } else { top_k };
+    let fetch_k = if do_rerank {
+        rerank_candidate_limit(top_k)
+    } else {
+        top_k
+    };
     let result = block_in_place(|| {
         handle.block_on(store.search(query, Some(fetch_k), ns_slice.as_deref(), None))
     });
@@ -384,14 +442,13 @@ fn handle_search(
                 })
                 .collect();
 
-            let final_results: Vec<serde_json::Value> = if do_rerank && !json_results.is_empty() {
-                rerank_results(query, &json_results, "granite4.1:3b")
-                    .into_iter()
-                    .take(top_k)
-                    .collect()
-            } else {
-                json_results
-            };
+            let (final_results, rerank_status): (Vec<serde_json::Value>, &str) =
+                if do_rerank && !json_results.is_empty() {
+                    let (results, status) = rerank_results(query, &json_results, RERANK_MODEL);
+                    (results.into_iter().take(top_k).collect(), status)
+                } else {
+                    (json_results, "not_applicable")
+                };
 
             let count = final_results.len();
             let provenance = serde_json::json!({
@@ -399,13 +456,15 @@ fn handle_search(
                     "bm25": true,
                     "vector": true,
                     "late_interaction": false,
-                    "rerank": do_rerank,
+                    "rerank": rerank_status == "applied",
                 },
+                "rerank_requested": do_rerank,
                 "result_count": count,
                 "view": "semantic",
-                "widening_occurred": null, // TODO: derive from execution receipt
+                "widening_occurred": null,
                 "widening_reason": null,
-                "verification_status": "verified",
+                "verification_status": "unverified",
+                "proof_reference": null,
             });
             (
                 "200 OK",
@@ -415,7 +474,8 @@ fn handle_search(
                     "top_k": top_k,
                     "results": final_results,
                     "count": count,
-                    "reranked": do_rerank,
+                    "reranked": rerank_status == "applied",
+                    "rerank_status": rerank_status,
                     "provenance": provenance,
                 }),
             )
@@ -454,7 +514,10 @@ fn handle_search_routed(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let base_top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(12) as usize;
+    let base_top_k = match bounded_top_k(&params, 12) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
     let query_class = params
         .get("query_class")
         .and_then(|v| v.as_str())
@@ -774,7 +837,8 @@ fn handle_search_routed(
                 "query_class": query_class,
                 "widening_occurred": null, // TODO: derive from execution receipt
                 "widening_reason": null,
-                "verification_status": "verified",
+                "verification_status": "unverified",
+                "proof_reference": null,
             });
 
             (
@@ -860,10 +924,6 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let model = params
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("granite4.1:3b");
     let results = match params.get("results").and_then(|v| v.as_array()) {
         Some(r) => r.clone(),
         None => {
@@ -880,8 +940,24 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
             serde_json::json!({"ok": false, "error": "missing 'query' field"}),
         );
     }
+    if results.len() > MAX_RERANK_RESULTS {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("results exceeds maximum of {MAX_RERANK_RESULTS}")}),
+        );
+    }
+    if results.iter().any(|r| {
+        r.get("content")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.len() > MAX_RERANK_CONTENT_BYTES)
+    }) {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("result content exceeds maximum of {MAX_RERANK_CONTENT_BYTES} bytes")}),
+        );
+    }
 
-    let reranked = rerank_results(query, &results, model);
+    let (reranked, rerank_status) = rerank_results(query, &results, RERANK_MODEL);
     let count = reranked.len();
     (
         "200 OK",
@@ -889,6 +965,8 @@ fn handle_rerank(body: &str) -> (&'static str, serde_json::Value) {
             "ok": true,
             "results": reranked,
             "count": count,
+            "rerank_status": rerank_status,
+            "model": RERANK_MODEL,
         }),
     )
 }
@@ -1060,14 +1138,24 @@ fn handle_discord(
     };
 
     let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let top_k = params.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+    let top_k = match bounded_top_k(&params, 5) {
+        Ok(k) => k,
+        Err(response) => return response,
+    };
 
     // Get direct_ids from params, or run a search to get them
     let direct_ids: Vec<String> = match params.get("direct_ids").and_then(|v| v.as_array()) {
-        Some(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
+        Some(arr) => {
+            if arr.len() > MAX_DIRECT_IDS || arr.iter().any(|v| !v.is_string()) {
+                return (
+                    "400 Bad Request",
+                    serde_json::json!({"ok": false, "error": format!("direct_ids must contain at most {MAX_DIRECT_IDS} strings")}),
+                );
+            }
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        }
         None => {
             // Need a query to search
             if query.is_empty() {
@@ -1166,6 +1254,28 @@ fn handle_discord(
             "direct_ids": direct_ids,
         }),
     )
+}
+
+fn bounded_top_k(
+    params: &serde_json::Value,
+    default: usize,
+) -> Result<usize, (&'static str, serde_json::Value)> {
+    let Some(value) = params.get("top_k") else {
+        return Ok(default);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err((
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": "top_k must be an unsigned integer"}),
+        ));
+    };
+    if value == 0 || value > MAX_TOP_K {
+        return Err((
+            "400 Bad Request",
+            serde_json::json!({"ok": false, "error": format!("top_k must be between 1 and {MAX_TOP_K}")}),
+        ));
+    }
+    Ok(value as usize)
 }
 
 // ---------------------------------------------------------------------------
@@ -1440,5 +1550,35 @@ mod connection_slot_tests {
         });
         assert!(result.is_err());
         assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn rerank_failure_preserves_original_order_and_scores() {
+        let results = vec![
+            serde_json::json!({"result_id": "fact:first", "score": 0.9, "content": "first"}),
+            serde_json::json!({"result_id": "fact:second", "score": 0.8, "content": "second"}),
+        ];
+        let (reranked, status) =
+            rerank_results_at("query", &results, RERANK_MODEL, "http://127.0.0.1:0");
+
+        assert_eq!(status, "degraded");
+        assert_eq!(reranked, results);
+        assert!(reranked
+            .iter()
+            .all(|result| result.get("rerank_score").is_none()));
+    }
+
+    #[test]
+    fn rerank_limits_use_utf8_bytes_and_bound_search_candidates() {
+        let content = "🦀".repeat(MAX_RERANK_CONTENT_BYTES);
+        let truncated = truncate_rerank_content(&content);
+        assert!(truncated.len() <= MAX_RERANK_CONTENT_BYTES);
+        assert!(truncated.is_char_boundary(truncated.len()));
+
+        assert_eq!(rerank_candidate_limit(1), 2);
+        assert_eq!(
+            rerank_candidate_limit(MAX_TOP_K as usize),
+            MAX_RERANK_RESULTS
+        );
     }
 }

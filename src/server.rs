@@ -1221,6 +1221,18 @@ fn json_to_output(value: &serde_json::Value) -> Result<Json<StructuredOutput>, E
     Ok(structured_output(value.clone()))
 }
 
+const MAX_PARSER_INPUT_BYTES: usize = 64 * 1024;
+
+fn ensure_parser_input(text: &str) -> Result<(), ErrorData> {
+    if text.len() > MAX_PARSER_INPUT_BYTES {
+        return Err(ErrorData::invalid_params(
+            format!("parser input exceeds maximum of {MAX_PARSER_INPUT_BYTES} bytes"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Generate a receipt ID for MCP mutation operations.
 /// Format: `mcp-receipt:<tool_name>:<uuid>` — traceable to the tool that produced it.
 fn mcp_receipt_id(tool_name: &str) -> String {
@@ -1339,10 +1351,19 @@ impl SemanticMemoryServer {
                     .iter()
                     .take(requested_k)
                     .map(|r| {
+                        let namespace = match &r.source {
+                            semantic_memory::SearchSource::Fact { namespace, .. } => {
+                                namespace.clone()
+                            }
+                            _ => String::new(),
+                        };
                         serde_json::json!({
                             "result_id": r.source.result_id(),
                             "content": r.content,
+                            "namespace": namespace,
                             "source": format!("{:?}", r.source),
+                            "trust": "unverified",
+                            "retrieval_receipt_ref": null,
                             "score": r.score,
                             "bm25_rank": r.bm25_rank,
                             "vector_rank": r.vector_rank,
@@ -3700,6 +3721,14 @@ impl SemanticMemoryServer {
             community_aware_compression, community_contradiction_scan, detect_communities,
         };
 
+        if params.summarize.unwrap_or(false) {
+            return Err(ErrorData::invalid_params(
+                "community LLM summaries are unavailable: unreceipted model transformations are disabled"
+                    .to_string(),
+                None,
+            ));
+        }
+
         // MCP-001: Load edges from the store, not from caller-supplied params.
         let edges = load_stored_edge_pairs(&self.bridge.store)?;
 
@@ -3714,60 +3743,21 @@ impl SemanticMemoryServer {
         let importance_scores = params.importance_scores.unwrap_or_default();
         let compression = community_aware_compression(&communities, &importance_scores);
 
-        let summarize = params.summarize.unwrap_or(false);
-        let store = &self.bridge.store;
         let communities_json: Vec<serde_json::Value> = communities
             .iter()
             .map(|c| {
-                let summary: Option<String> = if summarize && !c.members.is_empty() {
-                    let member_texts: Vec<String> = c
-                        .members
-                        .iter()
-                        .filter_map(|mid| {
-                            let bare = mid.strip_prefix("fact:").unwrap_or(mid);
-                            tokio::task::block_in_place(|| {
-                                Handle::current().block_on(store.get_fact(bare))
-                            })
-                            .ok()
-                            .flatten()
-                            .map(|f| f.content)
-                        })
-                        .collect();
-                    if !member_texts.is_empty() {
-                        let combined = member_texts.join("\n---\n");
-                        let prompt = format!(
-                            "Summarize these related facts in 1-2 sentences:\n{combined}\nSummary:"
-                        );
-                        let body = serde_json::json!({
-                            "model": "granite4.1:3b",
-                            "prompt": prompt,
-                            "stream": false,
-                            "options": {"temperature": 0, "num_predict": 100}
-                        });
-                        reqwest::blocking::Client::new()
-                            .post("http://127.0.0.1:11434/api/generate")
-                            .json(&body)
-                            .send()
-                            .ok()
-                            .and_then(|resp| resp.json::<serde_json::Value>().ok())
-                            .and_then(|v| {
-                                v.get("response")
-                                    .and_then(|r| r.as_str())
-                                    .map(|s| s.trim().to_string())
-                            })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
                 serde_json::json!({
                     "id": c.id,
                     "members": c.members,
                     "level": c.level,
                     "parent": c.parent,
                     "member_count": c.members.len(),
-                    "summary": summary,
+                    "summary": null,
+                    "summary_transformation": {
+                        "status": "not_requested",
+                        "canonical": false,
+                        "graph_mutated": false,
+                    },
                 })
             })
             .collect();
@@ -3872,72 +3862,19 @@ impl SemanticMemoryServer {
     }
 
     #[tool(
-        description = "Forget a single fact by id through the governed dependency-closure path. Scrubs canonical content and derived FTS/vector/graph/cache/export/replay surfaces while retaining a content-free tombstone receipt. Prefer sm_supersede_fact for corrections.",
+        description = "Forget a single fact by id through the governed dependency-closure path. This build fails closed because no trusted authenticated authority issuer is injected into the MCP composition root.",
         annotations(destructive_hint = true)
     )]
     fn sm_delete_fact(
         &self,
         Parameters(DeleteFactParams { fact_id }): Parameters<DeleteFactParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let bare = fact_id
-            .strip_prefix("fact:")
-            .unwrap_or(&fact_id)
-            .to_string();
-        let store = &self.bridge.store;
-        let fact = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.get_fact_raw_compat(&bare))
-        })
-        .map_err(|e| ErrorData::internal_error(format!("delete_fact lookup error: {e}"), None))?
-        .ok_or_else(|| ErrorData::invalid_params(format!("fact not found: fact:{bare}"), None))?;
-        let origin_record = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.authority().get_origin_authority(&bare))
-        })
-        .map_err(|e| {
-            ErrorData::internal_error(format!("delete_fact origin lookup error: {e}"), None)
-        })?
-        .ok_or_else(|| {
-            ErrorData::invalid_params(
-                format!("fact has no governed origin authority: fact:{bare}"),
-                None,
-            )
-        })?;
-        let resource_principal = origin_record.label.origin_principal;
-        let permit = semantic_memory::AuthorityPermit::operator_system(
-            resource_principal.clone(),
-            "caller:sm_delete_fact",
-            semantic_memory::AuthorityPermit::FORGET_CAPABILITY,
-        )
-        .with_origin(semantic_memory::OriginAuthorityLabelV1::operator_system(
-            &resource_principal,
-            "caller:sm_delete_fact",
-        ));
-        let request = semantic_memory::ForgettingClosureRequestV1::new(
-            vec![bare.clone()],
-            fact.namespace,
-            "explicit MCP fact-forgetting request",
-            4096,
-        );
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.authority().forget(
-                permit,
-                format!("mcp-sm-delete-fact:{}", uuid::Uuid::new_v4()),
-                request,
-            ))
-        });
-        match result {
-            Ok(receipt) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "deleted": false,
-                "forgotten": true,
-                "fact_id": format!("fact:{bare}"),
-                "forgetting_receipt": receipt,
-                "message": "Fact forgotten through governed dependency closure",
-            })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("delete_fact forgetting error: {e}"),
-                None,
-            )),
-        }
+        let _ = fact_id;
+        Err(ErrorData::invalid_params(
+            "Forgetting gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler"
+                .to_string(),
+            None,
+        ))
     }
 
     #[tool(
@@ -3948,31 +3885,12 @@ impl SemanticMemoryServer {
         &self,
         Parameters(DeleteNamespaceParams { namespace }): Parameters<DeleteNamespaceParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let store = &self.bridge.store;
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.delete_namespace(&namespace))
-        });
-        match result {
-            Ok(r) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "receipt": mcp_receipt("sm_delete_namespace"),
-                "namespace": namespace,
-                "deleted": {
-                    "facts": r.facts,
-                    "documents": r.documents,
-                    "chunks": r.chunks,
-                    "messages": r.messages,
-                    "sessions": r.sessions,
-                    "episodes": r.episodes,
-                    "projection_rows": r.projection_rows,
-                },
-                "message": "Namespace permanently deleted",
-            })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("delete_namespace error: {e}"),
-                None,
-            )),
-        }
+        let _ = namespace;
+        Err(ErrorData::invalid_params(
+            "Forgetting gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler"
+                .to_string(),
+            None,
+        ))
     }
 
     #[tool(
@@ -5066,6 +4984,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(ParseJsonParams { raw_output }): Parameters<ParseJsonParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&raw_output)?;
         match llm_output_parser::parse_json::<serde_json::Value>(&raw_output) {
             Ok(value) => Ok(structured_output(value)),
             Err(e) => Ok(json_to_output(&serde_json::json!({
@@ -5085,6 +5004,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(ParseJsonValueParams { raw_output }): Parameters<ParseJsonValueParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&raw_output)?;
         match llm_output_parser::parse_json_value(&raw_output) {
             Ok(value) => Ok(structured_output(value)),
             Err(e) => Ok(json_to_output(&serde_json::json!({
@@ -5103,6 +5023,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(StripThinkTagsParams { text }): Parameters<StripThinkTagsParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&text)?;
         Ok(structured_output(serde_json::json!({
             "ok": true,
             "text": llm_output_parser::strip_think_tags(&text),
@@ -5118,6 +5039,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(RepairJsonParams { json_string }): Parameters<RepairJsonParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&json_string)?;
         match llm_output_parser::try_repair_json(&json_string) {
             Some(repaired) => Ok(structured_output(serde_json::json!({
                 "ok": true,
@@ -5139,6 +5061,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(ParseStringListParams { raw_output }): Parameters<ParseStringListParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&raw_output)?;
         match llm_output_parser::parse_string_list(&raw_output) {
             Ok(list) => Ok(structured_output(serde_json::json!({
                 "ok": true,
@@ -5163,6 +5086,7 @@ impl SemanticMemoryServer {
             options,
         }): Parameters<ParseChoiceParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&raw_output)?;
         let opt_refs: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
         match llm_output_parser::parse_choice(&raw_output, &opt_refs) {
             Ok(choice) => Ok(structured_output(serde_json::json!({
@@ -5186,6 +5110,7 @@ impl SemanticMemoryServer {
         &self,
         Parameters(ParseNumberParams { raw_output }): Parameters<ParseNumberParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
+        ensure_parser_input(&raw_output)?;
         match llm_output_parser::parse_number::<f64>(&raw_output) {
             Ok(n) if n.is_finite() => Ok(structured_output(serde_json::json!({
                 "ok": true,
@@ -5415,6 +5340,65 @@ mod correctness_contract_tests {
         assert!(value["error"]
             .as_str()
             .is_some_and(|error| error.contains("finite")));
+    }
+
+    #[cfg(feature = "llm-parser")]
+    #[test]
+    fn parser_tools_reject_oversized_input_before_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SemanticMemoryServer::new(
+            MemoryBridge::open(BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+            })
+            .unwrap(),
+            "full",
+        );
+
+        let error = match server.sm_parse_json(Parameters(ParseJsonParams {
+            raw_output: "x".repeat(MAX_PARSER_INPUT_BYTES + 1),
+        })) {
+            Ok(_) => panic!("oversized parser input must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn community_summarization_fails_closed_without_transform_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SemanticMemoryServer::new(
+            MemoryBridge::open(BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+            })
+            .unwrap(),
+            "full",
+        );
+
+        let error = match server.sm_community(Parameters(CommunityParams {
+            resolution: None,
+            seed: None,
+            contradictions: None,
+            importance_scores: None,
+            summarize: Some(true),
+        })) {
+            Ok(_) => panic!("unreceipted model transformation must be unavailable"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("unreceipted model transformations"));
     }
 
     #[test]
@@ -5866,7 +5850,44 @@ mod correctness_contract_tests {
     }
 
     #[test]
-    fn sm_delete_fact_uses_governed_forgetting_closure() {
+    fn sm_delete_fact_fails_closed_without_trusted_authority_issuer() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = SemanticMemoryServer::new(
+            MemoryBridge::open(BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+            })
+            .unwrap(),
+            "full",
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let result = runtime.block_on(async {
+            tokio::task::block_in_place(|| {
+                server.sm_delete_fact(Parameters(DeleteFactParams {
+                    fact_id: "fact:untrusted-delete".into(),
+                }))
+            })
+        });
+        let error = match result {
+            Ok(_) => panic!("delete must fail without injected trusted authority"),
+            Err(error) => error,
+        };
+        assert!(error
+            .message
+            .contains("trusted authenticated authority issuer"));
+    }
+
+    // Archived pre-hardening expectation: deletion used to mint operator authority
+    // inside the handler. Keep the fixture source excluded until a trusted composition
+    // root injects an opaque authority capability.
+    #[cfg(any())]
+    fn archived_sm_delete_fact_uses_governed_forgetting_closure() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
             MemoryBridge::open(BridgeConfig {

@@ -103,17 +103,16 @@ They do not expose raw search, mutation, maintenance, import, or administration.
 The daily coding-agent profile exposes:
 
 ```text
-sm_add_fact                    sm_add_graph_edge
 sm_decide_action_authority     sm_decide_assertion_authority
 sm_get_fact                    sm_get_fact_neighbors
 sm_get_search_receipt          sm_graph_path
 sm_list_namespaces             sm_replay_search
 sm_search_conversations        sm_search_witnessed
-sm_set_provenance              sm_stats
-sm_supersede_fact              sm_update_fact
+sm_stats
 ```
 
-It deliberately excludes deletion, raw/unwitnessed search, imports, lifecycle
+It is read-only until a trusted authenticated authority issuer is injected. It
+excludes mutation, deletion, raw/unwitnessed search, imports, lifecycle
 administration, reconciliation, vacuuming, and re-embedding.
 
 ### `full`
@@ -299,9 +298,10 @@ POST /maintenance/rebuild-hnsw
 POST /maintenance/compact-hnsw
 ```
 
-The HTTP sidecar applies the selected profile's effect capabilities. Lean and
-standard credentials cannot mutate; agent permits bounded writes; maintenance
-routes require full. All requests still require loopback Host/Origin and bearer
+The HTTP sidecar applies the selected profile below transport. Lean, standard,
+and agent expose only `/health`; the explicit full operator profile exposes the
+authenticated non-health surface. Mutation handlers without a trusted authority
+issuer fail closed. All requests still require loopback Host/Origin and bearer
 authentication.
 
 ## Agent integrations

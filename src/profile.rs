@@ -45,14 +45,6 @@ const LEAN: &[ToolGrant] = &[
 
 const AGENT: &[ToolGrant] = &[
     ToolGrant {
-        name: "sm_add_fact",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
-        name: "sm_add_graph_edge",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
         name: "sm_decide_action_authority",
         effect: EffectClass::Read,
     },
@@ -93,20 +85,8 @@ const AGENT: &[ToolGrant] = &[
         effect: EffectClass::Read,
     },
     ToolGrant {
-        name: "sm_set_provenance",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
         name: "sm_stats",
         effect: EffectClass::Read,
-    },
-    ToolGrant {
-        name: "sm_supersede_fact",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
-        name: "sm_update_fact",
-        effect: EffectClass::Write,
     },
 ];
 
@@ -144,18 +124,6 @@ const STABLE: &[ToolGrant] = &[
         effect: EffectClass::Read,
     },
     ToolGrant {
-        name: "sm_add_fact",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
-        name: "sm_supersede_fact",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
-        name: "sm_add_graph_edge",
-        effect: EffectClass::Write,
-    },
-    ToolGrant {
         name: "sm_decide_assertion_authority",
         effect: EffectClass::Read,
     },
@@ -176,10 +144,16 @@ impl ToolProfile {
     }
 
     pub fn allows_http_write(self) -> bool {
-        matches!(self, Self::Agent | Self::Full)
+        matches!(self, Self::Full)
     }
 
     pub fn allows_http_maintenance(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// HTTP has no implicit privilege escalation: only the full operator
+    /// profile exposes its non-health transport surface.
+    pub fn allows_http_route(self) -> bool {
         matches!(self, Self::Full)
     }
 }

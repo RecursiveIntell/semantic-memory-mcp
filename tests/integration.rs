@@ -128,14 +128,12 @@ fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
 
 #[cfg(feature = "full")]
 #[test]
-fn agent_profile_exposes_bounded_daily_memory_surface() {
+fn agent_profile_is_bounded_read_only_until_trusted_issuer_is_injected() {
     let dir = tempfile::tempdir().unwrap();
     let server = SemanticMemoryServer::new(open_bridge(dir.path()), "agent");
     assert_eq!(
         server.exposed_tool_names(),
         vec![
-            "sm_add_fact",
-            "sm_add_graph_edge",
             "sm_decide_action_authority",
             "sm_decide_assertion_authority",
             "sm_get_fact",
@@ -146,13 +144,15 @@ fn agent_profile_exposes_bounded_daily_memory_surface() {
             "sm_replay_search",
             "sm_search_conversations",
             "sm_search_witnessed",
-            "sm_set_provenance",
             "sm_stats",
-            "sm_supersede_fact",
-            "sm_update_fact",
         ]
     );
     for forbidden in [
+        "sm_add_fact",
+        "sm_add_graph_edge",
+        "sm_set_provenance",
+        "sm_supersede_fact",
+        "sm_update_fact",
         "sm_delete_fact",
         "sm_delete_namespace",
         "sm_import_envelope",
@@ -419,7 +419,10 @@ mod http_server_tests {
 
     /// Start the HTTP server on a random port and return the port.
     /// Returns (port, runtime) — the runtime must stay alive while making requests.
-    fn start_http(bridge: MemoryBridge) -> (u16, tokio::runtime::Runtime) {
+    fn start_http_with_profile(
+        bridge: MemoryBridge,
+        profile: semantic_memory_mcp::profile::ToolProfile,
+    ) -> (u16, tokio::runtime::Runtime) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -439,7 +442,7 @@ mod http_server_tests {
                 "test-token",
                 bridge,
                 handle,
-                semantic_memory_mcp::profile::ToolProfile::Full,
+                profile,
             )
             .expect("bind HTTP test server");
         });
@@ -447,6 +450,10 @@ mod http_server_tests {
         // Give the server a moment to bind
         std::thread::sleep(std::time::Duration::from_millis(100));
         (port, rt)
+    }
+
+    fn start_http(bridge: MemoryBridge) -> (u16, tokio::runtime::Runtime) {
+        start_http_with_profile(bridge, semantic_memory_mcp::profile::ToolProfile::Full)
     }
 
     fn http_get(port: u16, path: &str) -> (String, String) {
@@ -624,6 +631,55 @@ mod http_server_tests {
         );
         let json: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(json["ok"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn lean_http_exposes_only_safe_manifest_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let (port, _rt) =
+            start_http_with_profile(bridge, semantic_memory_mcp::profile::ToolProfile::Lean);
+
+        for (method, path, body) in [
+            ("POST", "/search", r#"{"query":"x"}"#),
+            ("POST", "/search-routed", r#"{"query":"x"}"#),
+            ("POST", "/rerank", r#"{"query":"x","results":[]}"#),
+            ("GET", "/verify-integrity", ""),
+            ("POST", "/discord", r#"{"query":"x"}"#),
+            ("POST", "/add", r#"{}"#),
+            ("POST", "/maintenance/check", "{}"),
+        ] {
+            let (response, _) = if method == "GET" {
+                http_get(port, path)
+            } else {
+                http_post(port, path, body)
+            };
+            assert!(
+                response.contains("404 Not Found"),
+                "{method} {path}: {response}"
+            );
+        }
+        assert!(http_get(port, "/health").0.contains("200 OK"));
+    }
+
+    #[test]
+    fn http_search_rejects_unbounded_top_k_and_does_not_claim_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(dir.path());
+        let (port, _rt) = start_http(bridge);
+
+        let (response, _) = http_post(
+            port,
+            "/search",
+            r#"{"query":"x","top_k":18446744073709551615}"#,
+        );
+        assert!(response.contains("400 Bad Request"), "{response}");
+        assert!(http_get(port, "/health").0.contains("200 OK"));
+
+        let (_, body) = http_post(port, "/search", r#"{"query":"x"}"#);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_ne!(json["provenance"]["verification_status"], "verified");
+        assert!(json["provenance"]["proof_reference"].is_null());
     }
 
     #[test]
