@@ -34,6 +34,9 @@ from typing import Optional
 
 DEFAULT_PORT = 17540
 DEFAULT_HOST = "127.0.0.1"
+# Bound legacy Content-Length frames so a malformed stdio peer cannot force
+# unbounded buffering before the relay forwards a complete JSON-RPC message.
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024
 
 
 class Framing:
@@ -81,6 +84,12 @@ def parse_content_length_stream(data: bytes, pos: int) -> Optional[tuple[bytes, 
                 raise ValueError("invalid Content-Length header") from exc
     if content_length is None:
         raise ValueError("missing Content-Length header")
+    if content_length < 0:
+        raise ValueError("Content-Length must not be negative")
+    if content_length > MAX_CONTENT_LENGTH:
+        raise ValueError(
+            f"Content-Length exceeds maximum frame size ({MAX_CONTENT_LENGTH} bytes)"
+        )
     body_start = end + 4
     body_end = body_start + content_length
     if body_end > len(data):
