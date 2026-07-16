@@ -219,10 +219,8 @@ checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 name = "bitemporal-runtime"
 version = "0.1.0"
 dependencies = [
- "boundary-compiler",
  "chrono",
  "serde",
- "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
@@ -301,7 +299,6 @@ name = "boundary-compiler"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "ryu-js",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -486,6 +483,7 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -540,15 +538,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "cobs"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
-dependencies = [
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1129,18 +1118,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
-name = "embedded-io"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
-
-[[package]]
-name = "embedded-io"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
-
-[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1237,18 +1214,14 @@ checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fib-quant"
-version = "0.1.0-beta.4"
+version = "0.1.0-alpha.1"
 dependencies = [
  "blake3",
- "cc",
- "gpu-backend",
  "half",
  "nalgebra 0.33.3",
- "postcard",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rand_distr 0.4.3",
- "rayon",
  "serde",
  "serde_json",
  "statrs 0.17.1",
@@ -1315,7 +1288,6 @@ dependencies = [
  "semantic-memory-forge",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "stack-ids",
  "thiserror 2.0.18",
  "uuid",
@@ -1634,15 +1606,6 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
-]
-
-[[package]]
-name = "gpu-backend"
-version = "0.1.0-alpha.2"
-dependencies = [
- "blake3",
- "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2920,18 +2883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "postcard"
-version = "1.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
-dependencies = [
- "cobs",
- "embedded-io 0.4.0",
- "embedded-io 0.6.1",
- "serde",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3627,12 +3578,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "ryu-js"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
-
-[[package]]
 name = "safe-transmute"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3736,12 +3681,10 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scr-runtime-compression"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "chrono",
  "fib-quant",
  "quant-governor",
  "serde",
- "serde_json",
  "thiserror 1.0.69",
  "turbo-quant",
 ]
