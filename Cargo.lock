@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "claim-ledger"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "hex",
@@ -3720,7 +3720,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory"
-version = "0.5.10"
+version = "0.5.13"
 dependencies = [
  "bitemporal-runtime",
  "blake3",
@@ -3771,7 +3771,7 @@ dependencies = [
 
 [[package]]
 name = "semantic-memory-mcp"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4035,7 +4035,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stack-ids"
-version = "0.1.1"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "chrono",

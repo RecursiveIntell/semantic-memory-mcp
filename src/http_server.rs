@@ -27,6 +27,7 @@ const MAX_TOP_K: u64 = 100;
 const MAX_DIRECT_IDS: usize = 100;
 const MAX_RERANK_RESULTS: usize = 50;
 const MAX_RERANK_CONTENT_BYTES: usize = 2_000;
+const MAX_GRAPH_EDGES_PER_TOOL_CALL: usize = 20_000;
 const RERANK_MODEL: &str = "granite4.1:3b";
 
 fn truncate_rerank_content(content: &str) -> &str {
@@ -328,7 +329,16 @@ fn handle_connection(
         ),
     };
 
-    let response_str = serde_json::to_string(&response).unwrap_or_default();
+    let response_str = match serde_json::to_string(&response) {
+        Ok(value) => value,
+        Err(error) => {
+            let fallback = format!(
+                "{{\"ok\":false,\"error\":\"failed to serialize response: {}\"}}",
+                error
+            );
+            fallback
+        }
+    };
     let response_bytes = response_str.as_bytes();
     let http_response = format!(
         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -525,10 +535,18 @@ fn handle_search_routed(
     let namespaces: Option<Vec<String>> = params
         .get("namespaces")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let contradictions: Vec<(String, String)> = params
-        .get("contradictions")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    let contradictions: Vec<(String, String)> = match params.get("contradictions") {
+        Some(raw) => match serde_json::from_value(raw.clone()) {
+            Ok(list) => list,
+            Err(error) => {
+                return (
+                    "400 Bad Request",
+                    serde_json::json!({"ok": false, "error": format!("invalid contradictions: {error}")}),
+                );
+            }
+        },
+        None => Vec::new(),
+    };
     let group_by_community = params
         .get("group_by_community")
         .and_then(|v| v.as_bool())
@@ -639,8 +657,9 @@ fn handle_search_routed(
                         factors_from_edges, FactorGraph, FactorGraphConfig,
                     };
 
-                    let graph_edges =
-                        block_in_place(|| handle.block_on(store.list_all_graph_edges()));
+                    let graph_edges = block_in_place(|| {
+                        handle.block_on(store.list_all_graph_edges_with_limit(MAX_GRAPH_EDGES_PER_TOOL_CALL))
+                    });
 
                     if let Ok(edges) = graph_edges {
                         let raw_edges: Vec<(
@@ -882,7 +901,7 @@ fn handle_search_routed(
 fn handle_stats(bridge: &MemoryBridge, handle: &Handle) -> (&'static str, serde_json::Value) {
     let store = &bridge.store;
     let core = block_in_place(|| handle.block_on(store.stats()));
-    let graph = block_in_place(|| handle.block_on(store.list_all_graph_edges()));
+    let graph = block_in_place(|| handle.block_on(store.count_graph_edges()));
     let core_health = match &core {
         Ok(_) => serde_json::json!({"health":"healthy","error":null}),
         Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
@@ -892,7 +911,7 @@ fn handle_stats(bridge: &MemoryBridge, handle: &Handle) -> (&'static str, serde_
         Err(e) => serde_json::json!({"health":"error","error":e.to_string()}),
     };
     let stats = core.ok();
-    let graph_edges = graph.ok().map(|edges| edges.len());
+    let graph_edges = graph.ok();
     let ok = stats.is_some() && graph_edges.is_some();
     (
         if ok {
