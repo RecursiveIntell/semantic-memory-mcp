@@ -367,6 +367,9 @@ pub struct ListGraphEdgesParams {
     /// Node ID to list edges for. If omitted, lists all edges.
     #[serde(default)]
     pub node_id: Option<String>,
+    /// Maximum edges returned. Hard capped by the tool rail.
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 /// Parameters for sm_invalidate_graph_edge
@@ -718,7 +721,7 @@ pub struct SearchAsOfParams {
     pub as_of_date: String,
     /// Maximum number of results (default: 5).
     #[serde(default)]
-    pub top_k: Option<usize>,
+    pub top_k: Option<u32>,
     /// Optional namespace filter.
     pub namespace: Option<String>,
 }

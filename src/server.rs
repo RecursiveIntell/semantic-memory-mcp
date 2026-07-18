@@ -18,6 +18,19 @@ use tokio::runtime::Handle;
 
 static WITNESS_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const ROUTING_POLICY_PERSIST_BATCH: usize = 10;
+const MAX_SEARCH_TOP_K: usize = 50;
+const DEFAULT_SEARCH_TOP_K: usize = 5;
+const MAX_SEARCH_FETCH_K: usize = 256;
+const MAX_QUERY_COUNT: usize = 50;
+const MAX_GRAPH_NEIGHBORHOOD_NODES: usize = 200;
+const MAX_GRAPH_EDGES_PER_TOOL_CALL: usize = 20_000;
+const MAX_GRAPH_EDGES_FOR_TOOL: usize = 2_000;
+const MAX_LIST_LIMIT: usize = 200;
+const MAX_GRAPH_PATH_DEPTH: usize = 64;
+const MAX_LIST_OFFSET: usize = 10_000;
+const MAX_FACTOR_GRAPH_ITERATIONS: usize = 500;
+const MAX_SUBGRAPH_PRUNE: usize = 200;
+const MAX_PROJECTION_LIMIT: usize = 500;
 
 #[derive(Default)]
 struct RoutingPolicyBatchState {
@@ -37,6 +50,79 @@ fn classify_benchmark_search<T, E: std::fmt::Display>(
         Ok(value) => BenchmarkSearchOutcome::Success(value),
         Err(error) => BenchmarkSearchOutcome::Failed(error.to_string()),
     }
+}
+
+fn sanitize_top_k(top_k: Option<u32>, default: usize) -> usize {
+    match top_k {
+        Some(raw) if raw > 0 => (raw as usize).min(MAX_SEARCH_TOP_K),
+        _ => default,
+    }
+}
+
+fn search_request_k(top_k: Option<u32>, allow_superseded: bool) -> (usize, usize) {
+    let requested = sanitize_top_k(top_k, DEFAULT_SEARCH_TOP_K);
+    let expanded = if allow_superseded {
+        requested
+    } else {
+        (requested * 4).max(20).min(MAX_SEARCH_FETCH_K)
+    };
+    (requested, expanded)
+}
+
+fn list_query_count(query_count: Option<u32>) -> usize {
+    (query_count.unwrap_or(10).max(1).min(MAX_QUERY_COUNT as u32)) as usize
+}
+
+fn load_graph_edges_with_limit(
+    store: &semantic_memory::MemoryStore,
+    limit: usize,
+) -> Result<Vec<semantic_memory::StoredGraphEdge>, ErrorData> {
+    tokio::task::block_in_place(|| {
+        Handle::current().block_on(store.list_all_graph_edges_with_limit(limit))
+    })
+    .map_err(|error| ErrorData::internal_error(format!("Failed to load graph edges: {error}"), None))
+}
+
+fn sanitize_list_limit(limit: Option<u32>, default: usize) -> usize {
+    (limit.unwrap_or(default as u32).max(1).min(MAX_LIST_LIMIT as u32)) as usize
+}
+
+fn sanitize_graph_edge_list_limit(limit: Option<u32>) -> usize {
+    let max = MAX_GRAPH_EDGES_FOR_TOOL.max(1);
+    limit
+        .unwrap_or(MAX_GRAPH_EDGES_FOR_TOOL as u32)
+        .max(1)
+        .min(max as u32) as usize
+}
+
+fn sanitize_graph_depth(max_depth: Option<u32>) -> usize {
+    max_depth
+        .unwrap_or(5)
+        .min(MAX_GRAPH_PATH_DEPTH as u32) as usize
+}
+
+fn sanitize_offset(offset: Option<u32>) -> usize {
+    offset.unwrap_or(0).min(MAX_LIST_OFFSET as u32) as usize
+}
+
+fn sanitize_factor_graph_iterations(defaults: usize, requested: Option<u32>) -> usize {
+    requested
+        .unwrap_or(defaults as u32)
+        .max(1)
+        .min(MAX_FACTOR_GRAPH_ITERATIONS as u32) as usize
+}
+
+fn sanitize_subgraph_prune_count(max_prune: Option<u32>) -> usize {
+    max_prune
+        .unwrap_or(5)
+        .min(MAX_SUBGRAPH_PRUNE as u32) as usize
+}
+
+fn sanitize_projection_limit(limit: Option<u32>) -> usize {
+    limit
+        .unwrap_or(10)
+        .max(1)
+        .min(MAX_PROJECTION_LIMIT as u32) as usize
 }
 
 // Re-export the specific parameter types we use in tool signatures.
@@ -762,8 +848,9 @@ impl SemanticMemoryServer {
             tool_profile,
             true,
         )
-        .unwrap_or_else(|_| {
-            panic!("unknown tool profile must be rejected by typed CLI parsing before store open")
+        .unwrap_or_else(|error| {
+            eprintln!("Tool profile parse failed, defaulting to lean: {error}");
+            crate::profile::ToolProfile::Lean
         });
         Self::from_profile(bridge, profile)
     }
@@ -951,11 +1038,7 @@ impl SemanticMemoryServer {
 fn load_stored_edge_refs(
     store: &semantic_memory::MemoryStore,
 ) -> Result<Vec<semantic_memory::discord::GraphEdgeRef>, ErrorData> {
-    let edges =
-        tokio::task::block_in_place(|| Handle::current().block_on(store.list_all_graph_edges()))
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None)
-            })?;
+    let edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
     let refs = edges
         .iter()
         .map(|edge| {
@@ -988,11 +1071,7 @@ fn load_stored_edge_refs(
 fn load_stored_factor_edges(
     store: &semantic_memory::MemoryStore,
 ) -> Result<Vec<FactorEdgeTuple>, ErrorData> {
-    let edges =
-        tokio::task::block_in_place(|| Handle::current().block_on(store.list_all_graph_edges()))
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None)
-            })?;
+    let edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
     let raw = edges
         .iter()
         .map(|edge| {
@@ -1019,11 +1098,7 @@ fn load_stored_factor_edges(
 fn load_stored_edge_pairs(
     store: &semantic_memory::MemoryStore,
 ) -> Result<Vec<(String, String)>, ErrorData> {
-    let edges =
-        tokio::task::block_in_place(|| Handle::current().block_on(store.list_all_graph_edges()))
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None)
-            })?;
+    let edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
     let pairs = edges
         .iter()
         .map(|edge| (edge.source.clone(), edge.target.clone()))
@@ -1045,7 +1120,7 @@ fn load_neighborhood_edge_pairs(
         Handle::current().block_on(store.list_graph_edges_for_neighborhood(
             seed_ids.to_vec(),
             2,
-            200,
+            MAX_GRAPH_NEIGHBORHOOD_NODES,
         ))
     })
     .map_err(|e| {
@@ -1070,7 +1145,7 @@ fn load_neighborhood_edge_refs(
         Handle::current().block_on(store.list_graph_edges_for_neighborhood(
             seed_ids.to_vec(),
             2,
-            200,
+            MAX_GRAPH_NEIGHBORHOOD_NODES,
         ))
     })
     .map_err(|e| {
@@ -1123,7 +1198,7 @@ fn load_neighborhood_factor_edges(
         Handle::current().block_on(store.list_graph_edges_for_neighborhood(
             seed_ids.to_vec(),
             2,
-            200,
+            MAX_GRAPH_NEIGHBORHOOD_NODES,
         ))
     })
     .map_err(|e| {
@@ -1155,11 +1230,29 @@ fn load_neighborhood_factor_edges(
 fn load_superseded_targets(
     store: &semantic_memory::MemoryStore,
 ) -> Result<HashSet<String>, ErrorData> {
-    let edges =
-        tokio::task::block_in_place(|| Handle::current().block_on(store.list_all_graph_edges()))
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None)
-            })?;
+    load_superseded_targets_for_ids(store, &[])
+}
+
+fn load_superseded_targets_for_ids(
+    store: &semantic_memory::MemoryStore,
+    seed_ids: &[String],
+) -> Result<HashSet<String>, ErrorData> {
+    let edges: Vec<semantic_memory::StoredGraphEdge> = if seed_ids.is_empty() {
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.list_all_graph_edges_with_limit(
+                MAX_GRAPH_EDGES_PER_TOOL_CALL,
+            ))
+        })
+    } else {
+        tokio::task::block_in_place(|| {
+            Handle::current().block_on(store.list_graph_edges_for_neighborhood(
+                seed_ids.to_vec(),
+                2,
+                MAX_GRAPH_NEIGHBORHOOD_NODES,
+            ))
+        })
+    }
+    .map_err(|e| ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None))?;
     let mut targets = HashSet::new();
     for edge in edges {
         let parsed_type = edge
@@ -1201,7 +1294,7 @@ fn build_projection_query(params: ProjectionQueryParams) -> semantic_memory::Pro
         repo_id: params.repo_id,
     };
 
-    let limit = params.limit.unwrap_or(10) as usize;
+    let limit = sanitize_projection_limit(params.limit);
 
     semantic_memory::ProjectionQuery {
         scope,
@@ -1314,13 +1407,8 @@ impl SemanticMemoryServer {
             namespaces,
         }): Parameters<SearchParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let requested_k = top_k.map(|v| v as usize).unwrap_or(5);
+        let (requested_k, search_k) = search_request_k(top_k, false);
         let allow_superseded = false;
-        let search_k = if allow_superseded {
-            requested_k
-        } else {
-            (requested_k * 4).max(20)
-        };
         let ns: Option<Vec<&str>> = namespaces
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -1335,7 +1423,11 @@ impl SemanticMemoryServer {
                 let superseded_targets = if allow_superseded {
                     HashSet::new()
                 } else {
-                    load_superseded_targets(store)?
+                    let result_ids: Vec<String> = results
+                        .iter()
+                        .map(|result| result.source.result_id())
+                        .collect();
+                    load_superseded_targets_for_ids(store, &result_ids)?
                 };
                 let fresh_results: Vec<_> = results
                     .iter()
@@ -1417,7 +1509,7 @@ impl SemanticMemoryServer {
         }): Parameters<SearchWitnessedParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::{ExactnessProfile, ReceiptMode, ReplayMode, SearchContext};
-        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let (k, search_k) = search_request_k(top_k, query_allows_superseded(&query));
         let request_id = request_id.unwrap_or_else(|| {
             format!(
                 "mcp-witness-{}-{}",
@@ -1462,7 +1554,13 @@ impl SemanticMemoryServer {
                     RetrievalModeParam::Hybrid => {
                         self.bridge
                             .store
-                            .search_with_context(&query, Some(k), ns.as_deref(), None, context)
+                            .search_with_context(
+                                &query,
+                                Some(search_k),
+                                ns.as_deref(),
+                                None,
+                                context,
+                            )
                             .await
                     }
                     RetrievalModeParam::FtsOnly => {
@@ -1470,7 +1568,7 @@ impl SemanticMemoryServer {
                             .store
                             .search_fts_only_with_context(
                                 &query,
-                                Some(k),
+                                Some(search_k),
                                 ns.as_deref(),
                                 None,
                                 context,
@@ -1482,7 +1580,7 @@ impl SemanticMemoryServer {
                             .store
                             .search_vector_only_with_context(
                                 &query,
-                                Some(k),
+                                Some(search_k),
                                 ns.as_deref(),
                                 None,
                                 context,
@@ -1599,7 +1697,7 @@ impl SemanticMemoryServer {
             budget_micros,
         }): Parameters<SearchProofDebtParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let k = sanitize_top_k(top_k, DEFAULT_SEARCH_TOP_K);
         let store = &self.bridge.store;
         let ns: Option<Vec<&str>> = namespaces
             .as_ref()
@@ -1623,7 +1721,10 @@ impl SemanticMemoryServer {
                 ProofDebtBudgetConfig,
             };
             let budget = budget_micros.unwrap_or(500_000);
-            let idx = self.claim_trust.lock().unwrap();
+            let idx = self
+                .claim_trust
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut all_debts = Vec::new();
             let mut unsupported_count = 0usize;
             let mut per_result = Vec::new();
@@ -1713,8 +1814,8 @@ impl SemanticMemoryServer {
             namespaces,
         }): Parameters<BenchmarkTrustParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let n = query_count.map(|v| v as usize).unwrap_or(10);
-        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let n = list_query_count(query_count);
+        let k = sanitize_top_k(top_k, DEFAULT_SEARCH_TOP_K);
         let store = &self.bridge.store;
         let ns: Option<Vec<&str>> = namespaces
             .as_ref()
@@ -1727,7 +1828,10 @@ impl SemanticMemoryServer {
 
         #[cfg(feature = "claim-integration")]
         {
-            let idx = self.claim_trust.lock().unwrap();
+            let idx = self
+                .claim_trust
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut trust_counts: HashMap<String, usize> = HashMap::new();
             for label in &[
                 "supported",
@@ -1848,13 +1952,8 @@ impl SemanticMemoryServer {
         &self,
         Parameters(SearchExplainedParams { query, top_k }): Parameters<SearchExplainedParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let requested_k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = query_allows_superseded(&query);
-        let search_k = if allow_superseded {
-            requested_k
-        } else {
-            (requested_k * 4).max(20)
-        };
+        let (requested_k, search_k) = search_request_k(top_k, allow_superseded);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search_explained(&query, Some(search_k), None, None))
@@ -2011,7 +2110,12 @@ impl SemanticMemoryServer {
                 let chunk_count = tokio::task::block_in_place(|| {
                     Handle::current().block_on(store.count_chunks_for_document(&doc_id))
                 })
-                .unwrap_or(0);
+                .map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("Error counting chunks for document: {error}"),
+                        None,
+                    )
+                })?;
                 json_to_output(&serde_json::json!({
                     "ok": true,
                     "receipt": mcp_receipt("sm_ingest_document"),
@@ -2035,19 +2139,17 @@ impl SemanticMemoryServer {
     fn sm_stats(&self) -> Result<Json<StatsOutput>, ErrorData> {
         let store = &self.bridge.store;
         let core = tokio::task::block_in_place(|| Handle::current().block_on(store.stats()));
-        let graph = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_all_graph_edges())
-        });
+        let graph_count = tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
         let core_health = match &core {
             Ok(_) => serde_json::json!({"health": "healthy", "error": null}),
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
         };
-        let graph_health = match &graph {
+        let graph_health = match &graph_count {
             Ok(_) => serde_json::json!({"health": "healthy", "error": null}),
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
         };
         let core_value = core.ok();
-        let graph_count = graph.ok().map(|edges| edges.len());
+        let graph_count = graph_count.ok();
         Ok(Json(StatsOutput {
             ok: core_value.is_some() && graph_count.is_some(),
             components: serde_json::json!({"core": core_health, "graph": graph_health}),
@@ -2078,7 +2180,7 @@ impl SemanticMemoryServer {
             max_depth,
         }): Parameters<GraphPathParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let depth = max_depth.map(|v| v as usize).unwrap_or(5);
+        let depth = sanitize_graph_depth(max_depth);
         let store = &self.bridge.store;
         let g = store.graph_view();
 
@@ -2177,8 +2279,8 @@ impl SemanticMemoryServer {
             offset,
         }): Parameters<ListFactsParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let lim = limit.map(|v| v as usize).unwrap_or(50);
-        let off = offset.map(|v| v as usize).unwrap_or(0);
+        let lim = sanitize_list_limit(limit, 50);
+        let off = sanitize_offset(offset);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.list_facts(&namespace, lim, off))
@@ -2259,7 +2361,10 @@ impl SemanticMemoryServer {
             tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&bare)))
                 .map_err(|e| ErrorData::internal_error(format!("get_fact error: {e}"), None))?;
         let edges = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_graph_edges_for_node(&node_id))
+            Handle::current().block_on(store.list_graph_edges_for_node_with_limit(
+                &node_id,
+                sanitize_graph_edge_list_limit(None),
+            ))
         })
         .map_err(|e| ErrorData::internal_error(format!("list edges error: {e}"), None))?;
 
@@ -2441,8 +2546,8 @@ impl SemanticMemoryServer {
         &self,
         Parameters(ListSessionsParams { limit, offset }): Parameters<ListSessionsParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let lim = limit.map(|v| v as usize).unwrap_or(20);
-        let off = offset.map(|v| v as usize).unwrap_or(0);
+        let lim = sanitize_list_limit(limit, 20);
+        let off = sanitize_offset(offset);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.list_sessions(lim, off))
@@ -2512,10 +2617,10 @@ impl SemanticMemoryServer {
             SearchConversationsParams,
         >,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let k = top_k.map(|v| v as usize);
+        let k = sanitize_top_k(top_k, DEFAULT_SEARCH_TOP_K);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.search_conversations(&query, k, None))
+            Handle::current().block_on(store.search_conversations(&query, Some(k), None))
         });
         match result {
             Ok(results) => json_to_output(&serde_json::json!({
@@ -2599,9 +2704,8 @@ impl SemanticMemoryServer {
         use semantic_memory::rl_routing::{is_trained, route_with_policy};
         use semantic_memory::routing::{QueryProfile, RetrievalRouter};
 
-        let k = top_k.map(|v| v as usize).unwrap_or(5);
         let allow_superseded = query_allows_superseded(&query);
-        let search_k = if allow_superseded { k } else { (k * 4).max(20) };
+        let (k, search_k) = search_request_k(top_k, allow_superseded);
 
         let router = RetrievalRouter {
             decoder_enabled: true,
@@ -2675,9 +2779,7 @@ impl SemanticMemoryServer {
                             factors_from_edges, FactorGraph, FactorGraphConfig,
                         };
 
-                        let graph_edges = tokio::task::block_in_place(|| {
-                            Handle::current().block_on(store.list_all_graph_edges())
-                        });
+                        let graph_edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL);
 
                         match graph_edges {
                             Ok(edges) => {
@@ -2832,7 +2934,7 @@ impl SemanticMemoryServer {
                         .take(k)
                         .map(|r| r.source.result_id())
                         .collect();
-                    let edges = load_neighborhood_edge_pairs(store, &seed_ids).unwrap_or_default();
+                    let edges = load_neighborhood_edge_pairs(store, &seed_ids)?;
                     if !edges.is_empty() {
                         use semantic_memory::community::detect_communities;
                         let communities = detect_communities(&edges, 1.0, 42);
@@ -2880,7 +2982,7 @@ impl SemanticMemoryServer {
                         #[cfg(feature = "full")]
                         {
                             use semantic_memory::topology::{compute_betti_numbers, find_voids};
-                            let edges = load_stored_edge_pairs(store).unwrap_or_default();
+                            let edges = load_stored_edge_pairs(store)?;
                             if !edges.is_empty() {
                                 let mut adjacency: std::collections::HashMap<String, Vec<String>> =
                                     std::collections::HashMap::new();
@@ -3018,7 +3120,7 @@ impl SemanticMemoryServer {
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::contradiction_detect::{detect_contradictions, DetectorConfig};
 
-        let k = top_k.map(|v| v as usize).unwrap_or(10);
+        let k = sanitize_top_k(top_k, 10);
         let store = &self.bridge.store;
         let results = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search(&query, Some(k), None, None))
@@ -3047,7 +3149,10 @@ impl SemanticMemoryServer {
                     let fact_a = p.a.strip_prefix("fact:").unwrap_or(&p.a).to_string();
                     let fact_b = p.b.strip_prefix("fact:").unwrap_or(&p.b).to_string();
                     {
-                        let mut idx = self.claim_trust.lock().unwrap();
+                        let mut idx = self
+                            .claim_trust
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         idx.record_judgment(fact_a.clone(), SupportState::Contradicted);
                         idx.record_judgment(fact_b.clone(), SupportState::Contradicted);
                     }
@@ -3061,7 +3166,10 @@ impl SemanticMemoryServer {
                     let contradiction_id =
                         claim_ledger::ids::contradiction_id(&fact_a, &fact_b, &pattern);
 
-                    let mut ledger = self.claim_ledger_store.lock().unwrap();
+                    let mut ledger = self
+                        .claim_ledger_store
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     let sequence = ledger.next_sequence();
                     let previous_digest = ledger.last_digest();
                     let append_result = LedgerEntryBuilder::new(sequence, previous_digest)
@@ -3228,18 +3336,14 @@ impl SemanticMemoryServer {
         let recompression = should_trigger_recompression(subtracted_count, remaining_count, false);
 
         let store = &self.bridge.store;
-        let graph_edges = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_all_graph_edges())
-        });
+        let graph_edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL);
         let stored_edges: Vec<(String, String)> = graph_edges
-            .as_ref()
-            .map(|edges| {
-                edges
-                    .iter()
-                    .map(|edge| (edge.source.clone(), edge.target.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Error loading graph edges: {e}"), None)
+            })?
+            .iter()
+            .map(|edge| (edge.source.clone(), edge.target.clone()))
+            .collect();
 
         let mut topology_voids: Vec<serde_json::Value> = Vec::new();
         let mut betti = serde_json::json!({
@@ -3535,21 +3639,29 @@ impl SemanticMemoryServer {
     )]
     fn sm_list_graph_edges(
         &self,
-        Parameters(ListGraphEdgesParams { node_id }): Parameters<ListGraphEdgesParams>,
+        Parameters(ListGraphEdgesParams { node_id, limit }): Parameters<ListGraphEdgesParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
+        let limit = sanitize_graph_edge_list_limit(limit);
         let result = match node_id {
             Some(id) => tokio::task::block_in_place(|| {
-                Handle::current().block_on(store.list_graph_edges_for_node(&id))
+                Handle::current().block_on(store.list_graph_edges_for_node_with_limit(
+                    &id,
+                    limit,
+                ))
             }),
-            None => tokio::task::block_in_place(|| {
-                Handle::current().block_on(store.list_all_graph_edges())
-            }),
+            None => {
+                tokio::task::block_in_place(|| {
+                    Handle::current().block_on(store.list_all_graph_edges_with_limit(limit))
+                })
+            }
         };
 
         match result {
             Ok(edges) => json_to_output(&serde_json::json!({
                 "ok": true,
+                "truncated": edges.len() >= limit,
+                "limit": limit,
                 "edges": edges.iter().map(|e| serde_json::json!({
                     "id": e.id,
                     "source": e.source,
@@ -3610,20 +3722,20 @@ impl SemanticMemoryServer {
         use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
 
         let defaults = FactorGraphConfig::default();
-        let config = FactorGraphConfig {
-            semantic_weight: params.semantic_weight.unwrap_or(defaults.semantic_weight),
-            temporal_weight: params.temporal_weight.unwrap_or(defaults.temporal_weight),
-            causal_weight: params.causal_weight.unwrap_or(defaults.causal_weight),
-            entity_weight: params.entity_weight.unwrap_or(defaults.entity_weight),
-            self_influence: params.self_influence.unwrap_or(defaults.self_influence),
-            max_iterations: params
-                .max_iterations
-                .map(|v| v as usize)
-                .unwrap_or(defaults.max_iterations),
-            convergence_threshold: params
-                .convergence_threshold
-                .unwrap_or(defaults.convergence_threshold),
-        };
+            let config = FactorGraphConfig {
+                semantic_weight: params.semantic_weight.unwrap_or(defaults.semantic_weight),
+                temporal_weight: params.temporal_weight.unwrap_or(defaults.temporal_weight),
+                causal_weight: params.causal_weight.unwrap_or(defaults.causal_weight),
+                entity_weight: params.entity_weight.unwrap_or(defaults.entity_weight),
+                self_influence: params.self_influence.unwrap_or(defaults.self_influence),
+                max_iterations: sanitize_factor_graph_iterations(
+                    defaults.max_iterations,
+                    params.max_iterations,
+                ),
+                convergence_threshold: params
+                    .convergence_threshold
+                    .unwrap_or(defaults.convergence_threshold),
+            };
 
         // Use neighborhood loading: only load edges within 2 hops of the
         // node seeds instead of the entire graph.
@@ -3802,7 +3914,7 @@ impl SemanticMemoryServer {
             use semantic_memory::subgraph_pruning::AccessLog;
 
             let dry = dry_run.unwrap_or(true);
-            let max = max_prune.map(|v| v as usize).unwrap_or(5);
+            let max = sanitize_subgraph_prune_count(max_prune);
 
             // Load edges from store
             let edges = load_stored_edge_pairs(&self.bridge.store)?;
@@ -3811,10 +3923,7 @@ impl SemanticMemoryServer {
             let access_logs: Vec<AccessLog> = Vec::new();
 
             // Load contradictions from contradiction graph edges
-            let raw_edges = tokio::task::block_in_place(|| {
-                Handle::current().block_on(self.bridge.store.list_all_graph_edges())
-            })
-            .map_err(|e| ErrorData::internal_error(format!("load edges failed: {e}"), None))?;
+            let raw_edges = load_graph_edges_with_limit(&self.bridge.store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
             let contradictions: Vec<(String, String)> = raw_edges
                 .iter()
                 .filter_map(|e| {
@@ -4153,7 +4262,10 @@ impl SemanticMemoryServer {
             max_backups,
         }): Parameters<CompactClaimLedgerParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let mut ledger = self.claim_ledger_store.lock().unwrap();
+        let mut ledger = self
+            .claim_ledger_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = ledger
             .compact(ClaimLedgerCompactionConfig {
                 dry_run: dry_run.unwrap_or(true),
@@ -4164,7 +4276,10 @@ impl SemanticMemoryServer {
             })
             .map_err(|error| ErrorData::internal_error(error, None))?;
         if result["compacted"].as_bool().unwrap_or(false) {
-            let mut index = self.claim_trust.lock().unwrap();
+            let mut index = self
+                .claim_trust
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             index.disable();
             if ledger.trust_enabled {
                 index.enabled = true;
@@ -4218,7 +4333,10 @@ impl SemanticMemoryServer {
         let normalized = &claim.normalized_claim;
 
         {
-            let mut ledger = self.claim_ledger_store.lock().unwrap();
+            let mut ledger = self
+                .claim_ledger_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let sequence = ledger.next_sequence();
             let previous_digest = ledger.last_digest();
             let entry = claim_ledger::LedgerEntryBuilder::new(sequence, previous_digest)
@@ -4235,7 +4353,10 @@ impl SemanticMemoryServer {
         }
 
         {
-            let mut idx = self.claim_trust.lock().unwrap();
+            let mut idx = self
+                .claim_trust
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             idx.link_fact(bare.clone(), claim_id.clone());
             idx.register_claim(claim_id.clone(), normalized.clone());
         }
@@ -4349,7 +4470,10 @@ impl SemanticMemoryServer {
         };
 
         {
-            let mut ledger = self.claim_ledger_store.lock().unwrap();
+            let mut ledger = self
+                .claim_ledger_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let sequence = ledger.next_sequence();
             let previous_digest = ledger.last_digest();
             let entry = claim_ledger::LedgerEntryBuilder::new(sequence, previous_digest)
@@ -4376,7 +4500,7 @@ impl SemanticMemoryServer {
 
         self.claim_trust
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_judgment(claim_id.clone(), state);
 
         json_to_output(&serde_json::json!({
@@ -4405,7 +4529,7 @@ impl SemanticMemoryServer {
         }): Parameters<SearchAsOfParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
-        let k = top_k.unwrap_or(5);
+        let k = sanitize_top_k(top_k, 5);
         let ns_slice: Option<Vec<&str>> = namespace.as_ref().map(|n| vec![n.as_str()]);
 
         // Parse the as-of date
@@ -4420,7 +4544,7 @@ impl SemanticMemoryServer {
         let results = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.search_with_view(
                 &query,
-                Some(k * 2),
+                Some((k * 2).min(MAX_SEARCH_FETCH_K)),
                 ns_slice.as_deref(),
                 None,
                 semantic_memory::StateView::HistoricalAt(as_of_date.clone()),
@@ -4559,7 +4683,7 @@ impl SemanticMemoryServer {
         }): Parameters<ReplaySearchReceiptParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
-        let k = top_k.map(|v| v as usize);
+        let k = sanitize_top_k(top_k, DEFAULT_SEARCH_TOP_K);
         let ns_slice: Option<Vec<&str>> = namespaces
             .as_ref()
             .map(|v| v.iter().map(|s| s.as_str()).collect());
@@ -4568,7 +4692,7 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.replay_search_receipt(
                 &receipt_id,
                 &query,
-                k,
+                Some(k),
                 ns_slice.as_deref(),
                 None,
             ))
@@ -4766,11 +4890,19 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.query_claim_versions(query))
         });
         match result {
-            Ok(rows) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "results": serde_json::to_value(&rows).unwrap_or_else(|_| serde_json::json!([])),
-                "count": rows.len(),
-            })),
+            Ok(rows) => {
+                let rows_json = serde_json::to_value(&rows).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("query_claim_versions serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "results": rows_json,
+                    "count": rows.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("query_claim_versions error: {e}"),
                 None,
@@ -4792,11 +4924,19 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.query_relation_versions(query))
         });
         match result {
-            Ok(rows) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
-                "count": rows.len(),
-            })),
+            Ok(rows) => {
+                let rows_json = serde_json::to_value(&rows).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("query_relation_versions serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "results": rows_json,
+                    "count": rows.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("query_relation_versions error: {e}"),
                 None,
@@ -4817,11 +4957,19 @@ impl SemanticMemoryServer {
         let result =
             tokio::task::block_in_place(|| Handle::current().block_on(store.query_episodes(query)));
         match result {
-            Ok(rows) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
-                "count": rows.len(),
-            })),
+            Ok(rows) => {
+                let rows_json = serde_json::to_value(&rows).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("query_episodes serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "results": rows_json,
+                    "count": rows.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("query_episodes error: {e}"),
                 None,
@@ -4843,11 +4991,19 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.query_entity_aliases(query))
         });
         match result {
-            Ok(rows) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
-                "count": rows.len(),
-            })),
+            Ok(rows) => {
+                let rows_json = serde_json::to_value(&rows).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("query_entity_aliases serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "results": rows_json,
+                    "count": rows.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("query_entity_aliases error: {e}"),
                 None,
@@ -4869,11 +5025,19 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.query_evidence_refs(query))
         });
         match result {
-            Ok(rows) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "results": serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
-                "count": rows.len(),
-            })),
+            Ok(rows) => {
+                let rows_json = serde_json::to_value(&rows).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("query_evidence_refs serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "results": rows_json,
+                    "count": rows.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("query_evidence_refs error: {e}"),
                 None,
@@ -4934,12 +5098,20 @@ impl SemanticMemoryServer {
             Handle::current().block_on(store.import_status(&env_id))
         });
         match result {
-            Ok(receipts) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "envelope_id": envelope_id,
-                "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
-                "count": receipts.len(),
-            })),
+            Ok(receipts) => {
+                let receipts_json = serde_json::to_value(&receipts).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("import_status serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "envelope_id": envelope_id,
+                    "receipts": receipts_json,
+                    "count": receipts.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("import_status error: {e}"),
                 None,
@@ -4957,16 +5129,24 @@ impl SemanticMemoryServer {
         Parameters(ListImportsParams { namespace, limit }): Parameters<ListImportsParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         let store = &self.bridge.store;
-        let lim = limit.unwrap_or(20) as usize;
+        let lim = sanitize_list_limit(limit, 20);
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(store.list_imports(namespace.as_deref(), lim))
         });
         match result {
-            Ok(receipts) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "receipts": serde_json::to_value(&receipts).unwrap_or(serde_json::json!([])),
-                "count": receipts.len(),
-            })),
+            Ok(receipts) => {
+                let receipts_json = serde_json::to_value(&receipts).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("list_imports serialization error: {error}"),
+                        None,
+                    )
+                })?;
+                json_to_output(&serde_json::json!({
+                    "ok": true,
+                    "receipts": receipts_json,
+                    "count": receipts.len(),
+                }))
+            }
             Err(e) => Err(ErrorData::internal_error(
                 format!("list_imports error: {e}"),
                 None,
@@ -5210,6 +5390,56 @@ fn typed_graph_path(
 mod correctness_contract_tests {
     use super::*;
     use crate::bridge::{BridgeConfig, EmbedderBackend};
+
+    #[test]
+    fn sanitize_graph_depth_is_bounded() {
+        assert_eq!(sanitize_graph_depth(Some(5)), 5);
+        assert_eq!(
+            sanitize_graph_depth(Some((MAX_GRAPH_PATH_DEPTH as u32) + 1)),
+            MAX_GRAPH_PATH_DEPTH
+        );
+        assert_eq!(sanitize_graph_depth(Some(0)), 0);
+    }
+
+    #[test]
+    fn sanitize_offset_is_bounded() {
+        assert_eq!(sanitize_offset(Some(123)), 123);
+        assert_eq!(
+            sanitize_offset(Some((MAX_LIST_OFFSET as u32) + 1)),
+            MAX_LIST_OFFSET
+        );
+        assert_eq!(sanitize_offset(None), 0);
+    }
+
+    #[test]
+    fn sanitize_projection_limit_is_bounded() {
+        assert_eq!(sanitize_projection_limit(Some(5)), 5);
+        assert_eq!(sanitize_projection_limit(Some(0)), 1);
+        assert_eq!(
+            sanitize_projection_limit(Some((MAX_PROJECTION_LIMIT as u32) + 1)),
+            MAX_PROJECTION_LIMIT
+        );
+    }
+
+    #[test]
+    fn sanitize_factor_graph_iterations_is_bounded() {
+        assert_eq!(sanitize_factor_graph_iterations(7, Some(0)), 1);
+        assert_eq!(sanitize_factor_graph_iterations(7, None), 7);
+        assert_eq!(
+            sanitize_factor_graph_iterations(7, Some((MAX_FACTOR_GRAPH_ITERATIONS as u32) + 1)),
+            MAX_FACTOR_GRAPH_ITERATIONS
+        );
+    }
+
+    #[test]
+    fn sanitize_subgraph_prune_count_is_bounded() {
+        assert_eq!(sanitize_subgraph_prune_count(Some(5)), 5);
+        assert_eq!(sanitize_subgraph_prune_count(Some(0)), 0);
+        assert_eq!(
+            sanitize_subgraph_prune_count(Some((MAX_SUBGRAPH_PRUNE as u32) + 1)),
+            MAX_SUBGRAPH_PRUNE
+        );
+    }
 
     fn structured_value(body: &Json<StructuredOutput>) -> serde_json::Value {
         serde_json::to_value(&body.0).expect("structured tool output JSON")
@@ -6516,7 +6746,10 @@ mod correctness_contract_tests {
         let server = SemanticMemoryServer::new(bridge, "full");
         assert!(server.exposes_tool("sm_compact_claim_ledger"));
         {
-            let mut store = server.claim_ledger_store.lock().unwrap();
+            let mut store = server
+                .claim_ledger_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for entry in claim_test_entries() {
                 store.append(entry).unwrap();
             }

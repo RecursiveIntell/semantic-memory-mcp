@@ -44,7 +44,7 @@ Or install the published package when its registry dependencies match the
 release you intend to run:
 
 ```bash
-cargo install semantic-memory-mcp --locked --version '=0.5.4'
+cargo install semantic-memory-mcp --locked --version '=0.5.5'
 ```
 
 The Candle model defaults to `nomic-ai/nomic-embed-text-v1.5` through the

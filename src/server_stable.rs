@@ -17,6 +17,20 @@ use std::sync::Arc;
 use tokio::runtime::Handle;
 
 static WITNESS_REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const MAX_GRAPH_EDGES_FOR_TOOL: usize = 2_000;
+const MAX_SEARCH_TOP_K: usize = 50;
+const MAX_GRAPH_PATH_DEPTH: usize = 64;
+
+fn sanitize_top_k(top_k: Option<u32>, default: usize) -> usize {
+    match top_k {
+        Some(raw) if raw > 0 => (raw as usize).min(MAX_SEARCH_TOP_K),
+        _ => default,
+    }
+}
+
+fn sanitize_graph_depth(max_depth: Option<u32>) -> usize {
+    max_depth.unwrap_or(5).min(MAX_GRAPH_PATH_DEPTH as u32) as usize
+}
 
 /// Schema-backed structured output shared by heterogeneous MCP tools.
 ///
@@ -208,7 +222,7 @@ impl SemanticMemoryServer {
     fn trust_for_fact(&self, bare_fact_id: &str) -> String {
         self.claim_trust
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .trust_for_fact(bare_fact_id)
     }
 
@@ -221,7 +235,7 @@ impl SemanticMemoryServer {
     fn auto_link_fact_to_claims(&self, bare_fact_id: &str, content: &str) {
         self.claim_trust
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .auto_link_content(bare_fact_id, content);
     }
 
@@ -253,11 +267,10 @@ impl SemanticMemoryServer {
 fn load_superseded_targets(
     store: &semantic_memory::MemoryStore,
 ) -> Result<HashSet<String>, ErrorData> {
-    let edges =
-        tokio::task::block_in_place(|| Handle::current().block_on(store.list_all_graph_edges()))
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None)
-            })?;
+    let edges = tokio::task::block_in_place(|| {
+        Handle::current().block_on(store.list_all_graph_edges_with_limit(MAX_GRAPH_EDGES_FOR_TOOL))
+    })
+    .map_err(|e| ErrorData::internal_error(format!("Failed to load graph edges: {e}"), None))?;
     let mut targets = HashSet::new();
     for edge in edges {
         let parsed_type = edge
@@ -506,7 +519,7 @@ impl SemanticMemoryServer {
             namespaces,
         }): Parameters<SearchParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let requested_k = top_k.map(|v| v as usize).unwrap_or(5);
+        let requested_k = sanitize_top_k(top_k, 5);
         let allow_superseded = false;
         let search_k = if allow_superseded {
             requested_k
@@ -584,7 +597,7 @@ impl SemanticMemoryServer {
         }): Parameters<SearchWitnessedParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         use semantic_memory::{ExactnessProfile, ReceiptMode, ReplayMode, SearchContext};
-        let k = top_k.map(|v| v as usize).unwrap_or(5);
+        let k = sanitize_top_k(top_k, 5);
         let request_id = request_id.unwrap_or_else(|| {
             format!(
                 "mcp-witness-{}-{}",
@@ -818,9 +831,7 @@ impl SemanticMemoryServer {
     fn sm_stats(&self) -> Result<Json<StatsOutput>, ErrorData> {
         let store = &self.bridge.store;
         let core = tokio::task::block_in_place(|| Handle::current().block_on(store.stats()));
-        let graph = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_all_graph_edges())
-        });
+        let graph = tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
         let core_health = match &core {
             Ok(_) => serde_json::json!({"health": "healthy", "error": null}),
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
@@ -830,7 +841,7 @@ impl SemanticMemoryServer {
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
         };
         let core_value = core.ok();
-        let graph_count = graph.ok().map(|edges| edges.len());
+        let graph_count = graph.ok();
         Ok(Json(StatsOutput {
             ok: core_value.is_some() && graph_count.is_some(),
             components: serde_json::json!({"core": core_health, "graph": graph_health}),
@@ -936,7 +947,10 @@ impl SemanticMemoryServer {
             tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&bare)))
                 .map_err(|e| ErrorData::internal_error(format!("get_fact error: {e}"), None))?;
         let edges = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_graph_edges_for_node(&node_id))
+            Handle::current().block_on(store.list_graph_edges_for_node_with_limit(
+                &node_id,
+                MAX_GRAPH_EDGES_FOR_TOOL,
+            ))
         })
         .map_err(|e| ErrorData::internal_error(format!("list edges error: {e}"), None))?;
 
@@ -980,7 +994,7 @@ impl SemanticMemoryServer {
             max_depth,
         }): Parameters<GraphPathParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let depth = max_depth.map(|v| v as usize).unwrap_or(5);
+        let depth = sanitize_graph_depth(max_depth);
         let store = &self.bridge.store;
         let g = store.graph_view();
 
@@ -1033,10 +1047,10 @@ impl SemanticMemoryServer {
             SearchConversationsParams,
         >,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let k = top_k.map(|v| v as usize);
+        let k = sanitize_top_k(top_k, 5);
         let store = &self.bridge.store;
         let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.search_conversations(&query, k, None))
+            Handle::current().block_on(store.search_conversations(&query, Some(k), None))
         });
         match result {
             Ok(results) => json_to_output(&serde_json::json!({
