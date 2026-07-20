@@ -1,0 +1,100 @@
+{
+  "description": "Local-first MCP server for agent memory kits — persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment. Default build uses in-process Candle embeddings (no Ollama required). Supports hybrid BM25+vector search with RRF, contradiction detection via belief propagation, typed knowledge graph with causal/temporal/semantic/entity edges, factor-graph reasoning, topological void detection, community detection, lawful subtraction, and adaptive query routing. SQLite+FTS5 authoritative store with usearch vector sidecar. All data stays on the operator's machine — no cloud, no API keys, no telemetry. Runtime tool profiles (lean, standard, agent, full) control the exposed surface. Ships with first-class integrations for Hermes Agent, Claude Code, and Codex.",
+  "homepage": "https://github.com/RecursiveIntell/semantic-memory-mcp",
+  "identifier": "recursiveintell-semantic-memory-mcp",
+  "name": "Semantic Memory MCP",
+  "tags": [
+    "mcp",
+    "knowledge-base",
+    "semantic-search",
+    "vector-search",
+    "sqlite",
+    "rust",
+    "local-first",
+    "agent-memory-kits",
+    "embeddings",
+    "candle",
+    "memory-management",
+    "belief-propagation",
+    "knowledge-graph",
+    "retrieval",
+    "provenance",
+    "contradiction-detection",
+    "factor-graph",
+    "hybrid-search",
+    "evidence-led",
+    "tool-profiles"
+  ],
+  "version": "1.1.0",
+  "capabilities": {
+    "tools": true,
+    "prompts": true,
+    "resources": true
+  },
+  "prompts": [
+    {
+      "name": "sm-recall",
+      "description": "Search semantic memory for prior context before asking the user. Returns a structured query plan with namespace filters, retrieval mode selection, and evidence-verification steps.",
+      "arguments": [
+        {"name": "query", "required": true, "description": "The search query — what you want to recall"},
+        {"name": "namespace", "required": false, "description": "Optional namespace filter"},
+        {"name": "top_k", "required": false, "description": "Max results to return (default 5, max 50)"}
+      ]
+    },
+    {
+      "name": "sm-capture-fact",
+      "description": "Store a durable, source-attributed fact in semantic memory. Guides namespace selection, evidence linking, idempotency, and sensitivity classification.",
+      "arguments": [
+        {"name": "content", "required": true, "description": "The fact text to store"},
+        {"name": "namespace", "required": true, "description": "Namespace for this fact"},
+        {"name": "source", "required": false, "description": "Source attribution (URL, file path, or reference)"},
+        {"name": "memory_kind", "required": false, "description": "Classification: durable_fact, preference, correction, etc."}
+      ]
+    },
+    {
+      "name": "sm-audit",
+      "description": "Audit the semantic memory store for health: duplicates, contradictions, stale facts, graph gaps. Read-only phase produces a report; reconciliation requires user approval.",
+      "arguments": [
+        {"name": "namespace", "required": false, "description": "Optional namespace to focus the audit on"}
+      ]
+    },
+    {
+      "name": "sm-explore-graph",
+      "description": "Explore the knowledge graph around a topic: find related items, trace connections between two concepts, or discover community clusters.",
+      "arguments": [
+        {"name": "topic", "required": true, "description": "The topic or concept to explore"},
+        {"name": "mode", "required": false, "description": "Exploration mode: 'related', 'path', or 'structure'"},
+        {"name": "second_topic", "required": false, "description": "For 'path' mode: the second concept"}
+      ]
+    },
+    {
+      "name": "sm-maintenance",
+      "description": "Run semantic-memory store maintenance: integrity check, FTS rebuild, vacuum, re-embedding, or index repair.",
+      "arguments": [
+        {"name": "action", "required": false, "description": "Action: 'check', 'rebuild-fts', 'vacuum', 'reembed', or 'dirty-check'"}
+      ]
+    },
+    {
+      "name": "sm-supersede",
+      "description": "Replace a stale or incorrect fact with a corrected version. Preserves history via a 'supersedes' graph edge; search auto-filters the old fact.",
+      "arguments": [
+        {"name": "old_fact_id", "required": true, "description": "The ID of the fact to supersede"},
+        {"name": "new_content", "required": true, "description": "The corrected fact content"},
+        {"name": "reason", "required": false, "description": "Why the old fact is being superseded"}
+      ]
+    }
+  ],
+  "resources": [
+    {"uri": "sm://skill/retrieval-strategy", "name": "retrieval-strategy", "description": "Primary strategy for source-first semantic-memory recall, adaptive routing, graph hydration, contradiction checks, and evidence-backed retrospectives.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/memory-curator", "name": "memory-curator", "description": "Audit and improve the semantic memory store: find duplicates, contradictions, stale facts, and graph gaps. Reconcile only after user approval.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/memory-maintenance", "name": "memory-maintenance", "description": "Store-level maintenance: integrity check, FTS rebuild, vacuum, re-embedding, index repair, and process cleanup.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/knowledge-graph-explorer", "name": "knowledge-graph-explorer", "description": "Explore the typed knowledge graph: related items, shortest paths between concepts, community clusters, and topological voids.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/memory-keeper", "name": "memory-keeper", "description": "Delegate heavy memory operations (audit, bulk ingest, contradiction sweep, dedup, edge population) to a focused subagent.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/pooled-memory-operations", "name": "pooled-memory-operations", "description": "Multi-device memory mesh: identity/provenance, typed synchronization, per-device SQLite primaries and server replicas, sparse routed retrieval.", "mimeType": "text/markdown"},
+    {"uri": "sm://skill/standard-workflow", "name": "standard-workflow", "description": "The canonical workflow for using semantic-memory MCP tools: search first, verify against current sources, store durable facts, supersede stale ones.", "mimeType": "text/markdown"},
+    {"uri": "sm://protocol/authority", "name": "authority-model", "description": "The governed authority model: recall authority vs assertion authority vs action authority.", "mimeType": "text/markdown"}
+  ],
+  "resource_templates": [
+    {"uriTemplate": "sm://skill/{skill_name}", "name": "skill-by-name", "description": "Fetch a skill document by name.", "mimeType": "text/markdown"}
+  ]
+}

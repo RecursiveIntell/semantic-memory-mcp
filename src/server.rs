@@ -6875,4 +6875,74 @@ fn build_path_segments(
     version = "0.5.4",
     instructions = "Persistent local semantic memory with hybrid search, graph reasoning, and conversation persistence. ALWAYS search first before asking the user for context. Use sm_decide_assertion_authority or sm_decide_action_authority for content-free, fixed-purpose authority decisions; recall authority never implies either purpose. In the full operator profile, use sm_search_with_routing for complex/multi-hop queries, sm_get_fact to hydrate IDs returned by graph tools, sm_supersede_fact (not delete) for stale corrections, and sm_add_graph_edge after adding facts to connect them. Read tools are safe; write tools (add/delete/supersede) should be user-approved. Search auto-filters superseded facts unless querying for history."
 )]
-impl ServerHandler for SemanticMemoryServer {}
+impl ServerHandler for SemanticMemoryServer {
+    fn list_prompts(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, rmcp::ErrorData>>
+        + rmcp::service::MaybeSendFuture
+        + '_ {
+        std::future::ready(Ok(rmcp::model::ListPromptsResult::with_all_items(
+            crate::skills::all_prompts(),
+        )))
+    }
+
+    fn get_prompt(
+        &self,
+        request: rmcp::model::GetPromptRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResult, rmcp::ErrorData>>
+        + rmcp::service::MaybeSendFuture
+        + '_ {
+        let args: Vec<(String, String)> = request
+            .arguments
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect();
+        std::future::ready(match crate::skills::get_prompt(&request.name, &args) {
+            Ok(result) => Ok(result),
+            Err(e) => Err(rmcp::ErrorData::invalid_params(e, None)),
+        })
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListResourcesResult, rmcp::ErrorData>>
+        + rmcp::service::MaybeSendFuture
+        + '_ {
+        std::future::ready(Ok(rmcp::model::ListResourcesResult::with_all_items(
+            crate::skills::all_resources(),
+        )))
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData>>
+        + rmcp::service::MaybeSendFuture
+        + '_ {
+        std::future::ready(Ok(
+            rmcp::model::ListResourceTemplatesResult::with_all_items(
+                crate::skills::all_resource_templates(),
+            ),
+        ))
+    }
+
+    fn read_resource(
+        &self,
+        request: rmcp::model::ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, rmcp::ErrorData>>
+        + rmcp::service::MaybeSendFuture
+        + '_ {
+        std::future::ready(match crate::skills::read_resource(&request.uri) {
+            Ok(result) => Ok(result),
+            Err(e) => Err(rmcp::ErrorData::invalid_params(e, None)),
+        })
+    }
+}
