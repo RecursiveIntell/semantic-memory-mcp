@@ -5,6 +5,7 @@
 //! integration tests can access bridge and http_server.
 
 pub mod bridge;
+pub mod skills;
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
 pub mod http_server;
 #[cfg(all(feature = "stable", not(feature = "full")))]
