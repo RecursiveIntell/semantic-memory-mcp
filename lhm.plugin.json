@@ -1,5 +1,5 @@
 {
-  "description": "Local-first MCP server for agent memory kits — persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment. Default build uses in-process Candle embeddings (no Ollama required). Supports hybrid BM25+vector search with RRF, contradiction detection via belief propagation, typed knowledge graph with causal/temporal/semantic/entity edges, factor-graph reasoning, topological void detection, community detection, lawful subtraction, and adaptive query routing. SQLite+FTS5 authoritative store with usearch vector sidecar. All data stays on the operator's machine — no cloud, no API keys, no telemetry. Runtime tool profiles (lean, standard, agent, full) control the exposed surface. Ships with first-class integrations for Hermes Agent, Claude Code, and Codex.",
+  "description": "Local-first MCP server for agent memory kits \u2014 persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment. Default build uses in-process Candle embeddings (no Ollama required). Supports hybrid BM25+vector search with RRF, contradiction detection via belief propagation, typed knowledge graph with causal/temporal/semantic/entity edges, factor-graph reasoning, topological void detection, community detection, lawful subtraction, and adaptive query routing. SQLite+FTS5 authoritative store with usearch vector sidecar. All data stays on the operator's machine \u2014 no cloud, no API keys, no telemetry. Runtime tool profiles (lean, standard, agent, full) control the exposed surface. Ships with first-class integrations for Hermes Agent, Claude Code, and Codex.",
   "homepage": "https://github.com/RecursiveIntell/semantic-memory-mcp",
   "identifier": "recursiveintell-semantic-memory-mcp",
   "name": "Semantic Memory MCP",
@@ -36,65 +36,436 @@
       "name": "sm-recall",
       "description": "Search semantic memory for prior context before asking the user. Returns a structured query plan with namespace filters, retrieval mode selection, and evidence-verification steps.",
       "arguments": [
-        {"name": "query", "required": true, "description": "The search query — what you want to recall"},
-        {"name": "namespace", "required": false, "description": "Optional namespace filter"},
-        {"name": "top_k", "required": false, "description": "Max results to return (default 5, max 50)"}
+        {
+          "name": "query",
+          "required": true,
+          "description": "The search query \u2014 what you want to recall"
+        },
+        {
+          "name": "namespace",
+          "required": false,
+          "description": "Optional namespace filter"
+        },
+        {
+          "name": "top_k",
+          "required": false,
+          "description": "Max results to return (default 5, max 50)"
+        }
       ]
     },
     {
       "name": "sm-capture-fact",
       "description": "Store a durable, source-attributed fact in semantic memory. Guides namespace selection, evidence linking, idempotency, and sensitivity classification.",
       "arguments": [
-        {"name": "content", "required": true, "description": "The fact text to store"},
-        {"name": "namespace", "required": true, "description": "Namespace for this fact"},
-        {"name": "source", "required": false, "description": "Source attribution (URL, file path, or reference)"},
-        {"name": "memory_kind", "required": false, "description": "Classification: durable_fact, preference, correction, etc."}
+        {
+          "name": "content",
+          "required": true,
+          "description": "The fact text to store"
+        },
+        {
+          "name": "namespace",
+          "required": true,
+          "description": "Namespace for this fact"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "description": "Source attribution (URL, file path, or reference)"
+        },
+        {
+          "name": "memory_kind",
+          "required": false,
+          "description": "Classification: durable_fact, preference, correction, etc."
+        }
       ]
     },
     {
       "name": "sm-audit",
       "description": "Audit the semantic memory store for health: duplicates, contradictions, stale facts, graph gaps. Read-only phase produces a report; reconciliation requires user approval.",
       "arguments": [
-        {"name": "namespace", "required": false, "description": "Optional namespace to focus the audit on"}
+        {
+          "name": "namespace",
+          "required": false,
+          "description": "Optional namespace to focus the audit on"
+        }
       ]
     },
     {
       "name": "sm-explore-graph",
       "description": "Explore the knowledge graph around a topic: find related items, trace connections between two concepts, or discover community clusters.",
       "arguments": [
-        {"name": "topic", "required": true, "description": "The topic or concept to explore"},
-        {"name": "mode", "required": false, "description": "Exploration mode: 'related', 'path', or 'structure'"},
-        {"name": "second_topic", "required": false, "description": "For 'path' mode: the second concept"}
+        {
+          "name": "topic",
+          "required": true,
+          "description": "The topic or concept to explore"
+        },
+        {
+          "name": "mode",
+          "required": false,
+          "description": "Exploration mode: 'related', 'path', or 'structure'"
+        },
+        {
+          "name": "second_topic",
+          "required": false,
+          "description": "For 'path' mode: the second concept"
+        }
       ]
     },
     {
       "name": "sm-maintenance",
       "description": "Run semantic-memory store maintenance: integrity check, FTS rebuild, vacuum, re-embedding, or index repair.",
       "arguments": [
-        {"name": "action", "required": false, "description": "Action: 'check', 'rebuild-fts', 'vacuum', 'reembed', or 'dirty-check'"}
+        {
+          "name": "action",
+          "required": false,
+          "description": "Action: 'check', 'rebuild-fts', 'vacuum', 'reembed', or 'dirty-check'"
+        }
       ]
     },
     {
       "name": "sm-supersede",
       "description": "Replace a stale or incorrect fact with a corrected version. Preserves history via a 'supersedes' graph edge; search auto-filters the old fact.",
       "arguments": [
-        {"name": "old_fact_id", "required": true, "description": "The ID of the fact to supersede"},
-        {"name": "new_content", "required": true, "description": "The corrected fact content"},
-        {"name": "reason", "required": false, "description": "Why the old fact is being superseded"}
+        {
+          "name": "old_fact_id",
+          "required": true,
+          "description": "The ID of the fact to supersede"
+        },
+        {
+          "name": "new_content",
+          "required": true,
+          "description": "The corrected fact content"
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "description": "Why the old fact is being superseded"
+        }
       ]
     }
   ],
   "resources": [
-    {"uri": "sm://skill/retrieval-strategy", "name": "retrieval-strategy", "description": "Primary strategy for source-first semantic-memory recall, adaptive routing, graph hydration, contradiction checks, and evidence-backed retrospectives.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/memory-curator", "name": "memory-curator", "description": "Audit and improve the semantic memory store: find duplicates, contradictions, stale facts, and graph gaps. Reconcile only after user approval.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/memory-maintenance", "name": "memory-maintenance", "description": "Store-level maintenance: integrity check, FTS rebuild, vacuum, re-embedding, index repair, and process cleanup.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/knowledge-graph-explorer", "name": "knowledge-graph-explorer", "description": "Explore the typed knowledge graph: related items, shortest paths between concepts, community clusters, and topological voids.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/memory-keeper", "name": "memory-keeper", "description": "Delegate heavy memory operations (audit, bulk ingest, contradiction sweep, dedup, edge population) to a focused subagent.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/pooled-memory-operations", "name": "pooled-memory-operations", "description": "Multi-device memory mesh: identity/provenance, typed synchronization, per-device SQLite primaries and server replicas, sparse routed retrieval.", "mimeType": "text/markdown"},
-    {"uri": "sm://skill/standard-workflow", "name": "standard-workflow", "description": "The canonical workflow for using semantic-memory MCP tools: search first, verify against current sources, store durable facts, supersede stale ones.", "mimeType": "text/markdown"},
-    {"uri": "sm://protocol/authority", "name": "authority-model", "description": "The governed authority model: recall authority vs assertion authority vs action authority.", "mimeType": "text/markdown"}
+    {
+      "uri": "sm://skill/retrieval-strategy",
+      "name": "retrieval-strategy",
+      "description": "Primary strategy for source-first semantic-memory recall, adaptive routing, graph hydration, contradiction checks, and evidence-backed retrospectives.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/memory-curator",
+      "name": "memory-curator",
+      "description": "Audit and improve the semantic memory store: find duplicates, contradictions, stale facts, and graph gaps. Reconcile only after user approval.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/memory-maintenance",
+      "name": "memory-maintenance",
+      "description": "Store-level maintenance: integrity check, FTS rebuild, vacuum, re-embedding, index repair, and process cleanup.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/knowledge-graph-explorer",
+      "name": "knowledge-graph-explorer",
+      "description": "Explore the typed knowledge graph: related items, shortest paths between concepts, community clusters, and topological voids.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/memory-keeper",
+      "name": "memory-keeper",
+      "description": "Delegate heavy memory operations (audit, bulk ingest, contradiction sweep, dedup, edge population) to a focused subagent.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/pooled-memory-operations",
+      "name": "pooled-memory-operations",
+      "description": "Multi-device memory mesh: identity/provenance, typed synchronization, per-device SQLite primaries and server replicas, sparse routed retrieval.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://skill/standard-workflow",
+      "name": "standard-workflow",
+      "description": "The canonical workflow for using semantic-memory MCP tools: search first, verify against current sources, store durable facts, supersede stale ones.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "sm://protocol/authority",
+      "name": "authority-model",
+      "description": "The governed authority model: recall authority vs assertion authority vs action authority.",
+      "mimeType": "text/markdown"
+    }
   ],
   "resource_templates": [
-    {"uriTemplate": "sm://skill/{skill_name}", "name": "skill-by-name", "description": "Fetch a skill document by name.", "mimeType": "text/markdown"}
+    {
+      "uriTemplate": "sm://skill/{skill_name}",
+      "name": "skill-by-name",
+      "description": "Fetch a skill document by name.",
+      "mimeType": "text/markdown"
+    }
+  ],
+  "skills": [
+    {
+      "name": "sm_search",
+      "description": "Semantic hybrid search (BM25 + vector + RRF). Returns ranked results with content, scores, and stabl"
+    },
+    {
+      "name": "sm_search_witnessed",
+      "description": "Mandatory witnessed retrieval. Bypasses cache, verifies durable receipt persistence, defaults to Cur"
+    },
+    {
+      "name": "sm_search_proof_debt",
+      "description": "Search with proof-debt analysis. Runs a standard search, then for each result checks the claim-ledge"
+    },
+    {
+      "name": "sm_benchmark_trust",
+      "description": "Benchmark trust quality across search results. Runs multiple queries and measures the trust distribu"
+    },
+    {
+      "name": "sm_decide_assertion_authority",
+      "description": "Return the canonical typed origin-authority decision receipt for asserting a fact. The purpose is fi"
+    },
+    {
+      "name": "sm_decide_action_authority",
+      "description": "Return the canonical typed origin-authority decision receipt for acting on a fact. The purpose is fi"
+    },
+    {
+      "name": "sm_search_explained",
+      "description": "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and cont"
+    },
+    {
+      "name": "sm_add_fact",
+      "description": "Ingest a document with automatic chunking. Splits into chunks, each embedded and indexed. Returns do"
+    },
+    {
+      "name": "sm_ingest_document",
+      "description": "Get knowledge base statistics: fact/chunk/document/session counts, DB size, embedding model, and gra"
+    },
+    {
+      "name": "sm_stats",
+      "description": "Find shortest path between two items in the knowledge graph. Traverses all edge types. Returns node "
+    },
+    {
+      "name": "sm_graph_path",
+      "description": "Fetch one fact by id (bare UUID or prefixed 'fact:<uuid>'). Returns full content, namespace, source,"
+    },
+    {
+      "name": "sm_get_fact",
+      "description": "Enumerate facts in a namespace (newest first) with pagination. Exhaustive, not similarity-ranked \u2014 f"
+    },
+    {
+      "name": "sm_list_facts",
+      "description": "List namespaces that currently contain facts. Use before sm_list_facts to discover what is stored."
+    },
+    {
+      "name": "sm_list_namespaces",
+      "description": "Fetch a fact plus its graph neighbors WITH their content in one call. Hydrates neighbor facts for id"
+    },
+    {
+      "name": "sm_get_fact_neighbors",
+      "description": "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting"
+    },
+    {
+      "name": "sm_supersede_fact",
+      "description": "List recent conversation sessions (newest first) with message counts."
+    },
+    {
+      "name": "sm_create_session",
+      "description": "Get most recent messages from a session within a token budget (default 4000), chronological order. R"
+    },
+    {
+      "name": "sm_add_message",
+      "description": "Hybrid semantic search over stored conversation MESSAGES (not facts). Recall what was discussed in p"
+    },
+    {
+      "name": "sm_list_sessions",
+      "description": "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vecto"
+    },
+    {
+      "name": "sm_get_messages",
+      "description": "Adaptive search: profiles query, routes to appropriate stages, applies factor graph belief propagati"
+    },
+    {
+      "name": "sm_search_conversations",
+      "description": "Detect contradictions in search results. Runs syndrome detection, computes corrections, and applies "
+    },
+    {
+      "name": "sm_route_query",
+      "description": "Detect contradictions among the top results for a query from their CONTENT (numeric, value, negation"
+    },
+    {
+      "name": "sm_search_with_routing",
+      "description": "Second-order retrieval: find items related to your search results through the graph, but NOT themsel"
+    },
+    {
+      "name": "sm_decoder_analyze",
+      "description": "Set provenance (evidence confidence) for an item. Confidence in [0.0, 1.0] with support count. Retur"
+    },
+    {
+      "name": "sm_detect_contradictions",
+      "description": "Run a memory lifecycle pass: analyze items for syndromes, compute corrections, identify subtraction "
+    },
+    {
+      "name": "sm_discord_search",
+      "description": "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. I"
+    },
+    {
+      "name": "sm_set_provenance",
+      "description": "List graph edges for a specific node (as source or target), or all edges if no node_id. Returns non-"
+    },
+    {
+      "name": "sm_run_lifecycle",
+      "description": "Invalidate a stored graph edge by ID. Append-only \u2014 edge is never deleted, only marked invalidated w"
+    },
+    {
+      "name": "sm_add_graph_edge",
+      "description": "Run factor graph belief propagation on stored graph edges. Models all 4 edge types as factors. Retur"
+    },
+    {
+      "name": "sm_list_graph_edges",
+      "description": "Find topological voids in the knowledge graph. Computes Betti numbers (components and cycles) and de"
+    },
+    {
+      "name": "sm_invalidate_graph_edge",
+      "description": "Detect communities in the knowledge graph (Leiden-inspired). Returns community assignments, optional"
+    },
+    {
+      "name": "sm_factor_graph",
+      "description": "Identify and optionally prune reasoning subgraphs in the knowledge graph. Runs autonomous subgraph m"
+    },
+    {
+      "name": "sm_topology",
+      "description": "Forget a single fact by id through the governed dependency-closure path. This build fails closed bec"
+    },
+    {
+      "name": "sm_community",
+      "description": "Permanently delete ALL memory in a namespace \u2014 facts, documents, chunks, sessions/messages. HARD del"
+    },
+    {
+      "name": "sm_subgraph_prune",
+      "description": "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outd"
+    },
+    {
+      "name": "sm_delete_fact",
+      "description": "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supe"
+    },
+    {
+      "name": "sm_delete_namespace",
+      "description": "Return the current persisted RL routing policy, including weights, training example count, and last "
+    },
+    {
+      "name": "sm_update_fact",
+      "description": "MUTATING: record a caller-supplied proxy feedback label for retrieval routing. This is not a verifie"
+    },
+    {
+      "name": "sm_consolidate_facts",
+      "description": "Verify and checkpoint the claim ledger when configured entry/byte thresholds are exceeded. Defaults "
+    },
+    {
+      "name": "sm_get_routing_policy",
+      "description": "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record "
+    },
+    {
+      "name": "sm_record_outcome",
+      "description": "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns t"
+    },
+    {
+      "name": "sm_compact_claim_ledger",
+      "description": "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or"
+    },
+    {
+      "name": "sm_create_claim",
+      "description": "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filte"
+    },
+    {
+      "name": "sm_add_evidence",
+      "description": "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims nee"
+    },
+    {
+      "name": "sm_judge_support",
+      "description": "Load a durable search receipt by receipt/request ID. Returns the stored receipt with evaluation time"
+    },
+    {
+      "name": "sm_search_as_of",
+      "description": "Replay a durable search receipt with caller-supplied query text and filters. Compares original resul"
+    },
+    {
+      "name": "sm_verify_claim",
+      "description": "Replay a durable search receipt using query text and filters retained by explicit opt-in. Returns th"
+    },
+    {
+      "name": "sm_get_search_receipt",
+      "description": "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS ind"
+    },
+    {
+      "name": "sm_replay_search_receipt",
+      "description": "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take "
+    },
+    {
+      "name": "sm_replay_search",
+      "description": "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns th"
+    },
+    {
+      "name": "sm_reconcile",
+      "description": "Check if embeddings need re-generation after a model change. Returns true if the embedding model or "
+    },
+    {
+      "name": "sm_vacuum",
+      "description": "Query imported claim projection rows. Filters by scope, text, valid-time, and claim state. Returns c"
+    },
+    {
+      "name": "sm_reembed_all",
+      "description": "Query imported relation projection rows. Filters by scope, text, valid-time, and subject entity. Ret"
+    },
+    {
+      "name": "sm_embeddings_are_dirty",
+      "description": "Query imported episode projection rows. Filters by scope and text. Returns episode rows with cause/e"
+    },
+    {
+      "name": "sm_query_claim_versions",
+      "description": "Query imported entity-alias rows. Filters by scope, canonical entity, and text. Returns alias rows w"
+    },
+    {
+      "name": "sm_query_relation_versions",
+      "description": "Query imported evidence-reference rows. Filters by scope, claim, and claim version. Returns evidence"
+    },
+    {
+      "name": "sm_query_episodes",
+      "description": "Import a projection envelope atomically. All records are committed in a single transaction or the en"
+    },
+    {
+      "name": "sm_query_entity_aliases",
+      "description": "Check whether an envelope has already been imported. Returns import receipts for the given envelope "
+    },
+    {
+      "name": "sm_query_evidence_refs",
+      "description": "List recent imports, optionally filtered by namespace. Returns import receipt records."
+    },
+    {
+      "name": "sm_import_envelope",
+      "description": "Parse JSON from raw LLM output. Handles think blocks, markdown fences, trailing text, and common JSO"
+    },
+    {
+      "name": "sm_import_status",
+      "description": "Parse JSON from raw LLM output as an untyped serde_json::Value. Useful when the expected schema is u"
+    },
+    {
+      "name": "sm_list_imports",
+      "description": "Strip </think> blocks from text. Removes chain-of-thought reasoning that some models emit. Returns c"
+    },
+    {
+      "name": "sm_parse_json",
+      "description": "Attempt to repair common LLM JSON errors: trailing commas, unquoted keys, single quotes, missing bra"
+    },
+    {
+      "name": "sm_parse_json_value",
+      "description": "Parse a string list from raw LLM output. Handles markdown bullet lists, numbered lists, comma-separa"
+    },
+    {
+      "name": "sm_strip_think_tags",
+      "description": "Parse a choice from raw LLM output given a list of valid options. Handles extra text, casing differe"
+    },
+    {
+      "name": "sm_repair_json",
+      "description": "Parse a number from raw LLM output. Handles text like 'The answer is 42' or 'Score: 0.85'. Returns t"
+    }
   ]
 }
