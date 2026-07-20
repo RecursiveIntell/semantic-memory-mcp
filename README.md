@@ -1,5 +1,7 @@
 # semantic-memory-mcp
 
+[![MCP Badge](https://lobehub.com/badge/mcp/recursiveintell-semantic-memory-mcp)](https://lobehub.com/mcp/recursiveintell-semantic-memory-mcp)
+
 `semantic-memory-mcp` is a local-first Model Context Protocol server for the
 [`semantic-memory`](../semantic-memory) Rust library. It gives MCP clients
 persistent semantic search, witnessed retrieval, durable receipts, governed
@@ -31,6 +33,29 @@ The current Rust source and `Cargo.toml` are authoritative. In particular:
 
 ## Install
 
+### Option 1: Cargo install (recommended)
+
+Install the published package from crates.io:
+
+```bash
+cargo install semantic-memory-mcp --locked --version '=0.5.5'
+```
+
+Then add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "semantic-memory": {
+      "command": "semantic-memory-mcp",
+      "args": ["--memory-dir", "$HOME/.local/share/semantic-memory", "--tool-profile", "agent"]
+    }
+  }
+}
+```
+
+### Option 2: Build from source
+
 From a checkout with the sibling path dependencies present:
 
 ```bash
@@ -40,11 +65,25 @@ cargo build --release
   --tool-profile agent
 ```
 
-Or install the published package when its registry dependencies match the
-release you intend to run:
+### Option 3: Docker
 
 ```bash
-cargo install semantic-memory-mcp --locked --version '=0.5.5'
+docker run -i --rm \
+  -v "$HOME/.local/share/semantic-memory:/data" \
+  ghcr.io/recursiveintell/semantic-memory-mcp:latest \
+  --memory-dir /data --tool-profile agent
+```
+
+Docker compose:
+
+```yaml
+services:
+  semantic-memory-mcp:
+    image: ghcr.io/recursiveintell/semantic-memory-mcp:latest
+    volumes:
+      - ~/.local/share/semantic-memory:/data
+    command: --memory-dir /data --tool-profile agent
+    stdin_open: true
 ```
 
 The Candle model defaults to `nomic-ai/nomic-embed-text-v1.5` through the
