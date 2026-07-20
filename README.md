@@ -33,7 +33,28 @@ The current Rust source and `Cargo.toml` are authoritative. In particular:
 
 ## Install
 
-### Option 1: Cargo install (recommended)
+### Option 1: npx (recommended)
+
+Run without installing:
+
+```bash
+npx -y @recursiveintell/semantic-memory-mcp --memory-dir ~/.local/share/semantic-memory --tool-profile agent
+```
+
+Or add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "semantic-memory": {
+      "command": "npx",
+      "args": ["-y", "@recursiveintell/semantic-memory-mcp", "--memory-dir", "~/.local/share/semantic-memory", "--tool-profile", "agent"]
+    }
+  }
+}
+```
+
+### Option 2: Cargo install
 
 Install the published package from crates.io:
 
@@ -48,13 +69,13 @@ Then add to your MCP client config:
   "mcpServers": {
     "semantic-memory": {
       "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "$HOME/.local/share/semantic-memory", "--tool-profile", "agent"]
+      "args": ["--memory-dir", "~/.local/share/semantic-memory", "--tool-profile", "agent"]
     }
   }
 }
 ```
 
-### Option 2: Build from source
+### Option 3: Build from source
 
 From a checkout with the sibling path dependencies present:
 

@@ -1,0 +1,27 @@
+{
+  "name": "@recursiveintell/semantic-memory-mcp",
+  "version": "1.1.0",
+  "description": "Local-first MCP server for agent memory kits — persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment.",
+  "bin": {
+    "semantic-memory-mcp": "./bin/semantic-memory-mcp.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "semantic-search",
+    "vector-search",
+    "knowledge-base",
+    "sqlite",
+    "rust",
+    "local-first",
+    "agent-memory-kits",
+    "lobehub"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RecursiveIntell/semantic-memory-mcp.git"
+  },
+  "homepage": "https://github.com/RecursiveIntell/semantic-memory-mcp",
+  "dependencies": {}
+}
