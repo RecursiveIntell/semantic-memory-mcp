@@ -5458,6 +5458,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -5554,6 +5555,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -5586,6 +5588,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -5613,6 +5616,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -5718,6 +5722,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let server = SemanticMemoryServer::new(MemoryBridge::open(make_config()).unwrap(), "full");
@@ -5786,6 +5791,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6022,6 +6028,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -6059,6 +6066,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -6092,6 +6100,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -6129,6 +6138,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -6234,6 +6244,7 @@ mod correctness_contract_tests {
                 turbo_quant_enabled: false,
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
+            provekv_enabled: false,
             })
             .unwrap(),
             "full",
@@ -6268,6 +6279,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6325,6 +6337,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6401,6 +6414,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6443,6 +6457,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6533,6 +6548,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -6582,6 +6598,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -6741,6 +6758,7 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let server = SemanticMemoryServer::new(bridge, "full");

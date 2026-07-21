@@ -1298,6 +1298,7 @@ mod tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         (dir, SemanticMemoryServer::new(bridge, "stable"))
@@ -1358,6 +1359,7 @@ mod tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
+        provekv_enabled: false,
         })
         .unwrap();
         let _ = SemanticMemoryServer::new(bridge, "full");
