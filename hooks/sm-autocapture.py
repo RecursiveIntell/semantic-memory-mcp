@@ -33,15 +33,20 @@ from pathlib import Path
 
 # Add the agent-hooks directory to the path for the HTTP client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sm_http_client import search as http_search, add_fact as http_add_fact, http_available
+from sm_http_client import (
+    search as http_search,
+    add_fact as http_add_fact,
+    http_available,
+    http_record_outcome,
+)
 
 # ── Config ──────────────────────────────────────────────────────────────
 
 # Min confidence to even consider capturing
-MIN_INTEREST_SIGNAL = 3
+MIN_INTEREST_SIGNAL = 4
 
 # Max facts to capture per turn
-MAX_CAPTURES_PER_TURN = 2
+MAX_CAPTURES_PER_TURN = 1
 
 # Max content length per fact
 MAX_FACT_LEN = 500
@@ -147,6 +152,14 @@ SKIP_PATTERNS = [
     r"^\s*(?:tool count|test count|compile)",
     r"^\s*(?:needs?|requires?|blocked|waiting)",
     r"\[IMPORTANT:.*Background process",
+    r"\[ASYNC DELEGATION",
+    r"^\s*Memory updated",
+    r"^\s*Changed:",
+    r"^\s*Skill library updated",
+    r"^\s*Review the conversation above and update the skill library",
+    r"^\s*Auto-captured",
+    r"^\s*Verification:",
+    r"^\s*(?:Research|Build|Create|Write)\s+",
     r"^\s*(?:the\s+)?(?:key\s+)?session\s+learnings?",
     r"^\s*(?:compiles?|pushed|installed)",
 ]
@@ -278,14 +291,10 @@ def dedupe_against_db(candidates):
 
 def namespace_for(cwd, category):
     """Determine namespace based on cwd and category."""
-    path = Path(cwd or ".")
-    # Check if we're in a known project
-    try:
-        name = path.name
-        if name and path.parent != path:  # not root
-            return f"projects"
-    except Exception:
-        pass
+    # Previously returned "projects" for any cwd with a name, which
+    # caused session-progress noise to accumulate in the projects namespace.
+    # Now use "general" for autocaptured facts — durable facts should be
+    # explicitly saved by the agent with a specific namespace.
     return "general"
 
 
@@ -346,14 +355,7 @@ def main():
                 captured.append(f"{c['category']}: {content[:80]}")
                 # Record outcome for RL feedback
                 try:
-                    import urllib.request
-                    from sm_http_client import get_http_port
-                    port = get_http_port()
-                    if port:
-                        body_out = json.dumps({"query": content[:200], "outcome": "good", "query_class": "A"}).encode()
-                        req = urllib.request.Request(f"http://127.0.0.1:{port}/record-outcome",
-                                                     data=body_out, headers={"Content-Type": "application/json"})
-                        urllib.request.urlopen(req, timeout=3).read()
+                    http_record_outcome(content[:200], outcome="good", query_class="A", timeout=3)
                 except Exception:
                     pass
 

@@ -60,7 +60,14 @@ def check_duplicate_http(content, namespace):
     if not results:
         return None
 
+    if isinstance(results, dict):
+        results = results.get("results") or []
+    if not isinstance(results, list):
+        return None
+
     for r in results:
+        if not isinstance(r, dict):
+            continue
         existing = r.get("content", "")
         # Check if the existing content is substantially the same
         if existing and content_similarity(existing, content) > 0.85:
