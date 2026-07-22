@@ -1,5 +1,5 @@
 {
-  "description": "Local-first MCP server for agent memory kits \u2014 persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment. Default build uses in-process Candle embeddings (no Ollama required). Supports hybrid BM25+vector search with RRF, contradiction detection via belief propagation, typed knowledge graph with causal/temporal/semantic/entity edges, factor-graph reasoning, topological void detection, community detection, lawful subtraction, and adaptive query routing. SQLite+FTS5 authoritative store with usearch vector sidecar. All data stays on the operator's machine \u2014 no cloud, no API keys, no telemetry. Runtime tool profiles (lean, standard, agent, full) control the exposed surface. Ships with first-class integrations for Hermes Agent, Claude Code, and Codex.",
+  "description": "Local-first MCP server for agent memory kits — persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment. Default build uses in-process Candle embeddings (no Ollama required). Supports hybrid BM25+vector search with RRF, contradiction detection via belief propagation, typed knowledge graph with causal/temporal/semantic/entity edges, factor-graph reasoning, topological void detection, community detection, lawful subtraction, and adaptive query routing. SQLite+FTS5 authoritative store with usearch vector sidecar. All data stays on the operator's machine — no cloud, no API keys, no telemetry. Runtime tool profiles (lean, standard, agent, full) control the exposed surface. Ships with first-class integrations for Hermes Agent, Claude Code, and Codex.",
   "homepage": "https://github.com/RecursiveIntell/semantic-memory-mcp",
   "identifier": "recursiveintell-semantic-memory-mcp",
   "name": "Semantic Memory MCP",
@@ -26,11 +26,6 @@
     "tool-profiles"
   ],
   "version": "1.1.0",
-  "capabilities": {
-    "tools": true,
-    "prompts": true,
-    "resources": true
-  },
   "prompts": [
     {
       "name": "sm-recall",
@@ -39,7 +34,7 @@
         {
           "name": "query",
           "required": true,
-          "description": "The search query \u2014 what you want to recall"
+          "description": "The search query — what you want to recall"
         },
         {
           "name": "namespace",
@@ -194,278 +189,2841 @@
       "mimeType": "text/markdown"
     }
   ],
-  "resource_templates": [
+  "tools": [
     {
-      "uriTemplate": "sm://skill/{skill_name}",
-      "name": "skill-by-name",
-      "description": "Fetch a skill document by name.",
-      "mimeType": "text/markdown"
-    }
-  ],
-  "skills": [
-    {
-      "name": "sm_search",
-      "description": "Semantic hybrid search (BM25 + vector + RRF). Returns ranked results with content, scores, and stabl"
-    },
-    {
-      "name": "sm_search_witnessed",
-      "description": "Mandatory witnessed retrieval. Bypasses cache, verifies durable receipt persistence, defaults to Cur"
-    },
-    {
-      "name": "sm_search_proof_debt",
-      "description": "Search with proof-debt analysis. Runs a standard search, then for each result checks the claim-ledge"
-    },
-    {
-      "name": "sm_benchmark_trust",
-      "description": "Benchmark trust quality across search results. Runs multiple queries and measures the trust distribu"
-    },
-    {
-      "name": "sm_decide_assertion_authority",
-      "description": "Return the canonical typed origin-authority decision receipt for asserting a fact. The purpose is fi"
-    },
-    {
-      "name": "sm_decide_action_authority",
-      "description": "Return the canonical typed origin-authority decision receipt for acting on a fact. The purpose is fi"
-    },
-    {
-      "name": "sm_search_explained",
-      "description": "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and cont"
+      "name": "sm_add_evidence",
+      "description": "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns the evidence bundle ID.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_add_evidence",
+        "properties": {
+          "claim_id": {
+            "description": "The claim ID to add evidence to.",
+            "type": "string"
+          },
+          "evidence_text": {
+            "description": "The evidence text supporting the claim.",
+            "type": "string"
+          },
+          "source_type": {
+            "description": "Optional source type (e.g., \"document\", \"web\", \"experiment\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "claim_id",
+          "evidence_text"
+        ],
+        "title": "AddEvidenceParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_add_fact",
-      "description": "Ingest a document with automatic chunking. Splits into chunks, each embedded and indexed. Returns do"
-    },
-    {
-      "name": "sm_ingest_document",
-      "description": "Get knowledge base statistics: fact/chunk/document/session counts, DB size, embedding model, and gra"
-    },
-    {
-      "name": "sm_stats",
-      "description": "Find shortest path between two items in the knowledge graph. Traverses all edge types. Returns node "
-    },
-    {
-      "name": "sm_graph_path",
-      "description": "Fetch one fact by id (bare UUID or prefixed 'fact:<uuid>'). Returns full content, namespace, source,"
-    },
-    {
-      "name": "sm_get_fact",
-      "description": "Enumerate facts in a namespace (newest first) with pagination. Exhaustive, not similarity-ranked \u2014 f"
-    },
-    {
-      "name": "sm_list_facts",
-      "description": "List namespaces that currently contain facts. Use before sm_list_facts to discover what is stored."
-    },
-    {
-      "name": "sm_list_namespaces",
-      "description": "Fetch a fact plus its graph neighbors WITH their content in one call. Hydrates neighbor facts for id"
-    },
-    {
-      "name": "sm_get_fact_neighbors",
-      "description": "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting"
-    },
-    {
-      "name": "sm_supersede_fact",
-      "description": "List recent conversation sessions (newest first) with message counts."
-    },
-    {
-      "name": "sm_create_session",
-      "description": "Get most recent messages from a session within a token budget (default 4000), chronological order. R"
-    },
-    {
-      "name": "sm_add_message",
-      "description": "Hybrid semantic search over stored conversation MESSAGES (not facts). Recall what was discussed in p"
-    },
-    {
-      "name": "sm_list_sessions",
-      "description": "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vecto"
-    },
-    {
-      "name": "sm_get_messages",
-      "description": "Adaptive search: profiles query, routes to appropriate stages, applies factor graph belief propagati"
-    },
-    {
-      "name": "sm_search_conversations",
-      "description": "Detect contradictions in search results. Runs syndrome detection, computes corrections, and applies "
-    },
-    {
-      "name": "sm_route_query",
-      "description": "Detect contradictions among the top results for a query from their CONTENT (numeric, value, negation"
-    },
-    {
-      "name": "sm_search_with_routing",
-      "description": "Second-order retrieval: find items related to your search results through the graph, but NOT themsel"
-    },
-    {
-      "name": "sm_decoder_analyze",
-      "description": "Set provenance (evidence confidence) for an item. Confidence in [0.0, 1.0] with support count. Retur"
-    },
-    {
-      "name": "sm_detect_contradictions",
-      "description": "Run a memory lifecycle pass: analyze items for syndromes, compute corrections, identify subtraction "
-    },
-    {
-      "name": "sm_discord_search",
-      "description": "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. I"
-    },
-    {
-      "name": "sm_set_provenance",
-      "description": "List graph edges for a specific node (as source or target), or all edges if no node_id. Returns non-"
-    },
-    {
-      "name": "sm_run_lifecycle",
-      "description": "Invalidate a stored graph edge by ID. Append-only \u2014 edge is never deleted, only marked invalidated w"
+      "description": "Add a fact to the knowledge base. Embedded and indexed for semantic search. Returns fact ID and content digest.",
+      "inputSchema": {
+        "$defs": {
+          "MemoryKind": {
+            "enum": [
+              "durable_fact",
+              "preference",
+              "project_state",
+              "instruction_policy",
+              "correction",
+              "observation",
+              "episode_summary",
+              "skill_procedure",
+              "ephemeral_inference"
+            ],
+            "type": "string"
+          },
+          "Sensitivity": {
+            "enum": [
+              "public",
+              "internal",
+              "confidential",
+              "restricted"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_add_fact",
+        "properties": {
+          "content": {
+            "description": "The fact content text",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "default": null,
+            "description": "Evidence references supporting this fact (URLs, fact IDs, source paths).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "extract_entities": {
+            "default": null,
+            "description": "When true, extract named entities via Ollama and link them as graph edges (opt-in)",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "default": null,
+            "description": "Optional caller-provided idempotency key. Retries with the same key and\npayload return the original fact; omit it for a distinct append.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "memory_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MemoryKind"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Memory kind classification: durable_fact, preference, project_state, instruction_policy,\ncorrection, observation, episode_summary, skill_procedure, ephemeral_inference.\nDefault: durable_fact. Ephemeral inferences require evidence_refs to promote."
+          },
+          "namespace": {
+            "description": "Namespace to store the fact in (e.g. \"general\", \"research\", \"coding\")",
+            "type": "string"
+          },
+          "sensitivity": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Sensitivity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Sensitivity class: public, internal, confidential, restricted.\nDefault: internal. Confidential/restricted facts are blocked from autocapture."
+          },
+          "source": {
+            "default": null,
+            "description": "Optional source attribution",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "content",
+          "namespace"
+        ],
+        "title": "AddFactParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_add_graph_edge",
-      "description": "Run factor graph belief propagation on stored graph edges. Models all 4 edge types as factors. Retur"
+      "description": "Add a durable, typed graph edge between two nodes. Edge types: semantic, temporal, causal, entity. Idempotent — same edge returns existing ID.",
+      "inputSchema": {
+        "$defs": {
+          "EdgeType": {
+            "description": "Edge type for graph edges. JSON Schema enum helps LLMs pick the\nright value without guessing.",
+            "oneOf": [
+              {
+                "const": "Semantic",
+                "description": "Semantic similarity edge (requires cosine_similarity)",
+                "type": "string"
+              },
+              {
+                "const": "Temporal",
+                "description": "Temporal ordering edge (requires delta_secs)",
+                "type": "string"
+              },
+              {
+                "const": "Causal",
+                "description": "Causal relationship edge (requires confidence)",
+                "type": "string"
+              },
+              {
+                "const": "Entity",
+                "description": "Named relationship edge (requires relation)",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_add_graph_edge",
+        "properties": {
+          "confidence": {
+            "default": null,
+            "description": "For causal edges: confidence (0.0-1.0). Ignored for other types.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cosine_similarity": {
+            "default": null,
+            "description": "For semantic edges: cosine similarity (0.0-1.0). Ignored for other types.",
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "delta_secs": {
+            "default": null,
+            "description": "For temporal edges: time delta in seconds. Ignored for other types.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "edge_type": {
+            "$ref": "#/$defs/EdgeType",
+            "description": "Edge type: semantic, temporal, causal, or entity"
+          },
+          "evidence_ids": {
+            "default": null,
+            "description": "For causal edges: evidence IDs. Ignored for other types.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "metadata": {
+            "default": null,
+            "description": "Optional metadata as a JSON object string",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relation": {
+            "default": null,
+            "description": "For entity edges: relationship name (e.g. \"mentions\", \"modifies\"). Ignored for other types.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "Source node ID (prefixed, e.g. \"fact:<uuid>\", \"namespace:<name>\")",
+            "type": "string"
+          },
+          "target": {
+            "description": "Target node ID (prefixed)",
+            "type": "string"
+          },
+          "weight": {
+            "default": 1.0,
+            "description": "Edge weight (default 1.0)",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "edge_type"
+        ],
+        "title": "AddGraphEdgeParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_list_graph_edges",
-      "description": "Find topological voids in the knowledge graph. Computes Betti numbers (components and cycles) and de"
-    },
-    {
-      "name": "sm_invalidate_graph_edge",
-      "description": "Detect communities in the knowledge graph (Leiden-inspired). Returns community assignments, optional"
-    },
-    {
-      "name": "sm_factor_graph",
-      "description": "Identify and optionally prune reasoning subgraphs in the knowledge graph. Runs autonomous subgraph m"
-    },
-    {
-      "name": "sm_topology",
-      "description": "Forget a single fact by id through the governed dependency-closure path. This build fails closed bec"
+      "name": "sm_benchmark_trust",
+      "description": "Benchmark trust quality across search results. Runs multiple queries and measures the trust distribution (supported/partially_supported/unsupported/contradicted/heuristic_only/persisted_unjudged) of returned results. Shows what fraction of retrieved facts have claim-ledger backing vs unjudged.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_benchmark_trust",
+        "properties": {
+          "namespaces": {
+            "default": null,
+            "description": "Optional namespace filter.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "query_count": {
+            "default": null,
+            "description": "Number of benchmark queries to run (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "top_k": {
+            "default": null,
+            "description": "Top-k for each search (default 5).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "BenchmarkTrustParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_community",
-      "description": "Permanently delete ALL memory in a namespace \u2014 facts, documents, chunks, sessions/messages. HARD del"
-    },
-    {
-      "name": "sm_subgraph_prune",
-      "description": "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outd"
-    },
-    {
-      "name": "sm_delete_fact",
-      "description": "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supe"
-    },
-    {
-      "name": "sm_delete_namespace",
-      "description": "Return the current persisted RL routing policy, including weights, training example count, and last "
-    },
-    {
-      "name": "sm_update_fact",
-      "description": "MUTATING: record a caller-supplied proxy feedback label for retrieval routing. This is not a verifie"
-    },
-    {
-      "name": "sm_consolidate_facts",
-      "description": "Verify and checkpoint the claim ledger when configured entry/byte thresholds are exceeded. Defaults "
-    },
-    {
-      "name": "sm_get_routing_policy",
-      "description": "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record "
-    },
-    {
-      "name": "sm_record_outcome",
-      "description": "Add evidence to a claim. Creates an EvidenceBundle linking the evidence text to the claim. Returns t"
+      "description": "Detect communities in the knowledge graph (Leiden-inspired). Returns community assignments, optional contradiction scans, and compression recommendations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_community\n\nMCP-001: edges field removed — edges are now loaded from the store\nautomatically. Configuration params (resolution, seed, contradictions,\nimportance_scores) remain caller-supplied.",
+        "properties": {
+          "contradictions": {
+            "default": null,
+            "description": "Optional contradiction pairs to scan within communities",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "importance_scores": {
+            "default": null,
+            "description": "Optional importance scores per item for community-aware compression recommendations",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "format": "double",
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "resolution": {
+            "default": null,
+            "description": "Resolution parameter for community detection (default 1.0). Higher values favor smaller communities.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "seed": {
+            "default": null,
+            "description": "Random seed for deterministic results (default 42)",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "summarize": {
+            "default": null,
+            "description": "When true, generate an LLM summary for each community via Ollama (opt-in)",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "title": "CommunityParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_compact_claim_ledger",
-      "description": "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or"
+      "description": "Verify and checkpoint the claim ledger when configured entry/byte thresholds are exceeded. Defaults to dry_run=true. A successful rotation atomically activates a digest-verified snapshot and retained tail, emits a compaction receipt bound to the prior ledger head, and keeps bounded backups.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_compact_claim_ledger.",
+        "properties": {
+          "dry_run": {
+            "default": null,
+            "description": "Preview the verified compaction without writing. Defaults to true.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "max_backups": {
+            "default": null,
+            "description": "Number of prior verified generations/backups to retain (default 3).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_bytes": {
+            "default": null,
+            "description": "Compact only when the active tail exceeds this byte count (default 16 MiB).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_entries": {
+            "default": null,
+            "description": "Compact only when the active tail exceeds this entry count (default 10,000).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retain_tail_entries": {
+            "default": null,
+            "description": "Minimum number of recent entries retained verbatim (default 256).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "CompactClaimLedgerParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_consolidate_facts",
+      "description": "Consolidate two near-duplicate facts into one. Merges their content, updates the kept fact, and supersedes the other with a 'consolidated with' edge. Use this to clean up duplicate knowledge.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_consolidate_facts",
+        "properties": {
+          "keep_id": {
+            "description": "First fact ID (will be kept and updated with merged content).",
+            "type": "string"
+          },
+          "merged_content": {
+            "description": "Optional merged content. If not provided, content from both facts will be concatenated.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersede_id": {
+            "description": "Second fact ID (will be superseded by the kept fact).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "keep_id",
+          "supersede_id"
+        ],
+        "title": "ConsolidateFactsParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_create_claim",
-      "description": "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filte"
+      "description": "Create a typed Claim from a semantic-memory fact. The claim gets a source-spanned provenance record from the fact's metadata. Returns the claim ID.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_create_claim",
+        "properties": {
+          "fact_id": {
+            "description": "The fact ID to create a claim from (with or without \"fact:\" prefix).",
+            "type": "string"
+          },
+          "source_span": {
+            "description": "Optional source span description (e.g., \"line 42-58\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "fact_id"
+        ],
+        "title": "CreateClaimParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_add_evidence",
-      "description": "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims nee"
+      "name": "sm_decide_action_authority",
+      "description": "Return the canonical typed origin-authority decision receipt for acting on a fact. The purpose is fixed to action; recall or assertion authority is not reused. This read-only decision surface never returns memory content or performs the action.",
+      "inputSchema": {
+        "$defs": {
+          "GovernedAccessPurposeParam": {
+            "description": "Purpose values carried by a delegation/elevation lease. The MCP tool fixes\nthe decision purpose independently, so callers cannot substitute recall.",
+            "enum": [
+              "recall",
+              "assertion",
+              "action",
+              "export",
+              "replay",
+              "admin"
+            ],
+            "type": "string"
+          },
+          "GovernedLeaseParams": {
+            "description": "Existing multi-principal delegation/elevation lease contract in MCP-safe fields.",
+            "properties": {
+              "audiences": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "delegatee": {
+                "type": "string"
+              },
+              "delegator": {
+                "type": "string"
+              },
+              "elevation": {
+                "default": false,
+                "type": "boolean"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "lease_id": {
+                "type": "string"
+              },
+              "purposes": {
+                "items": {
+                  "$ref": "#/$defs/GovernedAccessPurposeParam"
+                },
+                "type": "array"
+              },
+              "revoked": {
+                "default": false,
+                "type": "boolean"
+              },
+              "scope": {
+                "$ref": "#/$defs/GovernedNamespaceScopeParams"
+              }
+            },
+            "required": [
+              "lease_id",
+              "delegator",
+              "delegatee",
+              "purposes",
+              "scope",
+              "expires_at"
+            ],
+            "type": "object"
+          },
+          "GovernedNamespaceScopeParams": {
+            "description": "Exact namespace/resource scope used by governed authority decisions.",
+            "properties": {
+              "domain": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "repo_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workspace_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "namespace"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Multi-principal request for a fixed-purpose assertion or action decision.",
+        "properties": {
+          "audiences": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "caller": {
+            "type": "string"
+          },
+          "delegation_or_elevation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GovernedLeaseParams"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_id": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/$defs/GovernedNamespaceScopeParams"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id",
+          "caller",
+          "subject",
+          "audiences",
+          "scope"
+        ],
+        "title": "GovernedDecisionParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_judge_support",
-      "description": "Load a durable search receipt by receipt/request ID. Returns the stored receipt with evaluation time"
+      "name": "sm_decide_assertion_authority",
+      "description": "Return the canonical typed origin-authority decision receipt for asserting a fact. The purpose is fixed to assertion; recall authority is not reused. This read-only decision surface never returns memory content.",
+      "inputSchema": {
+        "$defs": {
+          "GovernedAccessPurposeParam": {
+            "description": "Purpose values carried by a delegation/elevation lease. The MCP tool fixes\nthe decision purpose independently, so callers cannot substitute recall.",
+            "enum": [
+              "recall",
+              "assertion",
+              "action",
+              "export",
+              "replay",
+              "admin"
+            ],
+            "type": "string"
+          },
+          "GovernedLeaseParams": {
+            "description": "Existing multi-principal delegation/elevation lease contract in MCP-safe fields.",
+            "properties": {
+              "audiences": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "delegatee": {
+                "type": "string"
+              },
+              "delegator": {
+                "type": "string"
+              },
+              "elevation": {
+                "default": false,
+                "type": "boolean"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "lease_id": {
+                "type": "string"
+              },
+              "purposes": {
+                "items": {
+                  "$ref": "#/$defs/GovernedAccessPurposeParam"
+                },
+                "type": "array"
+              },
+              "revoked": {
+                "default": false,
+                "type": "boolean"
+              },
+              "scope": {
+                "$ref": "#/$defs/GovernedNamespaceScopeParams"
+              }
+            },
+            "required": [
+              "lease_id",
+              "delegator",
+              "delegatee",
+              "purposes",
+              "scope",
+              "expires_at"
+            ],
+            "type": "object"
+          },
+          "GovernedNamespaceScopeParams": {
+            "description": "Exact namespace/resource scope used by governed authority decisions.",
+            "properties": {
+              "domain": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "repo_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workspace_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "namespace"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Multi-principal request for a fixed-purpose assertion or action decision.",
+        "properties": {
+          "audiences": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "caller": {
+            "type": "string"
+          },
+          "delegation_or_elevation": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GovernedLeaseParams"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_id": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/$defs/GovernedNamespaceScopeParams"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id",
+          "caller",
+          "subject",
+          "audiences",
+          "scope"
+        ],
+        "title": "GovernedDecisionParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_search_as_of",
-      "description": "Replay a durable search receipt with caller-supplied query text and filters. Compares original resul"
+      "name": "sm_decoder_analyze",
+      "description": "Detect contradictions in search results. Runs syndrome detection, computes corrections, and applies belief propagation to refine confidence scores.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_decoder_analyze",
+        "properties": {
+          "contradictions": {
+            "default": null,
+            "description": "Known contradiction pairs",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "results": {
+            "description": "Search results as (item_id, score) pairs",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "format": "double",
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "DecoderAnalyzeParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_verify_claim",
-      "description": "Replay a durable search receipt using query text and filters retained by explicit opt-in. Returns th"
+      "name": "sm_delete_fact",
+      "description": "Forget a single fact by id through the governed dependency-closure path. This build fails closed because no trusted authenticated authority issuer is injected into the MCP composition root.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_delete_fact",
+        "properties": {
+          "fact_id": {
+            "description": "The fact id to permanently delete (bare UUID or prefixed \"fact:<uuid>\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id"
+        ],
+        "title": "DeleteFactParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_get_search_receipt",
-      "description": "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS ind"
+      "name": "sm_delete_namespace",
+      "description": "Permanently delete ALL memory in a namespace — facts, documents, chunks, sessions/messages. HARD delete, irreversible. Returns per-surface deletion count.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_delete_namespace",
+        "properties": {
+          "namespace": {
+            "description": "The namespace to permanently delete (all its facts, documents, chunks, and namespaced sessions).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "DeleteNamespaceParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_replay_search_receipt",
-      "description": "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take "
+      "name": "sm_detect_contradictions",
+      "description": "Detect contradictions among the top results for a query from their CONTENT (numeric, value, negation, or antonym disagreement) — no pre-asserted edges required. Returns candidate conflicting pairs, each with the signals that fired and a human-readable reason. Persist a confirmed pair with sm_add_graph_edge(edge_type=\"contradicts\") so the decoder/community/factor-graph tools pick it up.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_detect_contradictions",
+        "properties": {
+          "query": {
+            "description": "The query whose top results are scanned for content contradictions",
+            "type": "string"
+          },
+          "record_to_ledger": {
+            "default": null,
+            "description": "When true, record each detected contradiction pair to the claim-ledger\nas a hash-chained ContradictionCandidate entry (requires the\n`claim-integration` feature). Default false.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "top_k": {
+            "default": null,
+            "description": "How many top results to scan (default 10)",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "DetectContradictionsParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_replay_search",
-      "description": "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns th"
-    },
-    {
-      "name": "sm_reconcile",
-      "description": "Check if embeddings need re-generation after a model change. Returns true if the embedding model or "
-    },
-    {
-      "name": "sm_vacuum",
-      "description": "Query imported claim projection rows. Filters by scope, text, valid-time, and claim state. Returns c"
-    },
-    {
-      "name": "sm_reembed_all",
-      "description": "Query imported relation projection rows. Filters by scope, text, valid-time, and subject entity. Ret"
+      "name": "sm_discord_search",
+      "description": "Second-order retrieval: find items related to your search results through the graph, but NOT themselves direct hits. Loads edges from store automatically.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_discord_search\n\nMCP-001: graph_edges field removed — edges are now loaded from the store\nautomatically. Caller supplies only the direct result IDs.",
+        "properties": {
+          "direct_result_ids": {
+            "description": "Direct result item IDs (the top-K from search)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "direct_result_ids"
+        ],
+        "title": "DiscordSearchParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_embeddings_are_dirty",
-      "description": "Query imported episode projection rows. Filters by scope and text. Returns episode rows with cause/e"
+      "description": "Check if embeddings need re-generation after a model change. Returns true if the embedding model or dimensions have changed since the last embedding was stored.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_embeddings_are_dirty (no params needed, but struct for consistency)",
+        "title": "EmbeddingsAreDirtyParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_query_claim_versions",
-      "description": "Query imported entity-alias rows. Filters by scope, canonical entity, and text. Returns alias rows w"
+      "name": "sm_factor_graph",
+      "description": "Run factor graph belief propagation on stored graph edges. Models all 4 edge types as factors. Returns unified confidence scores after convergence.",
+      "inputSchema": {
+        "$defs": {
+          "FactorGraphNodeInput": {
+            "description": "A node input for the factor graph.",
+            "properties": {
+              "initial_belief": {
+                "description": "Initial belief score (0.0-1.0, from provenance or search score)",
+                "format": "double",
+                "type": "number"
+              },
+              "item_id": {
+                "description": "Node/item ID (e.g. \"fact:<uuid>\")",
+                "type": "string"
+              }
+            },
+            "required": [
+              "item_id",
+              "initial_belief"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_factor_graph\n\nMCP-001: edges field removed — edges are now loaded from the store\nautomatically. Caller supplies only node initial beliefs and optional\nconfig overrides.",
+        "properties": {
+          "causal_weight": {
+            "default": null,
+            "description": "Weight for causal factors (default 0.30)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "convergence_threshold": {
+            "default": null,
+            "description": "Convergence threshold (default 0.001)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "entity_weight": {
+            "default": null,
+            "description": "Weight for entity factors (default 0.15)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_iterations": {
+            "default": null,
+            "description": "Max iterations for message passing (default 50)",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "nodes": {
+            "description": "Nodes with their initial belief scores",
+            "items": {
+              "$ref": "#/$defs/FactorGraphNodeInput"
+            },
+            "type": "array"
+          },
+          "self_influence": {
+            "default": null,
+            "description": "How much the node's own initial belief matters vs neighbor influence (default 0.6)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "semantic_weight": {
+            "default": null,
+            "description": "Weight for semantic factors (default 0.35)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "temporal_weight": {
+            "default": null,
+            "description": "Weight for temporal factors (default 0.20)",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "title": "FactorGraphParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_query_relation_versions",
-      "description": "Query imported evidence-reference rows. Filters by scope, claim, and claim version. Returns evidence"
+      "name": "sm_get_fact",
+      "description": "Fetch one fact by id (bare UUID or prefixed 'fact:<uuid>'). Returns full content, namespace, source, timestamps, and metadata.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_get_fact",
+        "properties": {
+          "fact_id": {
+            "description": "The fact id. Accepts a bare UUID or a prefixed id like \"fact:<uuid>\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id"
+        ],
+        "title": "GetFactParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_query_episodes",
-      "description": "Import a projection envelope atomically. All records are committed in a single transaction or the en"
+      "name": "sm_get_fact_neighbors",
+      "description": "Fetch a fact plus its graph neighbors WITH their content in one call. Hydrates neighbor facts for ids returned by graph tools.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_get_fact_neighbors",
+        "properties": {
+          "item_id": {
+            "description": "The node id whose neighbors to fetch (bare UUID or prefixed \"fact:<uuid>\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "title": "GetFactNeighborsParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_query_entity_aliases",
-      "description": "Check whether an envelope has already been imported. Returns import receipts for the given envelope "
+      "name": "sm_get_messages",
+      "description": "Get most recent messages from a session within a token budget (default 4000), chronological order. Returns role, content, timestamps.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_get_messages",
+        "properties": {
+          "max_tokens": {
+            "default": null,
+            "description": "Return the most recent messages fitting within this token budget (default 4000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "Session id to read messages from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "GetMessagesParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_query_evidence_refs",
-      "description": "List recent imports, optionally filtered by namespace. Returns import receipt records."
+      "name": "sm_get_routing_policy",
+      "description": "Return the current persisted RL routing policy, including weights, training example count, and last update time.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_get_search_receipt",
+      "description": "Load a durable search receipt by receipt/request ID. Returns the stored receipt with evaluation time, retrieval family, result IDs, and digests.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_get_search_receipt",
+        "properties": {
+          "receipt_id": {
+            "description": "The receipt/request ID to look up.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id"
+        ],
+        "title": "GetSearchReceiptParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_graph_path",
+      "description": "Find shortest path between two items in the knowledge graph. Traverses all edge types. Returns node IDs with edge evidence per hop.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_graph_path",
+        "properties": {
+          "from_id": {
+            "description": "Starting item ID",
+            "type": "string"
+          },
+          "max_depth": {
+            "default": null,
+            "description": "Maximum BFS depth (default 5)",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "to_id": {
+            "description": "Target item ID",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_id",
+          "to_id"
+        ],
+        "title": "GraphPathParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_import_envelope",
-      "description": "Parse JSON from raw LLM output. Handles think blocks, markdown fences, trailing text, and common JSO"
+      "description": "Import a projection envelope atomically. All records are committed in a single transaction or the entire import is rolled back. Pass the envelope as a JSON string.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_import_envelope",
+        "properties": {
+          "envelope_json": {
+            "description": "The import envelope as a JSON string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "envelope_json"
+        ],
+        "title": "ImportEnvelopeParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_import_status",
-      "description": "Parse JSON from raw LLM output as an untyped serde_json::Value. Useful when the expected schema is u"
+      "description": "Check whether an envelope has already been imported. Returns import receipts for the given envelope ID.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_import_status",
+        "properties": {
+          "envelope_id": {
+            "description": "The envelope ID to check import status for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "envelope_id"
+        ],
+        "title": "ImportStatusParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_ingest_document",
+      "description": "Ingest a document with automatic chunking. Splits into chunks, each embedded and indexed. Returns document ID and chunk count.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_ingest_document",
+        "properties": {
+          "content": {
+            "description": "The document content text",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Namespace to store the document in",
+            "type": "string"
+          },
+          "title": {
+            "description": "Document title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "title",
+          "namespace"
+        ],
+        "title": "IngestDocumentParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_invalidate_graph_edge",
+      "description": "Invalidate a stored graph edge by ID. Append-only — edge is never deleted, only marked invalidated with a reason.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_invalidate_graph_edge",
+        "properties": {
+          "edge_id": {
+            "description": "Edge ID to invalidate",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Reason for invalidation",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge_id",
+          "reason"
+        ],
+        "title": "InvalidateGraphEdgeParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_judge_support",
+      "description": "Judge the support state of a claim. Creates a SupportJudgment (supported, unsupported, contested, or heuristic_only) with optional rationale.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_judge_support",
+        "properties": {
+          "claim_id": {
+            "description": "The claim ID to judge.",
+            "type": "string"
+          },
+          "judgment": {
+            "description": "The support judgment: \"supported\", \"unsupported\", \"contested\", or \"heuristic_only\".",
+            "type": "string"
+          },
+          "rationale": {
+            "description": "Optional rationale for the judgment.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "claim_id",
+          "judgment"
+        ],
+        "title": "JudgeSupportParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_list_facts",
+      "description": "Enumerate facts in a namespace (newest first) with pagination. Exhaustive, not similarity-ranked — for browsing, auditing, or deduping.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_list_facts",
+        "properties": {
+          "limit": {
+            "default": null,
+            "description": "Maximum facts to return (default 50).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to enumerate facts from.",
+            "type": "string"
+          },
+          "offset": {
+            "default": null,
+            "description": "Offset for pagination (default 0).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ListFactsParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_list_graph_edges",
+      "description": "List graph edges for a specific node (as source or target), or all edges if no node_id. Returns non-invalidated edges only.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_list_graph_edges",
+        "properties": {
+          "limit": {
+            "default": null,
+            "description": "Maximum edges returned. Hard capped by the tool rail.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "node_id": {
+            "default": null,
+            "description": "Node ID to list edges for. If omitted, lists all edges.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ListGraphEdgesParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_list_imports",
-      "description": "Strip </think> blocks from text. Removes chain-of-thought reasoning that some models emit. Returns c"
+      "description": "List recent imports, optionally filtered by namespace. Returns import receipt records.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_list_imports",
+        "properties": {
+          "limit": {
+            "default": null,
+            "description": "Maximum number of import records to return (default 20).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "default": null,
+            "description": "Optional namespace filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ListImportsParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_list_namespaces",
+      "description": "List namespaces that currently contain facts. Use before sm_list_facts to discover what is stored.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_list_sessions",
+      "description": "List recent conversation sessions (newest first) with message counts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_list_sessions",
+        "properties": {
+          "limit": {
+            "default": null,
+            "description": "Maximum sessions to return (default 20).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "description": "Offset for pagination (default 0).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ListSessionsParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_parse_choice",
+      "description": "Parse a choice from raw LLM output given a list of valid options. Handles extra text, casing differences, and partial matches. Returns the matched option or an error.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_parse_choice",
+        "properties": {
+          "options": {
+            "description": "Valid options to choose from.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "raw_output": {
+            "description": "The raw LLM output text that should contain a choice.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_output",
+          "options"
+        ],
+        "title": "ParseChoiceParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_parse_json",
-      "description": "Attempt to repair common LLM JSON errors: trailing commas, unquoted keys, single quotes, missing bra"
+      "description": "Parse JSON from raw LLM output. Handles think blocks, markdown fences, trailing text, and common JSON errors without an additional LLM call. Returns the extracted JSON as a string.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_parse_json",
+        "properties": {
+          "raw_output": {
+            "description": "The raw LLM output text that should contain JSON (may include think blocks, markdown fences, trailing text).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_output"
+        ],
+        "title": "ParseJsonParams",
+        "type": "object"
+      }
     },
     {
       "name": "sm_parse_json_value",
-      "description": "Parse a string list from raw LLM output. Handles markdown bullet lists, numbered lists, comma-separa"
+      "description": "Parse JSON from raw LLM output as an untyped serde_json::Value. Useful when the expected schema is unknown.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_parse_json_value",
+        "properties": {
+          "raw_output": {
+            "description": "The raw LLM output text that should contain JSON.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_output"
+        ],
+        "title": "ParseJsonValueParams",
+        "type": "object"
+      }
     },
     {
-      "name": "sm_strip_think_tags",
-      "description": "Parse a choice from raw LLM output given a list of valid options. Handles extra text, casing differe"
+      "name": "sm_parse_number",
+      "description": "Parse a number from raw LLM output. Handles text like 'The answer is 42' or 'Score: 0.85'. Returns the number as a string.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_parse_number",
+        "properties": {
+          "raw_output": {
+            "description": "The raw LLM output text that should contain a number.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_output"
+        ],
+        "title": "ParseNumberParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_parse_string_list",
+      "description": "Parse a string list from raw LLM output. Handles markdown bullet lists, numbered lists, comma-separated values, and JSON arrays. Returns a JSON array of cleaned strings.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_parse_string_list",
+        "properties": {
+          "raw_output": {
+            "description": "The raw LLM output text that should contain a list of items.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_output"
+        ],
+        "title": "ParseStringListParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_query_claim_versions",
+      "description": "Query imported claim projection rows. Filters by scope, text, valid-time, and claim state. Returns claim version rows with full provenance.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for projection query tools (sm_query_claim_versions, etc.)",
+        "properties": {
+          "canonical_entity_id": {
+            "default": null,
+            "description": "Optional canonical entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_id": {
+            "default": null,
+            "description": "Optional claim ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_state": {
+            "default": null,
+            "description": "Optional claim state filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_version_id": {
+            "default": null,
+            "description": "Optional claim version ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "default": null,
+            "description": "Optional domain scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum results to return (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to query within.",
+            "type": "string"
+          },
+          "recorded_at_or_before": {
+            "default": null,
+            "description": "Optional transaction-time cutoff (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "default": null,
+            "description": "Optional repo ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_entity_id": {
+            "default": null,
+            "description": "Optional subject entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_query": {
+            "default": null,
+            "description": "Optional free-text query.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "default": null,
+            "description": "Optional valid-time as-of filter (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": null,
+            "description": "Optional workspace ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ProjectionQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_query_entity_aliases",
+      "description": "Query imported entity-alias rows. Filters by scope, canonical entity, and text. Returns alias rows with merge and review state.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for projection query tools (sm_query_claim_versions, etc.)",
+        "properties": {
+          "canonical_entity_id": {
+            "default": null,
+            "description": "Optional canonical entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_id": {
+            "default": null,
+            "description": "Optional claim ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_state": {
+            "default": null,
+            "description": "Optional claim state filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_version_id": {
+            "default": null,
+            "description": "Optional claim version ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "default": null,
+            "description": "Optional domain scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum results to return (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to query within.",
+            "type": "string"
+          },
+          "recorded_at_or_before": {
+            "default": null,
+            "description": "Optional transaction-time cutoff (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "default": null,
+            "description": "Optional repo ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_entity_id": {
+            "default": null,
+            "description": "Optional subject entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_query": {
+            "default": null,
+            "description": "Optional free-text query.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "default": null,
+            "description": "Optional valid-time as-of filter (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": null,
+            "description": "Optional workspace ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ProjectionQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_query_episodes",
+      "description": "Query imported episode projection rows. Filters by scope and text. Returns episode rows with cause/effect and outcome data.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for projection query tools (sm_query_claim_versions, etc.)",
+        "properties": {
+          "canonical_entity_id": {
+            "default": null,
+            "description": "Optional canonical entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_id": {
+            "default": null,
+            "description": "Optional claim ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_state": {
+            "default": null,
+            "description": "Optional claim state filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_version_id": {
+            "default": null,
+            "description": "Optional claim version ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "default": null,
+            "description": "Optional domain scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum results to return (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to query within.",
+            "type": "string"
+          },
+          "recorded_at_or_before": {
+            "default": null,
+            "description": "Optional transaction-time cutoff (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "default": null,
+            "description": "Optional repo ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_entity_id": {
+            "default": null,
+            "description": "Optional subject entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_query": {
+            "default": null,
+            "description": "Optional free-text query.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "default": null,
+            "description": "Optional valid-time as-of filter (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": null,
+            "description": "Optional workspace ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ProjectionQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_query_evidence_refs",
+      "description": "Query imported evidence-reference rows. Filters by scope, claim, and claim version. Returns evidence reference rows with fetch handles and source authority.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for projection query tools (sm_query_claim_versions, etc.)",
+        "properties": {
+          "canonical_entity_id": {
+            "default": null,
+            "description": "Optional canonical entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_id": {
+            "default": null,
+            "description": "Optional claim ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_state": {
+            "default": null,
+            "description": "Optional claim state filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_version_id": {
+            "default": null,
+            "description": "Optional claim version ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "default": null,
+            "description": "Optional domain scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum results to return (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to query within.",
+            "type": "string"
+          },
+          "recorded_at_or_before": {
+            "default": null,
+            "description": "Optional transaction-time cutoff (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "default": null,
+            "description": "Optional repo ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_entity_id": {
+            "default": null,
+            "description": "Optional subject entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_query": {
+            "default": null,
+            "description": "Optional free-text query.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "default": null,
+            "description": "Optional valid-time as-of filter (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": null,
+            "description": "Optional workspace ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ProjectionQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_query_relation_versions",
+      "description": "Query imported relation projection rows. Filters by scope, text, valid-time, and subject entity. Returns relation version rows with full provenance.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for projection query tools (sm_query_claim_versions, etc.)",
+        "properties": {
+          "canonical_entity_id": {
+            "default": null,
+            "description": "Optional canonical entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_id": {
+            "default": null,
+            "description": "Optional claim ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_state": {
+            "default": null,
+            "description": "Optional claim state filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claim_version_id": {
+            "default": null,
+            "description": "Optional claim version ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "default": null,
+            "description": "Optional domain scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum results to return (default 10).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespace": {
+            "description": "Namespace to query within.",
+            "type": "string"
+          },
+          "recorded_at_or_before": {
+            "default": null,
+            "description": "Optional transaction-time cutoff (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo_id": {
+            "default": null,
+            "description": "Optional repo ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_entity_id": {
+            "default": null,
+            "description": "Optional subject entity ID filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text_query": {
+            "default": null,
+            "description": "Optional free-text query.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "default": null,
+            "description": "Optional valid-time as-of filter (ISO 8601).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "default": null,
+            "description": "Optional workspace ID scope filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "namespace"
+        ],
+        "title": "ProjectionQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_reconcile",
+      "description": "Reconcile detected integrity issues. Actions: report_only (just check), rebuild_fts (rebuild FTS indexes), re_embed (re-embed all content). Returns an integrity report after the action.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_reconcile",
+        "properties": {
+          "action": {
+            "description": "Action to take: \"report_only\", \"rebuild_fts\", or \"re_embed\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ReconcileParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_record_outcome",
+      "description": "MUTATING: record a caller-supplied proxy feedback label for retrieval routing. This is not a verified outcome. Persists the updated tabular routing policy every 10 outcomes.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_record_outcome",
+        "properties": {
+          "outcome": {
+            "description": "Caller-supplied proxy feedback label: \"good\", \"bad\", or \"neutral\".\nThis is training input, not a verified retrieval outcome.",
+            "type": "string"
+          },
+          "query": {
+            "description": "The query string that was routed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "outcome"
+        ],
+        "title": "RecordOutcomeParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_reembed_all",
+      "description": "Re-embed all facts, chunks, messages, and episodes. Call after changing embedding models. Returns the count of items re-embedded.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
     },
     {
       "name": "sm_repair_json",
-      "description": "Parse a number from raw LLM output. Handles text like 'The answer is 42' or 'Score: 0.85'. Returns t"
+      "description": "Attempt to repair common LLM JSON errors: trailing commas, unquoted keys, single quotes, missing brackets. Returns the repaired JSON string or an error.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_repair_json",
+        "properties": {
+          "json_string": {
+            "description": "The malformed JSON string to attempt repair on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "json_string"
+        ],
+        "title": "RepairJsonParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_replay_search",
+      "description": "Replay a durable search receipt using query text and filters retained by explicit opt-in. Returns the replay comparison report.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_replay_search using opt-in stored inputs.",
+        "properties": {
+          "receipt_id": {
+            "description": "The receipt/request ID whose stored inputs should be replayed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id"
+        ],
+        "title": "ReplayStoredSearchParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_replay_search_receipt",
+      "description": "Replay a durable search receipt with caller-supplied query text and filters. Compares original results to replay results, reporting matches, missing IDs, and added IDs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_replay_search_receipt",
+        "properties": {
+          "namespaces": {
+            "default": null,
+            "description": "Optional namespace filter for replay.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The query text to use for replay (receipts don't store query text).",
+            "type": "string"
+          },
+          "receipt_id": {
+            "description": "The receipt/request ID to replay.",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Optional top_k for replay (defaults to original receipt's result count).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "receipt_id",
+          "query"
+        ],
+        "title": "ReplaySearchReceiptParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_route_query",
+      "description": "Profile a query and get an adaptive routing decision. Determines which retrieval stages (BM25, vector, rerank, graph, decoder, discord) to activate.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_route_query",
+        "properties": {
+          "query": {
+            "description": "The query string to profile and route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "RouteQueryParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_run_lifecycle",
+      "description": "Run a memory lifecycle pass: analyze items for syndromes, compute corrections, identify subtraction candidates, and check compression needs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_run_lifecycle",
+        "properties": {
+          "item_ids": {
+            "description": "Item IDs to process in the lifecycle pass",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_ids"
+        ],
+        "title": "RunLifecycleParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search",
+      "description": "Semantic hybrid search (BM25 + vector + RRF). Returns ranked results with content, scores, and stable result IDs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_search",
+        "properties": {
+          "namespaces": {
+            "default": null,
+            "description": "Optional namespace filter (restrict search to these namespaces)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The search query string",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Maximum number of results to return (default 5)",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search_as_of",
+      "description": "Search facts that were valid (not superseded) as of a specific date. Uses bitemporal fields to filter results to only include facts that existed on the specified date.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_search_as_of",
+        "properties": {
+          "as_of_date": {
+            "description": "The date to search as of (ISO 8601, e.g., \"2026-01-15T00:00:00Z\").",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "Optional namespace filter.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The search query.",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Maximum number of results (default: 5).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query",
+          "as_of_date"
+        ],
+        "title": "SearchAsOfParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search_conversations",
+      "description": "Hybrid semantic search over stored conversation MESSAGES (not facts). Recall what was discussed in past sessions. Returns ranked messages.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_search_conversations",
+        "properties": {
+          "query": {
+            "description": "The search query string.",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Maximum number of results (default 5).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchConversationsParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search_proof_debt",
+      "description": "Search with proof-debt analysis. Runs a standard search, then for each result checks the claim-ledger trust index for support state. Returns results plus a proof_debt summary with total debt weight, unsupported count, and gate decision.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_search_proof_debt",
+        "properties": {
+          "budget_micros": {
+            "default": null,
+            "description": "Proof-debt budget in micros for the gate check (default 500_000, one full proof unit).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "namespaces": {
+            "default": null,
+            "description": "Optional namespace filter (restrict search to these namespaces).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The search query string.",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Maximum number of results to return (default 5).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchProofDebtParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search_with_routing",
+      "description": "Adaptive search: profiles query, routes to appropriate stages, applies factor graph belief propagation if decoder is activated. Returns results with stable IDs.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_search_with_routing",
+        "properties": {
+          "contradictions": {
+            "default": null,
+            "description": "Known contradiction pairs (item_a, item_b)",
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "group_by_community": {
+            "default": null,
+            "description": "When true, group search results by knowledge graph community membership",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "The search query string",
+            "type": "string"
+          },
+          "top_k": {
+            "default": null,
+            "description": "Maximum number of results (default 5)",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchWithRoutingParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_search_witnessed",
+      "description": "Mandatory witnessed retrieval. Bypasses cache, verifies durable receipt persistence, defaults to Current state, and supports privacy-preserving opt-in storage for complete replay.",
+      "inputSchema": {
+        "$defs": {
+          "ReplayModeParam": {
+            "description": "Opt-in retention policy for complete search replay.",
+            "enum": [
+              "no_replay",
+              "store_inputs"
+            ],
+            "type": "string"
+          },
+          "RetrievalModeParam": {
+            "enum": [
+              "hybrid",
+              "fts_only",
+              "vector_only"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for mandatory witnessed autonomous retrieval.",
+        "properties": {
+          "namespaces": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "query": {
+            "type": "string"
+          },
+          "replay_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ReplayModeParam"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Replay input retention. Defaults to no_replay for privacy."
+          },
+          "request_id": {
+            "default": null,
+            "description": "Optional caller correlation ID; generated when omitted.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retrieval_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetrievalModeParam"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Retrieval stage selection. Defaults to the current hybrid behavior."
+          },
+          "top_k": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchWitnessedParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_set_provenance",
+      "description": "Set provenance (evidence confidence) for an item. Confidence in [0.0, 1.0] with support count. Returns a provenance receipt.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_set_provenance",
+        "properties": {
+          "confidence": {
+            "description": "Confidence score 0.0-1.0",
+            "format": "double",
+            "type": "number"
+          },
+          "item_id": {
+            "description": "The item ID to set provenance for",
+            "type": "string"
+          },
+          "support_count": {
+            "description": "Number of supporting observations",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "item_id",
+          "confidence",
+          "support_count"
+        ],
+        "title": "SetProvenanceParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_stats",
+      "description": "Get knowledge base statistics: fact/chunk/document/session counts, DB size, embedding model, and graph edge count.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_strip_think_tags",
+      "description": "Strip </think> blocks from text. Removes chain-of-thought reasoning that some models emit. Returns cleaned text.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_strip_think_tags",
+        "properties": {
+          "text": {
+            "description": "The text that may contain <think>...</think> blocks.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "StripThinkTagsParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_subgraph_prune",
+      "description": "Identify and optionally prune reasoning subgraphs in the knowledge graph. Runs autonomous subgraph maintenance: identifies connected subgraphs, ranks by access frequency (least-accessed first), and optionally prunes. Dry-run by default. Returns identified subgraphs, pruning priority, and pruning receipts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_subgraph_prune",
+        "properties": {
+          "dry_run": {
+            "default": null,
+            "description": "When true, only identify subgraphs and report priority without pruning.\nDefault: true (dry run).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "max_prune": {
+            "default": null,
+            "description": "Maximum number of subgraphs to prune (default: 5).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "SubgraphPruneParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_supersede_fact",
+      "description": "Create a replacement fact and link it to a stale fact via 'supersedes' edge. Use instead of deleting outdated facts. Returns new fact id and edge id.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_supersede_fact",
+        "properties": {
+          "content": {
+            "description": "Replacement fact content.",
+            "type": "string"
+          },
+          "namespace": {
+            "default": null,
+            "description": "Optional namespace for the replacement fact. Defaults to the old fact's namespace.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "old_fact_id": {
+            "description": "Existing stale fact id. Accepts a bare UUID or prefixed \"fact:<uuid>\".",
+            "type": "string"
+          },
+          "reason": {
+            "default": null,
+            "description": "Optional reason stored on the supersedes graph edge.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "default": null,
+            "description": "Optional source attribution for the replacement fact.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "old_fact_id",
+          "content"
+        ],
+        "title": "SupersedeFactParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_topology",
+      "description": "Find topological voids in the knowledge graph. Computes Betti numbers (components and cycles) and detects structural gaps. Loads edges from store.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_topology\n\nMCP-001: edges field removed — edges are now loaded from the store\nautomatically. The params struct is kept for schema compatibility but\nthe edges field is no longer used.",
+        "title": "TopologyParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_update_fact",
+      "description": "Update a fact's content in-place. Re-embeds the fact and updates FTS index. Use this to correct outdated facts without deleting and re-adding.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_update_fact",
+        "properties": {
+          "content": {
+            "description": "The new content for the fact.",
+            "type": "string"
+          },
+          "fact_id": {
+            "description": "The fact ID to update (with or without \"fact:\" prefix).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id",
+          "content"
+        ],
+        "title": "UpdateFactParams",
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_vacuum",
+      "description": "Vacuum the database to reclaim space after deletions. This is a maintenance operation that may take a moment.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "sm_verify_claim",
+      "description": "Verify a claim against risk class requirements. Low/medium claims need cheap checks. High claims need falsification. Critical claims need replay AND falsification. Returns disposition: promote, reject, quarantine, or defer.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Parameters for sm_verify_claim",
+        "properties": {
+          "claim": {
+            "description": "The claim text to verify.",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "default": null,
+            "description": "Optional evidence references supporting the claim.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "refutation_attempted": {
+            "default": null,
+            "description": "Whether refutation was attempted (if false, high/critical claims cannot be promoted).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "risk_class": {
+            "description": "Risk class: low, medium, high, critical.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim",
+          "risk_class"
+        ],
+        "title": "VerifyClaimParams",
+        "type": "object"
+      }
     }
-  ]
+  ],
+  "author": "Josh Stevenson",
+  "authorUrl": "https://github.com/RecursiveIntell"
 }
