@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.5.5"
+version = "0.5.6"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
