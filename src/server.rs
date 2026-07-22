@@ -11,6 +11,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, Json, ServerHandler,
 };
 use schemars::JsonSchema;
+use semantic_memory::AuthorityPermit;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -2074,17 +2075,56 @@ impl SemanticMemoryServer {
             Some(key) if !key.trim().is_empty() => {}
             Some(_) => {
                 return Err(ErrorData::invalid_params(
-                    "idempotency_key must not be blank".to_string(),
+                    "idempotency_key must not be blank",
                     None,
                 ))
             }
             None => {}
         }
-        let _ = (content, namespace, extract_entities, kind, sens);
-        Err(ErrorData::invalid_params(
-            "Admission gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler".to_string(),
-            None,
-        ))
+        // Use the operator-authorised issuer to mint a permit and perform
+        // a governed append. When no issuer is present (operator token was
+        // not provided at startup), fail closed.
+        let issuer = match &self.bridge.authority_issuer {
+            Some(issuer) => issuer,
+            None => {
+                return Err(ErrorData::invalid_params(
+                    "Admission gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler".to_string(),
+                    None,
+                ))
+            }
+        };
+        let permit = issuer.mint_operator_system(
+            "mcp-operator",
+            "semantic-memory-mcp",
+            AuthorityPermit::APPEND_CAPABILITY,
+        );
+        let authority = self.bridge.store.authority();
+        let idempotency = idempotency_key
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(authority.append_with_metadata(
+                permit,
+                idempotency,
+                namespace.clone(),
+                content.clone(),
+                source.clone(),
+                None,
+            ))
+        })
+        .map_err(|e| {
+            ErrorData::internal_error(format!("governed append failed: {e}"), None)
+        })?;
+        json_to_output(&serde_json::json!({
+            "ok": true,
+            "fact_id": result.affected_ids.first().cloned().unwrap_or_default(),
+            "receipt": {
+                "receipt_id": result.receipt_id,
+                "schema_version": result.schema_version,
+                "operation": "append",
+                "namespace": namespace,
+            },
+            "message": "Fact added via governed authority",
+        }))
     }
 
     #[tool(
@@ -5459,7 +5499,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -5556,7 +5596,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -5589,7 +5629,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -5617,7 +5657,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -5725,7 +5765,7 @@ mod correctness_contract_tests {
         provekv_enabled: false,
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let server = SemanticMemoryServer::new(MemoryBridge::open(make_config()).unwrap(), "full");
+        let server = SemanticMemoryServer::new(MemoryBridge::open(make_config(), None).unwrap(), "full");
         let query = "compare rust vs python performance";
 
         for index in 0..ROUTING_POLICY_PERSIST_BATCH {
@@ -5761,7 +5801,7 @@ mod correctness_contract_tests {
 
         drop(server);
         let restarted =
-            SemanticMemoryServer::new(MemoryBridge::open(make_config()).unwrap(), "full");
+            SemanticMemoryServer::new(MemoryBridge::open(make_config(), None).unwrap(), "full");
         let loaded = runtime
             .block_on(restarted.bridge.store.load_routing_policy())
             .unwrap()
@@ -5792,7 +5832,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let origin = OriginAuthorityLabelV1::new(
@@ -6029,7 +6069,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -6067,7 +6107,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -6101,7 +6141,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -6139,7 +6179,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -6245,7 +6285,7 @@ mod correctness_contract_tests {
                 turbo_quant_bits: None,
                 turbo_quant_projections: None,
             provekv_enabled: false,
-            })
+            }, None)
             .unwrap(),
             "full",
         );
@@ -6280,7 +6320,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let old = runtime
@@ -6338,7 +6378,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let fact_id = runtime
@@ -6415,7 +6455,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _fact_id = runtime
@@ -6458,7 +6498,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let permit = semantic_memory::AuthorityPermit::operator_system(
@@ -6549,7 +6589,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(
@@ -6599,7 +6639,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime
@@ -6759,7 +6799,7 @@ mod correctness_contract_tests {
             turbo_quant_bits: None,
             turbo_quant_projections: None,
         provekv_enabled: false,
-        })
+        }, None)
         .unwrap();
         let server = SemanticMemoryServer::new(bridge, "full");
         assert!(server.exposes_tool("sm_compact_claim_ledger"));

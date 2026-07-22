@@ -24,7 +24,7 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
         turbo_quant_projections: None,
         provekv_enabled: false,
     };
-    MemoryBridge::open(config).expect("bridge should open")
+    MemoryBridge::open(config, None).expect("bridge should open")
 }
 
 #[cfg(feature = "full")]

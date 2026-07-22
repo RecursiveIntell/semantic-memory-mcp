@@ -44,6 +44,10 @@ impl std::str::FromStr for EmbedderBackend {
 pub struct MemoryBridge {
     pub store: MemoryStore,
     pub memory_dir: PathBuf,
+    /// Operator-authorised issuer for governed mutations (sm_add_fact).
+    /// Present only when the process was started with --operator-authority-token.
+    /// When absent, governed write tools fail closed.
+    pub authority_issuer: Option<semantic_memory::AuthorityIssuer>,
 }
 
 #[derive(Clone)]
@@ -64,6 +68,8 @@ pub struct BridgeConfig {
     pub turbo_quant_bits: Option<u8>,
     /// TurboQuant QJL projection count (default: 16).
     pub turbo_quant_projections: Option<usize>,
+    /// Enable proveKV pool candidate backend (extreme compression).
+    pub provekv_enabled: bool,
 }
 
 impl BridgeConfig {
@@ -77,6 +83,7 @@ impl BridgeConfig {
         turbo_quant_enabled: bool,
         turbo_quant_bits: Option<u8>,
         turbo_quant_projections: Option<usize>,
+        provekv_enabled: bool,
     ) -> Self {
         Self {
             memory_dir: PathBuf::from(memory_dir),
@@ -89,6 +96,7 @@ impl BridgeConfig {
             turbo_quant_enabled,
             turbo_quant_bits,
             turbo_quant_projections,
+            provekv_enabled,
         }
     }
 }
@@ -96,7 +104,9 @@ impl BridgeConfig {
 impl MemoryBridge {
     /// Open the memory store with the given config.
     /// Store opening is synchronous — no runtime needed here.
-    pub fn open(config: BridgeConfig) -> anyhow::Result<Self> {
+    /// If operator_token is provided and valid, an AuthorityIssuer is constructed
+    /// and stored in the bridge, enabling governed mutations (sm_add_fact).
+    pub fn open(config: BridgeConfig, operator_token: Option<&str>) -> anyhow::Result<Self> {
         let embedding_config = EmbeddingConfig {
             ollama_url: config.embedding_url,
             model: config.embedding_model,
@@ -139,10 +149,14 @@ impl MemoryBridge {
         #[allow(unused_mut)]
         let mut search_config = SearchConfig::default();
 
-        // TurboQuant compressed vector candidate backend
+        // Derived vector backend (turbo-quant or provekv)
         #[cfg(feature = "full")]
         {
-            if config.turbo_quant_enabled {
+            if config.provekv_enabled {
+                use semantic_memory::DerivedVectorBackendPolicy;
+                search_config.derived_vector_backend =
+                    DerivedVectorBackendPolicy::ProveKvPoolCandidateOnly;
+            } else if config.turbo_quant_enabled {
                 use semantic_memory::DerivedVectorBackendPolicy;
                 search_config.derived_vector_backend =
                     DerivedVectorBackendPolicy::TurboQuantCandidateOnly;
@@ -165,7 +179,20 @@ impl MemoryBridge {
 
         let store = MemoryStore::open_with_embedder(mem_config, embedder)?;
 
-        Ok(Self { store, memory_dir })
+        let authority_issuer = operator_token
+            .and_then(semantic_memory::AuthorityIssuer::from_operator_token);
+
+        if authority_issuer.is_some() {
+            eprintln!("  operator authority: enabled (governed mutations unlocked)");
+        } else {
+            eprintln!("  operator authority: disabled (sm_add_fact will fail closed)");
+        }
+
+        Ok(Self {
+            store,
+            memory_dir,
+            authority_issuer,
+        })
     }
 
     /// Get the current tokio runtime handle.

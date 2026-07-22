@@ -97,6 +97,26 @@ struct Cli {
     #[arg(long)]
     turbo_quant_projections: Option<usize>,
 
+    /// Enable proveKV pool compressed candidate backend (extreme compression).
+    /// When enabled, a proveKV pool generation is used for approximate candidate scoring,
+    /// with exact f32 rerank for final results. Mutually exclusive with --turbo-quant.
+    /// Requires the `poly-kv-codec` feature.
+    #[arg(long)]
+    provekv: bool,
+
+    /// Operator authority token for governed mutations (sm_add_fact).
+    /// When provided, enables governed write tools by constructing an
+    /// AuthorityIssuer in-process. Without this token, sm_add_fact and
+    /// other governed mutation tools fail closed for security.
+    /// The token must be a non-empty string with no internal whitespace.
+    /// Can also be set via OPERATOR_AUTHORITY_TOKEN env var.
+    #[arg(long)]
+    operator_authority_token: Option<String>,
+
+    /// Read the operator authority token from a private file instead of argv.
+    #[arg(long)]
+    operator_authority_token_file: Option<PathBuf>,
+
     /// Tool profile: lean/standard (four governed read-only tools; lean is default),
     /// agent (bounded daily surface), stable, or full (all compiled tools).
     #[cfg_attr(
@@ -201,9 +221,30 @@ fn main() -> anyhow::Result<()> {
         cli.turbo_quant,
         cli.turbo_quant_bits,
         cli.turbo_quant_projections,
+        cli.provekv,
     );
 
-    let bridge = bridge::MemoryBridge::open(bridge_config)?;
+    let operator_token: Option<String> = {
+        if let Some(ref t) = cli.operator_authority_token {
+            let t = t.trim();
+            if !t.is_empty() { Some(t.to_string()) } else { None }
+        } else if let Some(ref path) = cli.operator_authority_token_file {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|s| {
+                    let s = s.trim();
+                    if s.is_empty() { None } else { Some(s.to_string()) }
+                })
+        } else {
+            std::env::var("OPERATOR_AUTHORITY_TOKEN")
+                .ok()
+                .and_then(|s| {
+                    let s = s.trim();
+                    if s.is_empty() { None } else { Some(s.to_string()) }
+                })
+        }
+    };
+    let bridge = bridge::MemoryBridge::open(bridge_config, operator_token.as_deref())?;
 
     // Create the tokio runtime first (needed for both HTTP and stdio)
     let rt = tokio::runtime::Builder::new_multi_thread()

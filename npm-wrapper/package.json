@@ -3,7 +3,7 @@
   "version": "1.1.0",
   "description": "Local-first MCP server for agent memory kits — persistent semantic search, witnessed retrieval, durable receipts, governed authority decisions, and claim-ledger trust enrichment.",
   "bin": {
-    "semantic-memory-mcp": "./bin/semantic-memory-mcp.js"
+    "semantic-memory-mcp": "bin/semantic-memory-mcp.js"
   },
   "keywords": [
     "mcp",
