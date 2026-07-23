@@ -11,6 +11,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, Json, ServerHandler,
 };
 use schemars::JsonSchema;
+use semantic_memory::AuthorityPermit;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -96,8 +97,8 @@ impl SemanticMemoryServer {
             bridge: Arc::new(bridge),
             tool_router: Self::tool_router(),
         };
-        debug_assert_eq!(server.tool_router.list_all().len(), 10);
-        eprintln!("Tool profile: stable (10 read-only compile-time tools visible)");
+        debug_assert_eq!(server.tool_router.list_all().len(), 11);
+        eprintln!("Tool profile: stable (10 read-only tools plus governed sm_add_fact visible)");
         server
     }
 
@@ -1070,7 +1071,10 @@ impl SemanticMemoryServer {
         }
     }
 
-    #[allow(dead_code)]
+    #[tool(
+        description = "Add a fact through the governed local authority. Requires an operator authority token at process startup; confidential/restricted, ephemeral, externally cited, and source-attributed facts fail closed.",
+        annotations(idempotent_hint = true)
+    )]
     fn sm_add_fact(
         &self,
         Parameters(AddFactParams {
@@ -1084,20 +1088,77 @@ impl SemanticMemoryServer {
             idempotency_key,
         }): Parameters<AddFactParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
-        let _ = (
-            content,
-            namespace,
-            source,
-            extract_entities,
-            memory_kind,
-            sensitivity,
-            evidence_refs,
-            idempotency_key,
+        if sensitivity.as_deref().is_some_and(|value| {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "confidential" | "restricted")
+        }) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: confidential/restricted content requires an explicit governed workflow".to_string(),
+                None,
+            ));
+        }
+        if memory_kind.as_deref().is_some_and(|value| value.trim().eq_ignore_ascii_case("ephemeral_inference")) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: ephemeral_inference cannot be promoted through the bounded agent surface".to_string(),
+                None,
+            ));
+        }
+        if evidence_refs.as_ref().is_some_and(|refs| !refs.is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: external evidence_refs require a trusted immutable-object resolver".to_string(),
+                None,
+            ));
+        }
+        if source.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: source references require a trusted immutable-object resolver".to_string(),
+                None,
+            ));
+        }
+        if extract_entities.unwrap_or(false) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: entity extraction is unavailable in the bounded agent surface".to_string(),
+                None,
+            ));
+        }
+        let idempotency = match idempotency_key {
+            Some(key) if !key.trim().is_empty() => key,
+            Some(_) => return Err(ErrorData::invalid_params("idempotency_key must not be blank", None)),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        let issuer = self.bridge.authority_issuer.as_ref().ok_or_else(|| {
+            ErrorData::invalid_params(
+                "Admission gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler".to_string(),
+                None,
+            )
+        })?;
+        let permit = issuer.mint_operator_system(
+            "mcp-operator",
+            "semantic-memory-mcp-bounded-agent",
+            AuthorityPermit::APPEND_CAPABILITY,
         );
-        Err(ErrorData::invalid_params(
-            "Admission gate BLOCKED: no trusted authenticated authority issuer is available to this MCP handler".to_string(),
-            None,
-        ))
+        let authority = self.bridge.store.authority();
+        let result = tokio::task::block_in_place(|| {
+            Handle::current().block_on(authority.append_with_metadata(
+                permit,
+                idempotency,
+                namespace.clone(),
+                content,
+                None,
+                None,
+            ))
+        })
+        .map_err(|error| ErrorData::internal_error(format!("governed append failed: {error}"), None))?;
+        json_to_output(&serde_json::json!({
+            "ok": true,
+            "fact_id": result.affected_ids.first().cloned().unwrap_or_default(),
+            "receipt": {
+                "receipt_id": result.receipt_id,
+                "schema_version": result.schema_version,
+                "operation": "append",
+                "namespace": namespace,
+            },
+            "message": "Fact added via governed bounded agent authority",
+        }))
     }
 
     #[allow(dead_code)]
@@ -1318,6 +1379,7 @@ mod tests {
             "sm_search_conversations",
             "sm_decide_assertion_authority",
             "sm_decide_action_authority",
+            "sm_add_fact",
         ]
         .into_iter()
         .collect();
@@ -1334,7 +1396,6 @@ mod tests {
             );
         }
         for forbidden in [
-            "sm_add_fact",
             "sm_supersede_fact",
             "sm_add_graph_edge",
             "sm_delete_fact",

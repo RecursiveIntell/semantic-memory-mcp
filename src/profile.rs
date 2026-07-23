@@ -44,6 +44,13 @@ const LEAN: &[ToolGrant] = &[
 ];
 
 const AGENT: &[ToolGrant] = &[
+    // The agent profile is deliberately bounded, but it must support the
+    // governed fact-capture path. Session transcript ingestion is not implicit;
+    // callers still decide whether a durable fact is admissible.
+    ToolGrant {
+        name: "sm_add_fact",
+        effect: EffectClass::Write,
+    },
     ToolGrant {
         name: "sm_decide_action_authority",
         effect: EffectClass::Read,
@@ -161,5 +168,30 @@ impl ToolProfile {
 impl std::fmt::Display for ToolProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_possible_value().unwrap().get_name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EffectClass, ToolProfile};
+
+    #[test]
+    fn agent_profile_admits_only_the_governed_fact_capture_write() {
+        let grants = ToolProfile::Agent.manifest().expect("bounded manifest");
+        let writes: Vec<_> = grants
+            .iter()
+            .filter(|grant| grant.effect == EffectClass::Write)
+            .map(|grant| grant.name)
+            .collect();
+        assert_eq!(writes, vec!["sm_add_fact"]);
+    }
+
+    #[test]
+    fn stable_profile_remains_read_only() {
+        assert!(ToolProfile::Stable
+            .manifest()
+            .expect("bounded manifest")
+            .iter()
+            .all(|grant| grant.effect == EffectClass::Read));
     }
 }

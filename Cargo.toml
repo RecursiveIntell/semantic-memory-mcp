@@ -67,6 +67,16 @@ stable = [
     "semantic-memory/temporal",
     "candle-embedder",
 ]
+# Bounded MCP agent surface with the same portable semantic core as stable,
+# but without the compile-time stable router. Runtime --tool-profile agent
+# supplies the narrow tool allowlist.
+agent = [
+    "semantic-memory/usearch-backend",
+    "semantic-memory/candle-embedder",
+    "semantic-memory/provenance",
+    "semantic-memory/temporal",
+    "candle-embedder",
+]
 # Local feature forwarders for cfg-gated semantic-memory modules.
 discord = ["semantic-memory/discord"]
 routing = ["semantic-memory/routing"]

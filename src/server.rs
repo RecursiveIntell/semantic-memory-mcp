@@ -1642,6 +1642,11 @@ impl SemanticMemoryServer {
                 results.push(hit);
             }
         }
+        let admitted_before_limit = results.len();
+        // Core retrieval deliberately over-fetches so provenance admission can still
+        // satisfy the caller's requested bound. The outward witnessed response must
+        // nevertheless honor that bound before its result ordering is materialized.
+        results.truncate(k);
         // Receipt boundary containment: witnessed results must not be trust-enriched
         // or factor-reranked after the durable core receipt is finalized.
 
@@ -1666,6 +1671,8 @@ impl SemanticMemoryServer {
             },
             "digests": {"query_text": query_digest, "input": input_digest, "filter": filter_digest, "config": config_digest, "model": model_digest},
             "execution": {"cache": "bypassed", "candidate_backend": receipt.candidate_backend, "exactness": exactness, "artifact_generation_id": receipt.artifact_generation_id},
+            "admission": {"requested_top_k": k, "admitted_before_limit": admitted_before_limit, "returned_count": results.len()},
+            "result_count": results.len(),
             "ordered_results": ordered_results, "results": results,
             "stage_outcomes": {
                 "authority_snapshot": {"outcome": "Applied", "degradation": null},
@@ -6440,6 +6447,61 @@ mod correctness_contract_tests {
             hit["retrieval_receipt_ref"],
             format!("receipt:{}", json["receipt_id"].as_str().unwrap())
         );
+    }
+
+    #[test]
+    fn witnessed_search_bounds_admitted_results_to_requested_top_k() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = MemoryBridge::open(BridgeConfig {
+            memory_dir: dir.path().to_path_buf(),
+            embedder_backend: EmbedderBackend::Mock,
+            embedding_url: String::new(),
+            embedding_model: "mock".into(),
+            embedding_dims: 768,
+            turbo_quant_enabled: false,
+            turbo_quant_bits: None,
+            turbo_quant_projections: None,
+            provekv_enabled: false,
+        }, None)
+        .unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for index in 0..4 {
+            runtime
+                .block_on(bridge.store.add_fact(
+                    "witnessed-top-k",
+                    &format!("bounded witnessed result {index}"),
+                    Some("tests/witnessed-top-k.md"),
+                    None,
+                ))
+                .unwrap();
+        }
+        let server = SemanticMemoryServer::new(bridge, "full");
+        let body = runtime
+            .block_on(async {
+                tokio::task::block_in_place(|| {
+                    server.sm_search_witnessed(Parameters(SearchWitnessedParams {
+                        query: "bounded witnessed result".into(),
+                        top_k: Some(3),
+                        namespaces: Some(vec!["witnessed-top-k".into()]),
+                        request_id: Some("witnessed-top-k-bound".into()),
+                        retrieval_mode: None,
+                        replay_mode: None,
+                    }))
+                })
+            })
+            .unwrap();
+        let json: serde_json::Value = structured_value(&body);
+        let results = json["results"].as_array().unwrap();
+        let ordered = json["ordered_results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(ordered.len(), 3);
+        assert_eq!(json["result_count"], 3);
+        assert_eq!(json["admission"]["requested_top_k"], 3);
+        assert_eq!(json["admission"]["admitted_before_limit"], 4);
+        assert_eq!(json["admission"]["returned_count"], 3);
+        let result_ids: Vec<_> = results.iter().map(|item| &item["result_id"]).collect();
+        let ordered_ids: Vec<_> = ordered.iter().map(|item| &item["result_id"]).collect();
+        assert_eq!(result_ids, ordered_ids);
     }
 
     #[test]
