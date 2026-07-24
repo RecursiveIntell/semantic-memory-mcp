@@ -1,6 +1,6 @@
 # semantic-memory-mcp
 
-[![MCP Badge](https://lobehub.com/badge/mcp/recursiveintell-semantic-memory-mcp)](https://lobehub.com/mcp/recursiveintell-semantic-memory-mcp)
+[![MCP Badge](https://lobehub.com/badge/mcp-full/recursiveintell-semantic-memory-mcp?theme=light)](https://lobehub.com/mcp/recursiveintell-semantic-memory-mcp)
 
 `semantic-memory-mcp` is a local-first Model Context Protocol server for the
 [`semantic-memory`](../semantic-memory) Rust library. It gives MCP clients
