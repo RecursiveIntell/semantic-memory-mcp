@@ -184,6 +184,136 @@ Tool annotations describe read-only, idempotent, and destructive intent, but an
 MCP client must still enforce its own approval policy. Inspect `tools/list`
 before granting this profile to an autonomous process.
 
+## Tool Reference
+
+Tools exposed by the full router, grouped by function. The `lean`/`standard` profile exposes only the first 4 search tools; `agent` exposes 11 read-only tools; `full` exposes everything below.
+
+### Search & Retrieval
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_search` | Hybrid BM25+vector search with RRF fusion | full |
+| `sm_search_witnessed` | Mandatory witnessed retrieval — bypasses cache, requires durable receipt, replay_mode opt-in | lean+ |
+| `sm_search_with_routing` | Adaptive search: profiles query, routes to stages, optional factor graph + community grouping | full |
+| `sm_search_proof_debt` | Search with trust-index gating and proof-debt budget | full |
+| `sm_search_as_of` | Bitemporal search — facts valid at a specific date | full |
+| `sm_search_conversations` | Hybrid search over stored conversation messages | agent+ |
+| `sm_search_explained` | Returns per-stage scoring breakdown (BM25, vector, RRF) | full |
+| `sm_route_query` | Profile a query and get adaptive routing decision | full |
+| `sm_get_search_receipt` | Load a durable search receipt by ID | agent+ |
+| `sm_replay_search` | Replay a search using stored (opt-in) inputs | lean+ |
+| `sm_replay_search_receipt` | Replay with caller-supplied query — compares results | full |
+| `sm_benchmark_trust` | Benchmark trust quality distribution across searches | full |
+| `sm_get_routing_policy` | Return current RL routing policy weights | full |
+
+### Facts & Memory
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_add_fact` | Add a fact — embedded, FTS-indexed, optional entity extraction | full |
+| `sm_get_fact` | Fetch one fact by ID with full metadata | agent+ |
+| `sm_get_fact_neighbors` | Fetch a fact plus its graph neighbors with content | agent+ |
+| `sm_update_fact` | Update fact content in-place — re-embeds, updates indexes | full |
+| `sm_delete_fact` | Hard delete — governed, irreversible | full |
+| `sm_supersede_fact` | Create replacement + link via supersedes edge (preferred over delete) | full |
+| `sm_consolidate_facts` | Merge two near-duplicate facts into one | full |
+| `sm_list_facts` | Enumerate facts in a namespace (paginated) | full |
+| `sm_list_namespaces` | List all namespaces with fact counts | agent+ |
+| `sm_delete_namespace` | Permanently delete all memory in a namespace | full |
+| `sm_set_provenance` | Set confidence (0.0–1.0) with support count | full |
+| `sm_ingest_document` | Ingest with auto-chunking — each chunk embedded + indexed | full |
+
+### Knowledge Graph
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_add_graph_edge` | Add typed edge: Semantic, Temporal, Causal, or Entity | full |
+| `sm_list_graph_edges` | List edges for a node or all edges | full |
+| `sm_invalidate_graph_edge` | Append-only invalidation — never deletes | full |
+| `sm_graph_path` | BFS shortest path between two nodes | agent+ |
+| `sm_community` | Leiden-inspired community detection with contradiction scanning | full |
+| `sm_topology` | Topological void detection — Betti numbers | full |
+| `sm_factor_graph` | Belief propagation over all 4 edge types | full |
+| `sm_decoder_analyze` | Contradiction detection + belief propagation refinement | full |
+| `sm_detect_contradictions` | Content-based contradiction signals (no pre-asserted edges needed) | full |
+| `sm_discord_search` | Second-order graph traversal from direct search results | full |
+| `sm_subgraph_prune` | Access-frequency-based subgraph pruning (dry-run default) | full |
+
+### Trust & Claims
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_create_claim` | Create typed claim from a fact with source-spanned provenance | full |
+| `sm_add_evidence` | Add EvidenceBundle supporting a claim | full |
+| `sm_judge_support` | Judge claim support: supported / unsupported / contested / heuristic_only | full |
+| `sm_verify_claim` | Risk-class-based verification (low→critical, falsification for high+) | full |
+| `sm_decide_assertion_authority` | Governed assertion decision receipt — purpose-isolated | lean+ |
+| `sm_decide_action_authority` | Governed action decision receipt — purpose-isolated | lean+ |
+| `sm_query_claim_versions` | Bitemporal claim projection queries | full |
+| `sm_query_relation_versions` | Bitemporal relation projection queries | full |
+| `sm_query_episodes` | Episode projection queries | full |
+| `sm_query_entity_aliases` | Entity alias projection queries | full |
+| `sm_query_evidence_refs` | Evidence reference projection queries | full |
+| `sm_compact_claim_ledger` | Verified hash-chained claim ledger rotation | full |
+
+### Lifecycle & Maintenance
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_stats` | Store statistics: counts, DB size, embedding model | agent+ |
+| `sm_run_lifecycle` | Syndrome detection, subtraction candidates, compression assessment | full |
+| `sm_reconcile` | Integrity actions: ReportOnly / RebuildFts / ReEmbed | full |
+| `sm_vacuum` | SQLite VACUUM — compact and defragment | full |
+| `sm_reembed_all` | Re-embed all facts after embedding model change | full |
+| `sm_embeddings_are_dirty` | Check if embeddings need regeneration | full |
+| `sm_rebuild_hnsw` | Rebuild HNSW index from SQLite embeddings | full |
+| `sm_compact_hnsw` | Compact HNSW index | full |
+
+### Import & Export
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_import_envelope` | Atomic bulk import with provenance — single transaction | full |
+| `sm_import_status` | Check envelope import status (idempotency) | full |
+| `sm_list_imports` | List recent imports, optionally filtered by namespace | full |
+
+### Utility Parsers
+
+| Tool | Description | Profile |
+|------|-------------|---------|
+| `sm_parse_json` | Extract JSON from raw LLM output (handles think blocks, fences) | full |
+| `sm_parse_json_value` | Parse as untyped serde_json::Value | full |
+| `sm_parse_choice` | Parse a choice from valid options list | full |
+| `sm_parse_number` | Parse a number from raw LLM output | full |
+| `sm_parse_string_list` | Parse string list from bullet/comma/JSON formats | full |
+| `sm_repair_json` | Repair common LLM JSON errors | full |
+| `sm_strip_think_tags` | Strip `</think>` blocks from text | full |
+| `sm_record_outcome` | Record RL routing feedback label for policy training | full |
+
+### HTTP Sidecar Endpoints
+
+With `--http-port`, the loopback server exposes:
+
+```text
+GET  /health                     — health check (all profiles)
+GET  /verify-integrity           — integrity check across all surfaces
+POST /search                     — hybrid search
+POST /search-routed              — adaptive search with routing
+POST /rerank                     — exact f32 cosine rerank
+POST /stats                      — store statistics
+POST /add                        — add fact
+POST /record-outcome             — RL feedback
+POST /discord                    — discord (second-order) search
+POST /maintenance/check          — maintenance health
+POST /maintenance/vacuum         — SQLite vacuum
+POST /maintenance/reembed        — re-embed all
+POST /maintenance/reconcile      — reconcile integrity
+POST /maintenance/rebuild-hnsw   — rebuild HNSW index
+POST /maintenance/compact-hnsw   — compact HNSW index
+```
+
+Lean/standard/agent profiles expose only `/health`. Full exposes all routes. All non-health endpoints require Bearer token auth.
+
 ## Witnessed retrieval, replay, and authority
 
 `sm_search_witnessed` is the safe autonomous retrieval surface. It bypasses the
