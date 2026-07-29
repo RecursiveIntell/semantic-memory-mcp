@@ -658,7 +658,9 @@ fn handle_search_routed(
                     };
 
                     let graph_edges = block_in_place(|| {
-                        handle.block_on(store.list_all_graph_edges_with_limit(MAX_GRAPH_EDGES_PER_TOOL_CALL))
+                        handle.block_on(
+                            store.list_all_graph_edges_with_limit(MAX_GRAPH_EDGES_PER_TOOL_CALL),
+                        )
                     });
 
                     if let Ok(edges) = graph_edges {

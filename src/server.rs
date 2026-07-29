@@ -81,11 +81,16 @@ fn load_graph_edges_with_limit(
     tokio::task::block_in_place(|| {
         Handle::current().block_on(store.list_all_graph_edges_with_limit(limit))
     })
-    .map_err(|error| ErrorData::internal_error(format!("Failed to load graph edges: {error}"), None))
+    .map_err(|error| {
+        ErrorData::internal_error(format!("Failed to load graph edges: {error}"), None)
+    })
 }
 
 fn sanitize_list_limit(limit: Option<u32>, default: usize) -> usize {
-    (limit.unwrap_or(default as u32).max(1).min(MAX_LIST_LIMIT as u32)) as usize
+    (limit
+        .unwrap_or(default as u32)
+        .max(1)
+        .min(MAX_LIST_LIMIT as u32)) as usize
 }
 
 fn sanitize_graph_edge_list_limit(limit: Option<u32>) -> usize {
@@ -97,9 +102,7 @@ fn sanitize_graph_edge_list_limit(limit: Option<u32>) -> usize {
 }
 
 fn sanitize_graph_depth(max_depth: Option<u32>) -> usize {
-    max_depth
-        .unwrap_or(5)
-        .min(MAX_GRAPH_PATH_DEPTH as u32) as usize
+    max_depth.unwrap_or(5).min(MAX_GRAPH_PATH_DEPTH as u32) as usize
 }
 
 fn sanitize_offset(offset: Option<u32>) -> usize {
@@ -114,16 +117,11 @@ fn sanitize_factor_graph_iterations(defaults: usize, requested: Option<u32>) -> 
 }
 
 fn sanitize_subgraph_prune_count(max_prune: Option<u32>) -> usize {
-    max_prune
-        .unwrap_or(5)
-        .min(MAX_SUBGRAPH_PRUNE as u32) as usize
+    max_prune.unwrap_or(5).min(MAX_SUBGRAPH_PRUNE as u32) as usize
 }
 
 fn sanitize_projection_limit(limit: Option<u32>) -> usize {
-    limit
-        .unwrap_or(10)
-        .max(1)
-        .min(MAX_PROJECTION_LIMIT as u32) as usize
+    limit.unwrap_or(10).max(1).min(MAX_PROJECTION_LIMIT as u32) as usize
 }
 
 // Re-export the specific parameter types we use in tool signatures.
@@ -845,14 +843,12 @@ pub struct SemanticMemoryServer {
 
 impl SemanticMemoryServer {
     pub fn new(bridge: MemoryBridge, tool_profile: &str) -> Self {
-        let profile = <crate::profile::ToolProfile as clap::ValueEnum>::from_str(
-            tool_profile,
-            true,
-        )
-        .unwrap_or_else(|error| {
-            eprintln!("Tool profile parse failed, defaulting to lean: {error}");
-            crate::profile::ToolProfile::Lean
-        });
+        let profile =
+            <crate::profile::ToolProfile as clap::ValueEnum>::from_str(tool_profile, true)
+                .unwrap_or_else(|error| {
+                    eprintln!("Tool profile parse failed, defaulting to lean: {error}");
+                    crate::profile::ToolProfile::Lean
+                });
         Self::from_profile(bridge, profile)
     }
 
@@ -1240,9 +1236,8 @@ fn load_superseded_targets_for_ids(
 ) -> Result<HashSet<String>, ErrorData> {
     let edges: Vec<semantic_memory::StoredGraphEdge> = if seed_ids.is_empty() {
         tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_all_graph_edges_with_limit(
-                MAX_GRAPH_EDGES_PER_TOOL_CALL,
-            ))
+            Handle::current()
+                .block_on(store.list_all_graph_edges_with_limit(MAX_GRAPH_EDGES_PER_TOOL_CALL))
         })
     } else {
         tokio::task::block_in_place(|| {
@@ -2078,6 +2073,12 @@ impl SemanticMemoryServer {
                 None,
             ));
         }
+        if extract_entities.unwrap_or(false) {
+            return Err(ErrorData::invalid_params(
+                "Admission gate BLOCKED: entity extraction is unavailable through the governed MCP fact-capture path".to_string(),
+                None,
+            ));
+        }
         match idempotency_key.as_deref() {
             Some(key) if !key.trim().is_empty() => {}
             Some(_) => {
@@ -2106,8 +2107,7 @@ impl SemanticMemoryServer {
             AuthorityPermit::APPEND_CAPABILITY,
         );
         let authority = self.bridge.store.authority();
-        let idempotency = idempotency_key
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let idempotency = idempotency_key.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let result = tokio::task::block_in_place(|| {
             Handle::current().block_on(authority.append_with_metadata(
                 permit,
@@ -2118,9 +2118,7 @@ impl SemanticMemoryServer {
                 None,
             ))
         })
-        .map_err(|e| {
-            ErrorData::internal_error(format!("governed append failed: {e}"), None)
-        })?;
+        .map_err(|e| ErrorData::internal_error(format!("governed append failed: {e}"), None))?;
         json_to_output(&serde_json::json!({
             "ok": true,
             "fact_id": result.affected_ids.first().cloned().unwrap_or_default(),
@@ -2186,7 +2184,8 @@ impl SemanticMemoryServer {
     fn sm_stats(&self) -> Result<Json<StatsOutput>, ErrorData> {
         let store = &self.bridge.store;
         let core = tokio::task::block_in_place(|| Handle::current().block_on(store.stats()));
-        let graph_count = tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
+        let graph_count =
+            tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
         let core_health = match &core {
             Ok(_) => serde_json::json!({"health": "healthy", "error": null}),
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
@@ -2826,7 +2825,8 @@ impl SemanticMemoryServer {
                             factors_from_edges, FactorGraph, FactorGraphConfig,
                         };
 
-                        let graph_edges = load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL);
+                        let graph_edges =
+                            load_graph_edges_with_limit(store, MAX_GRAPH_EDGES_PER_TOOL_CALL);
 
                         match graph_edges {
                             Ok(edges) => {
@@ -3692,16 +3692,11 @@ impl SemanticMemoryServer {
         let limit = sanitize_graph_edge_list_limit(limit);
         let result = match node_id {
             Some(id) => tokio::task::block_in_place(|| {
-                Handle::current().block_on(store.list_graph_edges_for_node_with_limit(
-                    &id,
-                    limit,
-                ))
+                Handle::current().block_on(store.list_graph_edges_for_node_with_limit(&id, limit))
             }),
-            None => {
-                tokio::task::block_in_place(|| {
-                    Handle::current().block_on(store.list_all_graph_edges_with_limit(limit))
-                })
-            }
+            None => tokio::task::block_in_place(|| {
+                Handle::current().block_on(store.list_all_graph_edges_with_limit(limit))
+            }),
         };
 
         match result {
@@ -3769,20 +3764,20 @@ impl SemanticMemoryServer {
         use semantic_memory::factor_graph::{factors_from_edges, FactorGraph, FactorGraphConfig};
 
         let defaults = FactorGraphConfig::default();
-            let config = FactorGraphConfig {
-                semantic_weight: params.semantic_weight.unwrap_or(defaults.semantic_weight),
-                temporal_weight: params.temporal_weight.unwrap_or(defaults.temporal_weight),
-                causal_weight: params.causal_weight.unwrap_or(defaults.causal_weight),
-                entity_weight: params.entity_weight.unwrap_or(defaults.entity_weight),
-                self_influence: params.self_influence.unwrap_or(defaults.self_influence),
-                max_iterations: sanitize_factor_graph_iterations(
-                    defaults.max_iterations,
-                    params.max_iterations,
-                ),
-                convergence_threshold: params
-                    .convergence_threshold
-                    .unwrap_or(defaults.convergence_threshold),
-            };
+        let config = FactorGraphConfig {
+            semantic_weight: params.semantic_weight.unwrap_or(defaults.semantic_weight),
+            temporal_weight: params.temporal_weight.unwrap_or(defaults.temporal_weight),
+            causal_weight: params.causal_weight.unwrap_or(defaults.causal_weight),
+            entity_weight: params.entity_weight.unwrap_or(defaults.entity_weight),
+            self_influence: params.self_influence.unwrap_or(defaults.self_influence),
+            max_iterations: sanitize_factor_graph_iterations(
+                defaults.max_iterations,
+                params.max_iterations,
+            ),
+            convergence_threshold: params
+                .convergence_threshold
+                .unwrap_or(defaults.convergence_threshold),
+        };
 
         // Use neighborhood loading: only load edges within 2 hops of the
         // node seeds instead of the entire graph.
@@ -3970,7 +3965,8 @@ impl SemanticMemoryServer {
             let access_logs: Vec<AccessLog> = Vec::new();
 
             // Load contradictions from contradiction graph edges
-            let raw_edges = load_graph_edges_with_limit(&self.bridge.store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
+            let raw_edges =
+                load_graph_edges_with_limit(&self.bridge.store, MAX_GRAPH_EDGES_PER_TOOL_CALL)?;
             let contradictions: Vec<(String, String)> = raw_edges
                 .iter()
                 .filter_map(|e| {
@@ -5496,17 +5492,22 @@ mod correctness_contract_tests {
     fn verify_claim_never_promotes_without_executed_verification_receipts() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -5593,17 +5594,22 @@ mod correctness_contract_tests {
     fn parse_number_rejects_non_finite_values_without_panicking() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -5626,17 +5632,22 @@ mod correctness_contract_tests {
     fn parser_tools_reject_oversized_input_before_parsing() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -5654,17 +5665,22 @@ mod correctness_contract_tests {
     fn community_summarization_fails_closed_without_transform_receipt() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -5769,10 +5785,13 @@ mod correctness_contract_tests {
             turbo_quant_enabled: false,
             turbo_quant_bits: None,
             turbo_quant_projections: None,
-        provekv_enabled: false,
+            provekv_enabled: false,
+            fib_quant_enabled: false,
+            per_dim_enabled: false,
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let server = SemanticMemoryServer::new(MemoryBridge::open(make_config(), None).unwrap(), "full");
+        let server =
+            SemanticMemoryServer::new(MemoryBridge::open(make_config(), None).unwrap(), "full");
         let query = "compare rust vs python performance";
 
         for index in 0..ROUTING_POLICY_PERSIST_BATCH {
@@ -5829,17 +5848,22 @@ mod correctness_contract_tests {
         };
 
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let origin = OriginAuthorityLabelV1::new(
@@ -6066,17 +6090,22 @@ mod correctness_contract_tests {
     fn sm_add_fact_fails_closed_without_trusted_authority_issuer() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -6104,17 +6133,22 @@ mod correctness_contract_tests {
     fn sm_add_fact_containment_applies_to_keyed_and_unkeyed_requests() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -6138,17 +6172,22 @@ mod correctness_contract_tests {
     fn sm_delete_fact_fails_closed_without_trusted_authority_issuer() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -6176,17 +6215,22 @@ mod correctness_contract_tests {
     fn archived_sm_delete_fact_uses_governed_forgetting_closure() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -6282,17 +6326,22 @@ mod correctness_contract_tests {
     fn sm_add_fact_preserves_ephemeral_evidence_refs_admission_rule() {
         let dir = tempfile::tempdir().unwrap();
         let server = SemanticMemoryServer::new(
-            MemoryBridge::open(BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: false,
-                turbo_quant_bits: None,
-                turbo_quant_projections: None,
-            provekv_enabled: false,
-            }, None)
+            MemoryBridge::open(
+                BridgeConfig {
+                    memory_dir: dir.path().to_path_buf(),
+                    embedder_backend: EmbedderBackend::Mock,
+                    embedding_url: String::new(),
+                    embedding_model: "mock".into(),
+                    embedding_dims: 768,
+                    turbo_quant_enabled: false,
+                    turbo_quant_bits: None,
+                    turbo_quant_projections: None,
+                    provekv_enabled: false,
+                    fib_quant_enabled: false,
+                    per_dim_enabled: false,
+                },
+                None,
+            )
             .unwrap(),
             "full",
         );
@@ -6317,17 +6366,22 @@ mod correctness_contract_tests {
     #[test]
     fn sm_search_tool_returns_only_current_supersession_head() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let old = runtime
@@ -6375,17 +6429,22 @@ mod correctness_contract_tests {
     #[test]
     fn witnessed_search_hydrates_complete_honest_fact_provenance() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let fact_id = runtime
@@ -6452,17 +6511,22 @@ mod correctness_contract_tests {
     #[test]
     fn witnessed_search_bounds_admitted_results_to_requested_top_k() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-            provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         for index in 0..4 {
@@ -6507,17 +6571,22 @@ mod correctness_contract_tests {
     #[test]
     fn witnessed_search_omits_noninjectible_fact_without_source() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _fact_id = runtime
@@ -6550,17 +6619,22 @@ mod correctness_contract_tests {
     #[test]
     fn sm_search_witnessed_exposes_authority_state_and_vector_evidence() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let permit = semantic_memory::AuthorityPermit::operator_system(
@@ -6641,17 +6715,22 @@ mod correctness_contract_tests {
     #[test]
     fn sm_search_witnessed_accepts_general_retrieval_modes() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(
@@ -6691,17 +6770,22 @@ mod correctness_contract_tests {
     #[test]
     fn witnessed_search_opt_in_enables_complete_replay() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime
@@ -6851,17 +6935,22 @@ mod correctness_contract_tests {
     #[test]
     fn compact_claim_ledger_defaults_to_dry_run_without_writes() {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let server = SemanticMemoryServer::new(bridge, "full");
         assert!(server.exposes_tool("sm_compact_claim_ledger"));
@@ -6992,7 +7081,6 @@ fn build_path_segments(
 #[tool_handler(
     router = self.tool_router,
     name = "semantic-memory-mcp",
-    version = "0.5.4",
     instructions = "Persistent local semantic memory with hybrid search, graph reasoning, and conversation persistence. ALWAYS search first before asking the user for context. Use sm_decide_assertion_authority or sm_decide_action_authority for content-free, fixed-purpose authority decisions; recall authority never implies either purpose. In the full operator profile, use sm_search_with_routing for complex/multi-hop queries, sm_get_fact to hydrate IDs returned by graph tools, sm_supersede_fact (not delete) for stale corrections, and sm_add_graph_edge after adding facts to connect them. Read tools are safe; write tools (add/delete/supersede) should be user-approved. Search auto-filters superseded facts unless querying for history."
 )]
 impl ServerHandler for SemanticMemoryServer {
@@ -7001,8 +7089,8 @@ impl ServerHandler for SemanticMemoryServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListPromptsResult, rmcp::ErrorData>>
-        + rmcp::service::MaybeSendFuture
-        + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         std::future::ready(Ok(rmcp::model::ListPromptsResult::with_all_items(
             crate::skills::all_prompts(),
         )))
@@ -7013,8 +7101,8 @@ impl ServerHandler for SemanticMemoryServer {
         request: rmcp::model::GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResult, rmcp::ErrorData>>
-        + rmcp::service::MaybeSendFuture
-        + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         let args: Vec<(String, String)> = request
             .arguments
             .unwrap_or_default()
@@ -7032,8 +7120,8 @@ impl ServerHandler for SemanticMemoryServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ListResourcesResult, rmcp::ErrorData>>
-        + rmcp::service::MaybeSendFuture
-        + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         std::future::ready(Ok(rmcp::model::ListResourcesResult::with_all_items(
             crate::skills::all_resources(),
         )))
@@ -7043,9 +7131,10 @@ impl ServerHandler for SemanticMemoryServer {
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData>>
-        + rmcp::service::MaybeSendFuture
-        + '_ {
+    ) -> impl std::future::Future<
+        Output = Result<rmcp::model::ListResourceTemplatesResult, rmcp::ErrorData>,
+    > + rmcp::service::MaybeSendFuture
+           + '_ {
         std::future::ready(Ok(
             rmcp::model::ListResourceTemplatesResult::with_all_items(
                 crate::skills::all_resource_templates(),
@@ -7058,8 +7147,8 @@ impl ServerHandler for SemanticMemoryServer {
         request: rmcp::model::ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, rmcp::ErrorData>>
-        + rmcp::service::MaybeSendFuture
-        + '_ {
+           + rmcp::service::MaybeSendFuture
+           + '_ {
         std::future::ready(match crate::skills::read_resource(&request.uri) {
             Ok(result) => Ok(result),
             Err(e) => Err(rmcp::ErrorData::invalid_params(e, None)),

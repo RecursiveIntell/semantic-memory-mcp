@@ -7,7 +7,7 @@
 #[cfg(feature = "candle-embedder")]
 use semantic_memory::embedder::CandleEmbedder;
 use semantic_memory::embedder::{Embedder, MockEmbedder, OllamaEmbedder};
-use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, SearchConfig};
+use semantic_memory::{EmbeddingConfig, MemoryConfig, MemoryStore, ReplicationMode, SearchConfig};
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 
@@ -70,6 +70,18 @@ pub struct BridgeConfig {
     pub turbo_quant_projections: Option<usize>,
     /// Enable proveKV pool candidate backend (extreme compression).
     pub provekv_enabled: bool,
+    /// Enable FibQuant candidate backend.
+    pub fib_quant_enabled: bool,
+    /// Use the per-dimension candidate backend (the default).
+    pub per_dim_enabled: bool,
+}
+
+/// Immutable replication identity supplied only when opening a Mnemes-managed store.
+#[derive(Clone, Debug)]
+pub struct ReplicationOpenConfig {
+    pub device_id: String,
+    pub store_id: String,
+    pub stream_epoch: u64,
 }
 
 impl BridgeConfig {
@@ -84,6 +96,8 @@ impl BridgeConfig {
         turbo_quant_bits: Option<u8>,
         turbo_quant_projections: Option<usize>,
         provekv_enabled: bool,
+        fib_quant_enabled: bool,
+        per_dim_enabled: bool,
     ) -> Self {
         Self {
             memory_dir: PathBuf::from(memory_dir),
@@ -97,6 +111,8 @@ impl BridgeConfig {
             turbo_quant_bits,
             turbo_quant_projections,
             provekv_enabled,
+            fib_quant_enabled,
+            per_dim_enabled,
         }
     }
 }
@@ -107,6 +123,15 @@ impl MemoryBridge {
     /// If operator_token is provided and valid, an AuthorityIssuer is constructed
     /// and stored in the bridge, enabling governed mutations (sm_add_fact).
     pub fn open(config: BridgeConfig, operator_token: Option<&str>) -> anyhow::Result<Self> {
+        Self::open_with_replication(config, operator_token, None)
+    }
+
+    /// Open a store with an optional immutable replication identity.
+    pub fn open_with_replication(
+        config: BridgeConfig,
+        operator_token: Option<&str>,
+        replication: Option<ReplicationOpenConfig>,
+    ) -> anyhow::Result<Self> {
         let embedding_config = EmbeddingConfig {
             ollama_url: config.embedding_url,
             model: config.embedding_model,
@@ -152,7 +177,25 @@ impl MemoryBridge {
         // Derived vector backend (turbo-quant or provekv)
         #[cfg(feature = "full")]
         {
-            if config.provekv_enabled {
+            let enabled_count = [
+                config.fib_quant_enabled,
+                config.provekv_enabled,
+                config.turbo_quant_enabled,
+                config.per_dim_enabled,
+            ]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count();
+            if enabled_count > 1 {
+                anyhow::bail!(
+                    "--fib-quant, --provekv, --turbo-quant, and --per-dim are mutually exclusive"
+                );
+            }
+            if config.fib_quant_enabled {
+                use semantic_memory::DerivedVectorBackendPolicy;
+                search_config.derived_vector_backend =
+                    DerivedVectorBackendPolicy::FibQuantCandidateOnly;
+            } else if config.provekv_enabled {
                 use semantic_memory::DerivedVectorBackendPolicy;
                 search_config.derived_vector_backend =
                     DerivedVectorBackendPolicy::ProveKvPoolCandidateOnly;
@@ -166,21 +209,39 @@ impl MemoryBridge {
                 if let Some(projs) = config.turbo_quant_projections {
                     search_config.turbo_quant_projections = projs;
                 }
+            } else if config.per_dim_enabled {
+                use semantic_memory::DerivedVectorBackendPolicy;
+                search_config.derived_vector_backend =
+                    DerivedVectorBackendPolicy::PerDimCandidateOnly;
             }
         }
 
         let memory_dir = config.memory_dir.clone();
+        let (journal_device_id, journal_store_id, replication_mode, replication_stream_epoch) =
+            match replication {
+                Some(replication) => (
+                    Some(replication.device_id),
+                    Some(replication.store_id),
+                    ReplicationMode::FactCreateRequired,
+                    replication.stream_epoch,
+                ),
+                None => (None, None, ReplicationMode::Disabled, 0),
+            };
         let mem_config = MemoryConfig {
             base_dir: config.memory_dir,
             embedding: embedding_config,
             search: search_config,
+            journal_device_id,
+            journal_store_id,
+            replication_mode,
+            replication_stream_epoch,
             ..Default::default()
         };
 
         let store = MemoryStore::open_with_embedder(mem_config, embedder)?;
 
-        let authority_issuer = operator_token
-            .and_then(semantic_memory::AuthorityIssuer::from_operator_token);
+        let authority_issuer =
+            operator_token.and_then(semantic_memory::AuthorityIssuer::from_operator_token);
 
         if authority_issuer.is_some() {
             eprintln!("  operator authority: enabled (governed mutations unlocked)");

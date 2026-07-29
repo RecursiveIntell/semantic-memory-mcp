@@ -109,10 +109,7 @@ pub fn all_prompts() -> Vec<Prompt> {
 }
 
 /// Resolve a prompt by name with the provided arguments.
-pub fn get_prompt(
-    name: &str,
-    args: &[(String, String)],
-) -> Result<GetPromptResult, String> {
+pub fn get_prompt(name: &str, args: &[(String, String)]) -> Result<GetPromptResult, String> {
     let arg_map: std::collections::HashMap<String, String> = args.iter().cloned().collect();
 
     match name {
@@ -262,13 +259,19 @@ pub fn read_resource(uri: &str) -> Result<ReadResourceResult, String> {
         }
     };
 
-    Ok(ReadResourceResult::new(vec![ResourceContents::text(content, uri)]))
+    Ok(ReadResourceResult::new(vec![ResourceContents::text(
+        content, uri,
+    )]))
 }
 
 // ─── Prompt implementations ──────────────────────────────────────────────
 
-fn prompt_recall(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
-    let query = args.get("query").ok_or("Missing required argument: query")?;
+fn prompt_recall(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
+    let query = args
+        .get("query")
+        .ok_or("Missing required argument: query")?;
     let namespace = args.get("namespace");
     let top_k = args.get("top_k").map(|s| s.as_str()).unwrap_or("5");
 
@@ -301,16 +304,26 @@ fn prompt_recall(args: &std::collections::HashMap<String, String>) -> Result<Get
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Recall: {query}")))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!("Recall: {query}")))
 }
 
-fn prompt_capture(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
-    let content = args.get("content").ok_or("Missing required argument: content")?;
-    let namespace = args.get("namespace").ok_or("Missing required argument: namespace")?;
+fn prompt_capture(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
+    let content = args
+        .get("content")
+        .ok_or("Missing required argument: content")?;
+    let namespace = args
+        .get("namespace")
+        .ok_or("Missing required argument: namespace")?;
     let source = args.get("source");
-    let memory_kind = args.get("memory_kind").map(|s| s.as_str()).unwrap_or("durable_fact");
+    let memory_kind = args
+        .get("memory_kind")
+        .map(|s| s.as_str())
+        .unwrap_or("durable_fact");
 
     let system = "You are a semantic-memory capture assistant. Store durable, source-attributed facts. Never store passwords, tokens, private keys, or sensitive data without explicit user approval.";
 
@@ -337,12 +350,15 @@ fn prompt_capture(args: &std::collections::HashMap<String, String>) -> Result<Ge
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Capture fact in {namespace}")))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!("Capture fact in {namespace}")))
 }
 
-fn prompt_audit(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
+fn prompt_audit(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
     let namespace = args.get("namespace");
 
     let system = "You are a semantic-memory audit assistant. Audit first (read-only), present a health report, then reconcile ONLY after the user approves. Never destructively delete without explicit sign-off.";
@@ -377,13 +393,21 @@ fn prompt_audit(args: &std::collections::HashMap<String, String>) -> Result<GetP
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Audit semantic memory{}", namespace.map(|n| format!(": {n}")).unwrap_or_default())))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!(
+        "Audit semantic memory{}",
+        namespace.map(|n| format!(": {n}")).unwrap_or_default()
+    )))
 }
 
-fn prompt_explore(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
-    let topic = args.get("topic").ok_or("Missing required argument: topic")?;
+fn prompt_explore(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
+    let topic = args
+        .get("topic")
+        .ok_or("Missing required argument: topic")?;
     let mode = args.get("mode").map(|s| s.as_str()).unwrap_or("related");
     let second_topic = args.get("second_topic");
 
@@ -433,12 +457,15 @@ fn prompt_explore(args: &std::collections::HashMap<String, String>) -> Result<Ge
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Explore graph: {topic}")))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!("Explore graph: {topic}")))
 }
 
-fn prompt_maintenance(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
+fn prompt_maintenance(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
     let action = args.get("action").map(|s| s.as_str()).unwrap_or("check");
 
     let (desc, steps) = match action {
@@ -493,15 +520,25 @@ fn prompt_maintenance(args: &std::collections::HashMap<String, String>) -> Resul
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Maintenance: {desc}")))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!("Maintenance: {desc}")))
 }
 
-fn prompt_supersede(args: &std::collections::HashMap<String, String>) -> Result<GetPromptResult, String> {
-    let old_fact_id = args.get("old_fact_id").ok_or("Missing required argument: old_fact_id")?;
-    let new_content = args.get("new_content").ok_or("Missing required argument: new_content")?;
-    let reason = args.get("reason").map(|s| s.as_str()).unwrap_or("corrected content");
+fn prompt_supersede(
+    args: &std::collections::HashMap<String, String>,
+) -> Result<GetPromptResult, String> {
+    let old_fact_id = args
+        .get("old_fact_id")
+        .ok_or("Missing required argument: old_fact_id")?;
+    let new_content = args
+        .get("new_content")
+        .ok_or("Missing required argument: new_content")?;
+    let reason = args
+        .get("reason")
+        .map(|s| s.as_str())
+        .unwrap_or("corrected content");
 
     let system = "You are a semantic-memory supersession assistant. Replace stale facts with corrected versions while preserving history. The old fact is linked via a 'supersedes' edge and auto-filtered from search results.";
 
@@ -519,9 +556,10 @@ fn prompt_supersede(args: &std::collections::HashMap<String, String>) -> Result<
     );
 
     Ok(GetPromptResult::new(vec![
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-            PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
-        ]).with_description(format!("Supersede fact {old_fact_id}")))
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
+        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+    ])
+    .with_description(format!("Supersede fact {old_fact_id}")))
 }
 
 // ─── Embedded resource content ──────────────────────────────────────────

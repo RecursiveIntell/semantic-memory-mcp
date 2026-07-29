@@ -13,8 +13,6 @@ description = "MCP server wrapping semantic-memory — local-first knowledge man
 keywords = ["mcp", "semantic-memory", "rag", "knowledge-management", "vector-search"]
 categories = ["database", "text-processing", "development-tools"]
 
-[workspace]
-
 [lib]
 name = "semantic_memory_mcp"
 path = "src/lib.rs"
@@ -24,19 +22,7 @@ name = "semantic-memory-mcp"
 path = "src/main.rs"
 
 [features]
-# SM-AUD-001: The MCP server references routing, integration, decoder, discord,
-# provenance, factor_graph, topology, and community modules unconditionally in
-# server.rs. These are all behind `full` features in semantic-memory. Making
-# `full` the default ensures the advertised 18-tool surface compiles and works
-# out of the box. The `search` profile composes every capability referenced by
-# the currently unified tool router; it is a supported build profile, not a
-# minimal tool surface.
 default = ["full"]
-# Core: usearch 2.25 backend (the default and recommended backend for
-# semantic-memory — won the benchmark vs hnsw_rs by 2-78x on every metric
-# that matters for a desktop RAG app, +4pp better recall@10 at D=768).
-# No brute-force — usearch is the production backend.
-# Includes candle-embedder so the default build needs no Ollama.
 search = [
     "semantic-memory/usearch-backend",
     "semantic-memory/candle-embedder",
@@ -53,13 +39,13 @@ search = [
     "semantic-memory/admin-ops",
     "semantic-memory/late-interaction",
     "semantic-memory/turbo-quant-codec",
+    "semantic-memory/fib-quant-codec",
     "semantic-memory/rl-routing",
     "candle-embedder",
     "claim-integration",
     "llm-parser",
     "orchestration",
 ]
-# Stable minimal feature set: no experimental/advanced modules.
 stable = [
     "semantic-memory/usearch-backend",
     "semantic-memory/candle-embedder",
@@ -67,9 +53,6 @@ stable = [
     "semantic-memory/temporal",
     "candle-embedder",
 ]
-# Bounded MCP agent surface with the same portable semantic core as stable,
-# but without the compile-time stable router. Runtime --tool-profile agent
-# supplies the narrow tool allowlist.
 agent = [
     "semantic-memory/usearch-backend",
     "semantic-memory/candle-embedder",
@@ -77,44 +60,31 @@ agent = [
     "semantic-memory/temporal",
     "candle-embedder",
 ]
-# Local feature forwarders for cfg-gated semantic-memory modules.
 discord = ["semantic-memory/discord"]
 routing = ["semantic-memory/routing"]
 decoder = ["semantic-memory/decoder"]
 integration = ["semantic-memory/integration"]
 turbo-quant-codec = ["semantic-memory/turbo-quant-codec"]
+fib-quant-codec = ["semantic-memory/fib-quant-codec"]
 rl-routing = ["semantic-memory/rl-routing"]
 late-interaction = ["semantic-memory/late-interaction"]
 multiscale = ["semantic-memory/multiscale"]
 subtraction = ["semantic-memory/subtraction"]
 compression-governor = ["semantic-memory/compression-governor"]
-# Local feature forwarding for the sm_subgraph_prune implementation.
 subgraph-pruning = ["semantic-memory/subgraph-pruning"]
-# Local feature that forwards to semantic-memory's candle-embedder.
-# Used for cfg gates in bridge.rs.
 candle-embedder = ["semantic-memory/candle-embedder"]
-# Full is currently an alias for the honestly composed search/tool-router profile.
 full = ["search"]
-
-# Claim-ledger integration: sm_create_claim, sm_add_evidence, sm_judge_support,
-# sm_verify_claim, sm_proof_debt_status, sm_record_contradiction, etc.
 claim-integration = ["dep:claim-ledger"]
-# llm-output-parser: robust JSON parsing for agent-submitted and LLM output
 llm-parser = ["dep:llm-output-parser"]
-# knowledge-runtime: intent classification, multi-leg route planning,
-# provenance-aware merge, scope-aware entity resolution, projection tracking.
-# Upgrades /search-routed and adds sm_classify_query, sm_plan_query,
-# sm_query_orchestrated, sm_query_temporal, sm_entity_lookup, sm_projection_health.
 orchestration = [
     "dep:knowledge-runtime",
     "semantic-memory/provenance",
     "semantic-memory/temporal",
 ]
-# HNSW backend (optional alternative to usearch). Enables compact-hnsw endpoint.
 hnsw = ["semantic-memory/hnsw"]
 
 [dependencies]
-semantic-memory = { version = "0.5.13", path = "../semantic-memory", default-features = false }
+semantic-memory = { version = "0.5.14", path = "../semantic-memory", default-features = false }
 stack-ids = { version = "0.1.3", path = "../stack-ids" }
 claim-ledger = { version = "0.2.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }

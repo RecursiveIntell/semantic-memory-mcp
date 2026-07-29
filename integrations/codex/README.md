@@ -47,7 +47,9 @@ contain `SKILL.md` with `name` and `description` frontmatter.
 4. Confirm the visible tools match the configured runtime profile. MCP
    `tools/list` is authoritative.
 
-Use `agent` for a bounded 11-tool read-only surface. Use `lean` for four governed read-only tools. The `full` profile is an operator surface.
+Use `agent` for a bounded 12-tool surface whose only write is governed fact
+capture (`sm_add_fact`). Use `lean` for four governed read-only tools. The
+`full` profile is an operator surface.
 
 Current format references:
 

@@ -41,6 +41,6 @@ Environment variables:
 | `SEMANTIC_MEMORY_DIR` | `$HOME/.local/share/semantic-memory` |
 | `SEMANTIC_MEMORY_TOOL_PROFILE` | `agent` |
 
-Use `lean` for an autonomous read-only surface. Use `agent` for a bounded
-read-only daily surface (11 tools). Treat `full` as an operator
-profile with destructive and maintenance tools.
+Use `lean` for an autonomous read-only surface. Use `agent` for a bounded daily
+surface (12 tools); its only write is governed fact capture (`sm_add_fact`).
+Treat `full` as an operator profile with destructive and maintenance tools.

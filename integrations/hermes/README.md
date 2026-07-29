@@ -35,5 +35,7 @@ hermes mcp configure semantic_memory
 ```
 
 `--args` must be last because it consumes the remaining argv. Prefer `agent`
-for a bounded 11-tool read-only surface and `lean` for autonomous read-only
-use. The `full` profile is an operator surface.
+for a bounded 12-tool surface whose only write is governed fact capture
+(`sm_add_fact`); use `lean` for the smallest autonomous read-only surface. The
+`full` profile is an operator surface. MCP `tools/list` is authoritative for the
+deployed binary.

@@ -30,15 +30,34 @@ struct Cli {
     #[arg(long)]
     memory_dir: String,
 
+    /// Registered Mnemes device identity for this canonical local store.
+    /// Required with --mnemes-required; enables atomic mutation journaling.
+    #[arg(long)]
+    mnemes_device_id: Option<String>,
+
+    /// Stable Mnemes store identifier for this local memory store.
+    #[arg(long, default_value = "primary")]
+    mnemes_store_id: String,
+
+    /// Positive Mnemes replication stream epoch. Increment only when intentionally
+    /// starting a distinct stream for the same device/store identity.
+    #[arg(long, default_value_t = 1)]
+    mnemes_stream_epoch: u64,
+
+    /// Refuse to serve unless Mnemes replication identity is configured.
+    /// Use this for Mnemes-managed semantic-memory installations.
+    #[arg(long)]
+    mnemes_required: bool,
+
     /// Embedding backend: candle (default, in-process CPU, no Ollama needed),
     /// ollama (external Ollama server, GPU-accelerated), or mock (testing).
     ///
     /// Candle: pure-Rust, CPU-only, downloads model from HuggingFace.
     ///   Pros: zero external dependencies, works everywhere.
-    ///   Cons: ~138ms per embedding on CPU.
+    ///   Cons: latency depends on local CPU, model cache, and batch size.
     ///
     /// Ollama: external server with GPU support (ROCm/CUDA/Metal).
-    ///   Pros: ~33ms per embedding (4x faster with GPU).
+    ///   Pros: can use local GPU acceleration.
     ///   Cons: requires `ollama serve` running and model pulled.
     ///   Setup: `ollama pull nomic-embed-text` then `--embedder ollama`
     #[arg(long, default_value = "candle")]
@@ -103,6 +122,16 @@ struct Cli {
     /// Requires the `poly-kv-codec` feature.
     #[arg(long)]
     provekv: bool,
+
+    /// Enable FibQuant compressed vector candidate backend.
+    /// Mutually exclusive with --turbo-quant, --provekv, and --per-dim.
+    #[arg(long)]
+    fib_quant: bool,
+
+    /// Use the per-dimension candidate backend (the default).
+    /// Mutually exclusive with --turbo-quant, --provekv, and --fib-quant.
+    #[arg(long)]
+    per_dim: bool,
 
     /// Operator authority token for governed mutations (sm_add_fact).
     /// When provided, enables governed write tools by constructing an
@@ -222,29 +251,56 @@ fn main() -> anyhow::Result<()> {
         cli.turbo_quant_bits,
         cli.turbo_quant_projections,
         cli.provekv,
+        cli.fib_quant,
+        cli.per_dim,
     );
 
     let operator_token: Option<String> = {
         if let Some(ref t) = cli.operator_authority_token {
             let t = t.trim();
-            if !t.is_empty() { Some(t.to_string()) } else { None }
+            if !t.is_empty() {
+                Some(t.to_string())
+            } else {
+                None
+            }
         } else if let Some(ref path) = cli.operator_authority_token_file {
-            std::fs::read_to_string(path)
-                .ok()
-                .and_then(|s| {
-                    let s = s.trim();
-                    if s.is_empty() { None } else { Some(s.to_string()) }
-                })
+            std::fs::read_to_string(path).ok().and_then(|s| {
+                let s = s.trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            })
         } else {
             std::env::var("OPERATOR_AUTHORITY_TOKEN")
                 .ok()
                 .and_then(|s| {
                     let s = s.trim();
-                    if s.is_empty() { None } else { Some(s.to_string()) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
                 })
         }
     };
-    let bridge = bridge::MemoryBridge::open(bridge_config, operator_token.as_deref())?;
+    if cli.mnemes_required && cli.mnemes_device_id.is_none() {
+        anyhow::bail!("--mnemes-required requires --mnemes-device-id");
+    }
+    let replication =
+        cli.mnemes_device_id
+            .as_ref()
+            .map(|device_id| bridge::ReplicationOpenConfig {
+                device_id: device_id.clone(),
+                store_id: cli.mnemes_store_id.clone(),
+                stream_epoch: cli.mnemes_stream_epoch,
+            });
+    let bridge = bridge::MemoryBridge::open_with_replication(
+        bridge_config,
+        operator_token.as_deref(),
+        replication,
+    )?;
 
     // Create the tokio runtime first (needed for both HTTP and stdio)
     let rt = tokio::runtime::Builder::new_multi_thread()

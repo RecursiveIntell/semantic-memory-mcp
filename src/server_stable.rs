@@ -832,7 +832,8 @@ impl SemanticMemoryServer {
     fn sm_stats(&self) -> Result<Json<StatsOutput>, ErrorData> {
         let store = &self.bridge.store;
         let core = tokio::task::block_in_place(|| Handle::current().block_on(store.stats()));
-        let graph = tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
+        let graph =
+            tokio::task::block_in_place(|| Handle::current().block_on(store.count_graph_edges()));
         let core_health = match &core {
             Ok(_) => serde_json::json!({"health": "healthy", "error": null}),
             Err(e) => serde_json::json!({"health": "error", "error": e.to_string()}),
@@ -948,10 +949,9 @@ impl SemanticMemoryServer {
             tokio::task::block_in_place(|| Handle::current().block_on(store.get_fact(&bare)))
                 .map_err(|e| ErrorData::internal_error(format!("get_fact error: {e}"), None))?;
         let edges = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.list_graph_edges_for_node_with_limit(
-                &node_id,
-                MAX_GRAPH_EDGES_FOR_TOOL,
-            ))
+            Handle::current().block_on(
+                store.list_graph_edges_for_node_with_limit(&node_id, MAX_GRAPH_EDGES_FOR_TOOL),
+            )
         })
         .map_err(|e| ErrorData::internal_error(format!("list edges error: {e}"), None))?;
 
@@ -1089,14 +1089,20 @@ impl SemanticMemoryServer {
         }): Parameters<AddFactParams>,
     ) -> Result<Json<StructuredOutput>, ErrorData> {
         if sensitivity.as_deref().is_some_and(|value| {
-            matches!(value.trim().to_ascii_lowercase().as_str(), "confidential" | "restricted")
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "confidential" | "restricted"
+            )
         }) {
             return Err(ErrorData::invalid_params(
                 "Admission gate BLOCKED: confidential/restricted content requires an explicit governed workflow".to_string(),
                 None,
             ));
         }
-        if memory_kind.as_deref().is_some_and(|value| value.trim().eq_ignore_ascii_case("ephemeral_inference")) {
+        if memory_kind
+            .as_deref()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("ephemeral_inference"))
+        {
             return Err(ErrorData::invalid_params(
                 "Admission gate BLOCKED: ephemeral_inference cannot be promoted through the bounded agent surface".to_string(),
                 None,
@@ -1108,7 +1114,10 @@ impl SemanticMemoryServer {
                 None,
             ));
         }
-        if source.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+        if source
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
             return Err(ErrorData::invalid_params(
                 "Admission gate BLOCKED: source references require a trusted immutable-object resolver".to_string(),
                 None,
@@ -1122,7 +1131,12 @@ impl SemanticMemoryServer {
         }
         let idempotency = match idempotency_key {
             Some(key) if !key.trim().is_empty() => key,
-            Some(_) => return Err(ErrorData::invalid_params("idempotency_key must not be blank", None)),
+            Some(_) => {
+                return Err(ErrorData::invalid_params(
+                    "idempotency_key must not be blank",
+                    None,
+                ))
+            }
             None => uuid::Uuid::new_v4().to_string(),
         };
         let issuer = self.bridge.authority_issuer.as_ref().ok_or_else(|| {
@@ -1147,7 +1161,9 @@ impl SemanticMemoryServer {
                 None,
             ))
         })
-        .map_err(|error| ErrorData::internal_error(format!("governed append failed: {error}"), None))?;
+        .map_err(|error| {
+            ErrorData::internal_error(format!("governed append failed: {error}"), None)
+        })?;
         json_to_output(&serde_json::json!({
             "ok": true,
             "fact_id": result.affected_ids.first().cloned().unwrap_or_default(),
@@ -1338,7 +1354,6 @@ impl SemanticMemoryServer {
 #[tool_handler(
     router = self.tool_router,
     name = "semantic-memory-mcp",
-    version = "0.5.4",
     instructions = "Compile-time stable semantic memory surface. Search before asking for context. Use witnessed retrieval for durable receipts. Recall authority never implies assertion or action authority. Prefer supersession to deletion."
 )]
 impl ServerHandler for SemanticMemoryServer {}
@@ -1350,17 +1365,22 @@ mod tests {
 
     fn open_server() -> (tempfile::TempDir, SemanticMemoryServer) {
         let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().to_path_buf(),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().to_path_buf(),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         (dir, SemanticMemoryServer::new(bridge, "stable"))
     }
@@ -1411,17 +1431,22 @@ mod tests {
     #[should_panic(expected = "accepts only --tool-profile stable")]
     fn stable_build_rejects_runtime_widening() {
         let (dir, _) = open_server();
-        let bridge = MemoryBridge::open(BridgeConfig {
-            memory_dir: dir.path().join("other"),
-            embedder_backend: EmbedderBackend::Mock,
-            embedding_url: String::new(),
-            embedding_model: "mock".into(),
-            embedding_dims: 768,
-            turbo_quant_enabled: false,
-            turbo_quant_bits: None,
-            turbo_quant_projections: None,
-        provekv_enabled: false,
-        }, None)
+        let bridge = MemoryBridge::open(
+            BridgeConfig {
+                memory_dir: dir.path().join("other"),
+                embedder_backend: EmbedderBackend::Mock,
+                embedding_url: String::new(),
+                embedding_model: "mock".into(),
+                embedding_dims: 768,
+                turbo_quant_enabled: false,
+                turbo_quant_bits: None,
+                turbo_quant_projections: None,
+                provekv_enabled: false,
+                fib_quant_enabled: false,
+                per_dim_enabled: false,
+            },
+            None,
+        )
         .unwrap();
         let _ = SemanticMemoryServer::new(bridge, "full");
     }

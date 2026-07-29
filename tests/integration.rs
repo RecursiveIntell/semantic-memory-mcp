@@ -23,6 +23,8 @@ fn open_bridge(dir: &std::path::Path) -> MemoryBridge {
         turbo_quant_bits: None,
         turbo_quant_projections: None,
         provekv_enabled: false,
+        fib_quant_enabled: false,
+        per_dim_enabled: false,
     };
     MemoryBridge::open(config, None).expect("bridge should open")
 }
@@ -129,12 +131,13 @@ fn autonomous_profiles_expose_witnessed_search_and_stored_replay() {
 
 #[cfg(feature = "full")]
 #[test]
-fn agent_profile_is_bounded_read_only_until_trusted_issuer_is_injected() {
+fn agent_profile_is_bounded_and_exposes_only_governed_fact_capture_write() {
     let dir = tempfile::tempdir().unwrap();
     let server = SemanticMemoryServer::new(open_bridge(dir.path()), "agent");
     assert_eq!(
         server.exposed_tool_names(),
         vec![
+            "sm_add_fact",
             "sm_decide_action_authority",
             "sm_decide_assertion_authority",
             "sm_get_fact",
@@ -149,7 +152,6 @@ fn agent_profile_is_bounded_read_only_until_trusted_issuer_is_injected() {
         ]
     );
     for forbidden in [
-        "sm_add_fact",
         "sm_add_graph_edge",
         "sm_set_provenance",
         "sm_supersede_fact",

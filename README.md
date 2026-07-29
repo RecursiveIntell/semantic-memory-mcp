@@ -23,7 +23,9 @@ The current Rust source and `Cargo.toml` are authoritative. In particular:
   HTTP surface; `--http-only` disables stdio.
 - `lean` and `standard` are aliases in behavior and expose four governed,
   read-only tools.
-- `agent` exposes a bounded 11-tool read-only surface.
+- `stable` exposes a bounded 10-tool read-only surface.
+- `agent` exposes a bounded 12-tool surface; its only write is governed fact
+  capture (`sm_add_fact`).
 - `full` exposes every tool compiled into that build. Its size can change with
   feature selection, so this README does not freeze a full-profile tool count.
 - MCP `tools/list` is the source of truth for the tools available in a specific
@@ -59,7 +61,7 @@ Or add to your MCP client config:
 Install the published package from crates.io:
 
 ```bash
-cargo install semantic-memory-mcp --locked --version '=0.5.5'
+cargo install semantic-memory-mcp --locked --version '=0.5.6'
 ```
 
 Then add to your MCP client config:
@@ -86,7 +88,7 @@ cargo build --release
   --tool-profile agent
 ```
 
-### Option 3: Docker
+### Option 4: Docker
 
 ```bash
 docker run -i --rm \
@@ -158,12 +160,21 @@ These autonomous profiles expose exactly:
 
 They do not expose raw search, mutation, maintenance, import, or administration.
 
+### `stable`
+
+This bounded read-only profile exposes ten tools: ordinary and witnessed
+search, store statistics and namespace discovery, direct fact/neighbor lookup,
+graph paths, conversation retrieval, and separate assertion/action authority
+decisions. It excludes writes, imports, lifecycle administration, and
+maintenance.
+
 ### `agent`
 
-The daily coding-agent profile exposes 11 read-only tools:
+The daily coding-agent profile exposes these 12 tools:
 
 ```text
-sm_decide_action_authority     sm_decide_assertion_authority
+sm_add_fact                    sm_decide_action_authority
+sm_decide_assertion_authority
 sm_get_fact                    sm_get_fact_neighbors
 sm_get_search_receipt          sm_graph_path
 sm_list_namespaces             sm_replay_search
@@ -171,10 +182,11 @@ sm_search_conversations        sm_search_witnessed
 sm_stats
 ```
 
-It is read-only until a trusted authenticated authority issuer is injected. It
-excludes mutation, deletion, raw/unwitnessed search, imports, lifecycle
-administration, reconciliation, vacuuming, and re-embedding. Use `lean` for
-autonomous recall and authority decisions; use `full` for operator mutation.
+`sm_add_fact` is the only write. It remains governed and fails closed without a
+trusted authority issuer. The profile excludes deletion, raw/unwitnessed
+search, imports, lifecycle administration, reconciliation, vacuuming, and
+re-embedding. Use `lean` for the smallest autonomous recall/authority surface;
+use `full` only for explicitly approved operator work.
 
 ### `full`
 
@@ -186,7 +198,10 @@ before granting this profile to an autonomous process.
 
 ## Tool Reference
 
-Tools exposed by the full router, grouped by function. The `lean`/`standard` profile exposes only the first 4 search tools; `agent` exposes 11 read-only tools; `full` exposes everything below.
+Tools exposed by the full router, grouped by function. `lean`/`standard`,
+`stable`, and `agent` use the bounded manifests above; `full` exposes the
+compiled router. Run `tools/list` against the deployed binary before automating
+against any profile.
 
 ### Search & Retrieval
 
@@ -198,7 +213,7 @@ Tools exposed by the full router, grouped by function. The `lean`/`standard` pro
 | `sm_search_proof_debt` | Search with trust-index gating and proof-debt budget | full |
 | `sm_search_as_of` | Bitemporal search — facts valid at a specific date | full |
 | `sm_search_conversations` | Hybrid search over stored conversation messages | agent+ |
-| `sm_search_explained` | Returns per-stage scoring breakdown (BM25, vector, RRF) | full |
+
 | `sm_route_query` | Profile a query and get adaptive routing decision | full |
 | `sm_get_search_receipt` | Load a durable search receipt by ID | agent+ |
 | `sm_replay_search` | Replay a search using stored (opt-in) inputs | lean+ |
@@ -266,8 +281,7 @@ Tools exposed by the full router, grouped by function. The `lean`/`standard` pro
 | `sm_vacuum` | SQLite VACUUM — compact and defragment | full |
 | `sm_reembed_all` | Re-embed all facts after embedding model change | full |
 | `sm_embeddings_are_dirty` | Check if embeddings need regeneration | full |
-| `sm_rebuild_hnsw` | Rebuild HNSW index from SQLite embeddings | full |
-| `sm_compact_hnsw` | Compact HNSW index | full |
+
 
 ### Import & Export
 
