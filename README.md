@@ -188,6 +188,39 @@ search, imports, lifecycle administration, reconciliation, vacuuming, and
 re-embedding. Use `lean` for the smallest autonomous recall/authority surface;
 use `full` only for explicitly approved operator work.
 
+#### Enable supported local fact capture
+
+Some earlier deployments started without an in-process operator issuer. That
+fail-closed configuration can look like an overly aggressive security policy:
+even ordinary local `sm_add_fact` requests are rejected with no trusted issuer
+instead of being appended. The supported recovery is **not** to remove all
+admission controls. Start the MCP service with a private operator-token file,
+which creates an in-process issuer only for its local governed capture path:
+
+```bash
+install -d -m 700 "$HOME/.config/semantic-memory"
+umask 077
+openssl rand -hex 32 > "$HOME/.config/semantic-memory/operator-authority.token"
+semantic-memory-mcp \
+  --operator-authority-token-file "$HOME/.config/semantic-memory/operator-authority.token" \
+  --tool-profile agent
+```
+
+Use a non-empty token without whitespace and keep the file readable only by the
+service owner. The token is read at startup and consumed to construct the
+in-process issuer; it is not sent as an MCP tool parameter. When the process
+starts, require the `operator authority: enabled` log line, then append one
+ordinary fact with a non-blank idempotency key and read it back by ID. Removing
+the flag and restarting is the rollback: supported writes again fail closed.
+
+With the issuer present, ordinary `public` or `internal` durable facts without
+source or evidence references and without entity extraction can be appended
+through `sm_add_fact` and return a governed receipt. This does **not** admit
+unresolved provenance, confidential or restricted data, `ephemeral_inference`,
+entity extraction, deletion, or other operator tools. Keep the MCP process on
+its normal local/loopback transport boundary and retain transport authentication
+where applicable; write admission is not network-access policy.
+
 ### `full`
 
 This is the operator profile. It exposes every tool registered by the compiled
