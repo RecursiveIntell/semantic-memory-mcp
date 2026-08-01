@@ -136,7 +136,7 @@ impl MemoryBridge {
             ollama_url: config.embedding_url,
             model: config.embedding_model,
             dimensions: config.embedding_dims,
-            batch_size: 32,
+            batch_size: 128,
             timeout_secs: 60,
         };
 

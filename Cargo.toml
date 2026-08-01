@@ -41,6 +41,7 @@ search = [
     "semantic-memory/turbo-quant-codec",
     "semantic-memory/fib-quant-codec",
     "semantic-memory/rl-routing",
+    "semantic-memory/poly-kv-codec",
     "candle-embedder",
     "claim-integration",
     "llm-parser",
