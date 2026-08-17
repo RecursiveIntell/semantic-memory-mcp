@@ -1,6 +1,6 @@
 [package]
 name = "semantic-memory-mcp"
-version = "0.5.7"
+version = "0.5.8"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -21,6 +21,11 @@ path = "src/lib.rs"
 name = "semantic-memory-mcp"
 path = "src/main.rs"
 
+# semantic-memory-mcp is a standalone Git submodule. Declare it as its own
+# workspace so Cargo does not inherit an unrelated parent workspace in a
+# detached worktree.
+[workspace]
+
 [features]
 default = ["full"]
 search = [
@@ -39,9 +44,13 @@ search = [
     "semantic-memory/admin-ops",
     "semantic-memory/late-interaction",
     "semantic-memory/turbo-quant-codec",
-    "semantic-memory/fib-quant-codec",
+    # NOTE: semantic-memory/fib-quant-codec is intentionally NOT enabled by
+    # `search`: it is a reserved gate for the in-flight PolyKV/FibQuant
+    # artifact workstream, and enabling it would require the yanked
+    # poly-kv 0.1.0-alpha.1 dependency that crates.io cannot resolve.
+    # Enable the mcp's own `fib-quant-codec` feature explicitly once the
+    # artifact adapter is published.
     "semantic-memory/rl-routing",
-    "semantic-memory/poly-kv-codec",
     "candle-embedder",
     "claim-integration",
     "llm-parser",
@@ -91,8 +100,11 @@ claim-ledger = { version = "0.2.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
 knowledge-runtime = { version = "0.1.0", path = "../knowledge-runtime", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
-rmcp = { version = "1", features = ["server", "transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+rmcp = { version = "1.7.0", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
+axum = "0.8"
+bytes = "1"
+http-body-util = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -108,3 +120,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 tempfile = "3"
 semantic-memory = { path = "../semantic-memory", default-features = false, features = ["testing"] }
+

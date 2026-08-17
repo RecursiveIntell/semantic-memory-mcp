@@ -5,21 +5,21 @@
 //! integration tests can access bridge and http_server.
 
 pub mod bridge;
-#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+#[cfg(feature = "search")]
 pub mod http_server;
-#[cfg(all(feature = "stable", not(feature = "full")))]
+#[cfg(not(feature = "search"))]
 #[path = "http_server_stable.rs"]
 pub mod http_server;
 pub mod mcp_http_server;
 pub mod profile;
-#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+#[cfg(feature = "search")]
 pub mod server;
-#[cfg(all(feature = "stable", not(feature = "full")))]
+#[cfg(not(feature = "search"))]
 #[path = "server_stable.rs"]
 pub mod server;
 pub mod skills;
-#[cfg(not(all(feature = "stable", not(feature = "full"))))]
+#[cfg(feature = "search")]
 mod tools;
-#[cfg(all(feature = "stable", not(feature = "full")))]
+#[cfg(not(feature = "search"))]
 #[path = "tools_stable.rs"]
 mod tools;
