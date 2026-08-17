@@ -96,6 +96,14 @@ struct Cli {
     #[arg(long)]
     http_auth_token_file: Option<PathBuf>,
 
+    /// Optional Streamable HTTP MCP port. Serves `/mcp` on loopback with the same token.
+    #[arg(long)]
+    mcp_http_port: Option<u16>,
+
+    /// Read the MCP HTTP bearer token from a private file.
+    #[arg(long)]
+    mcp_http_token_file: Option<PathBuf>,
+
     /// Run only the HTTP server (skip stdio MCP). Requires --http-port.
     /// Use this for standalone warm-server mode (benchmarks, hooks).
     #[arg(long)]
@@ -159,6 +167,13 @@ struct Cli {
     tool_profile: ToolProfile,
 }
 
+#[cfg_attr(not(all(feature = "stable", not(feature = "full"))), allow(dead_code))]
+impl Cli {
+    fn requests_http_transport(&self) -> bool {
+        self.http_port.is_some() || self.mcp_http_port.is_some() || self.http_only
+    }
+}
+
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
 fn normalize_http_auth_token(raw: &str, source: &str) -> anyhow::Result<String> {
     let token = raw.trim();
@@ -169,6 +184,31 @@ fn normalize_http_auth_token(raw: &str, source: &str) -> anyhow::Result<String> 
         anyhow::bail!("HTTP authorization token from {source} contains whitespace");
     }
     Ok(token.to_string())
+}
+
+#[cfg(all(not(feature = "stable"), unix))]
+fn validate_http_token_file_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = std::fs::metadata(path)
+        .map_err(|error| anyhow::anyhow!("failed to inspect {}: {error}", path.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        anyhow::bail!(
+            "HTTP authorization token file {} must not grant group or world access",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(feature = "stable"), not(unix)))]
+fn validate_http_token_file_permissions(_path: &Path) -> anyhow::Result<()> {
+    // Windows and other non-Unix platforms do not expose POSIX mode bits. The
+    // caller still validates token content; platform-specific ACL enforcement
+    // belongs to the service deployment boundary.
+    Ok(())
 }
 
 #[cfg(not(all(feature = "stable", not(feature = "full"))))]
@@ -182,6 +222,7 @@ fn resolve_http_auth_token(
         }
     }
     if let Some(path) = token_file {
+        validate_http_token_file_permissions(path)?;
         let raw = std::fs::read_to_string(path)
             .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
         return normalize_http_auth_token(&raw, &path.display().to_string()).map(Some);
@@ -314,7 +355,7 @@ fn main() -> anyhow::Result<()> {
     // Start HTTP server if --http-port was specified.
     // When only HTTP is needed (no MCP client), use --http-only to skip stdio.
     #[cfg(all(feature = "stable", not(feature = "full")))]
-    if cli.http_port.is_some() || cli.http_only {
+    if cli.requests_http_transport() {
         anyhow::bail!(
             "HTTP transport is unavailable in the compile-time stable build; use stdio MCP or rebuild with --features full"
         );
@@ -332,11 +373,32 @@ fn main() -> anyhow::Result<()> {
         http_server::start_http_server(
             port,
             &auth_token,
-            bridge,
+            bridge.clone(),
             rt.handle().clone(),
             cli.tool_profile,
         )?;
     }
+
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
+    let mcp_http_server = if let Some(port) = cli.mcp_http_port {
+        let auth_token = resolve_http_auth_token(
+            cli.http_auth_token.as_deref(),
+            cli.mcp_http_token_file
+                .as_deref()
+                .or(cli.http_auth_token_file.as_deref()),
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!("--mcp-http-port requires --http-auth-token or a token file")
+        })?;
+        Some(semantic_memory_mcp::mcp_http_server::start_mcp_http_server(
+            port,
+            &auth_token,
+            bridge.clone(),
+            cli.tool_profile,
+        )?)
+    } else {
+        None
+    };
 
     // If --http-only was set, skip stdio MCP and just keep the process alive
     // for the HTTP server.
@@ -351,7 +413,18 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Serve over stdio (MCP transport)
+    // When MCP HTTP is active, skip stdio MCP -- the HTTP thread handles MCP.
+    // Stdio is closed in systemd/daemon contexts and would crash immediately.
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
+    if mcp_http_server.is_some() {
+        eprintln!("MCP HTTP mode: stdio MCP disabled, MCP served over HTTP.");
+        rt.block_on(async {
+            std::future::pending::<()>().await;
+        });
+        return Ok(());
+    }
+
+    // Serve over stdio (MCP transport) -- only when MCP HTTP is not active
     // rmcp handles the JSON-RPC protocol: initialize, tools/list, tools/call
     // Multi-threaded runtime is required because tool handlers use
     // tokio::task::block_in_place to call async store methods from sync fn.
@@ -364,12 +437,27 @@ fn main() -> anyhow::Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
+    #[cfg(not(all(feature = "stable", not(feature = "full"))))]
+    if let Some(server) = mcp_http_server {
+        let _ = server.shutdown();
+    }
+
     Ok(())
 }
 
 #[cfg(all(test, not(all(feature = "stable", not(feature = "full")))))]
 mod tests {
     use super::*;
+
+    fn write_private_token(path: &Path, content: &str) {
+        std::fs::write(path, content).expect("write token");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .expect("make token private");
+        }
+    }
 
     #[test]
     fn unknown_profile_is_rejected_by_clap() {
@@ -388,7 +476,7 @@ mod tests {
     fn token_file_trims_surrounding_whitespace() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("token");
-        std::fs::write(&path, "  file-token\n").expect("write token");
+        write_private_token(&path, "  file-token\n");
         let token = resolve_http_auth_token(None, Some(&path))
             .expect("valid token file")
             .expect("resolved token");
@@ -399,7 +487,7 @@ mod tests {
     fn explicit_token_precedes_token_file() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("token");
-        std::fs::write(&path, "file-token\n").expect("write token");
+        write_private_token(&path, "file-token\n");
         let token = resolve_http_auth_token(Some("explicit-token"), Some(&path))
             .expect("valid explicit token")
             .expect("resolved token");
@@ -410,7 +498,7 @@ mod tests {
     fn exactly_empty_explicit_token_falls_back_to_file() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("token");
-        std::fs::write(&path, "file-token\n").expect("write token");
+        write_private_token(&path, "file-token\n");
         let token = resolve_http_auth_token(Some(""), Some(&path))
             .expect("empty explicit token falls back")
             .expect("resolved token");
@@ -429,11 +517,27 @@ mod tests {
     fn token_file_rejects_internal_whitespace() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("token");
-        std::fs::write(&path, "first\nsecond\n").expect("write token");
+        write_private_token(&path, "first\nsecond\n");
         let error = resolve_http_auth_token(None, Some(&path))
             .expect_err("multiline token must fail")
             .to_string();
         assert!(error.contains("contains whitespace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_rejects_group_or_world_readable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("token");
+        write_private_token(&path, "file-token\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make token intentionally insecure");
+        let error = resolve_http_auth_token(None, Some(&path))
+            .expect_err("insecure token mode must fail closed")
+            .to_string();
+        assert!(error.contains("must not grant group or world access"));
     }
 
     #[test]
@@ -441,5 +545,18 @@ mod tests {
         assert!(resolve_http_auth_token(None, None)
             .expect("missing token is not a parse error")
             .is_none());
+    }
+
+    #[test]
+    fn mcp_http_port_is_recognized_as_an_http_transport_request() {
+        let cli = Cli::try_parse_from([
+            "semantic-memory-mcp",
+            "--memory-dir",
+            "/must/not/be/opened",
+            "--mcp-http-port",
+            "1738",
+        ])
+        .expect("MCP HTTP flags should parse");
+        assert!(cli.requests_http_transport());
     }
 }

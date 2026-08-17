@@ -140,6 +140,10 @@ The options below match `src/main.rs` and the generated `--help` surface.
 | `--turbo-quant` | false | Request TurboQuant candidate generation with exact `f32` reranking. The local `full` feature must be active for the bridge wiring to run. |
 | `--turbo-quant-bits <TURBO_QUANT_BITS>` | codec default `8` | Polar angle bits, used only with `--turbo-quant`. |
 | `--turbo-quant-projections <TURBO_QUANT_PROJECTIONS>` | codec default `16` | QJL projection count, used only with `--turbo-quant`. |
+| `--mnemes-device-id <MNEMES_DEVICE_ID>` | unset | Registered Mnemes device identity for this store. Required with `--mnemes-required`; enables atomic mutation journaling (every canonical fact creation writes a verified `mutation_journal` row in the same transaction). |
+| `--mnemes-store-id <MNEMES_STORE_ID>` | `primary` | Stable Mnemes store identifier for this local memory store. |
+| `--mnemes-stream-epoch <MNEMES_STREAM_EPOCH>` | `1` | Positive Mnemes replication stream epoch. Increment only when intentionally starting a distinct stream for the same device/store identity. |
+| `--mnemes-required` | false | Refuse to serve unless Mnemes replication identity is configured. Use for Mnemes-managed installations so a missing identity fails closed instead of silently running local-only. |
 | `--tool-profile <TOOL_PROFILE>` | `lean` | `stable`, `lean`, `standard`, `agent`, or `full`. Unknown values are rejected by typed CLI parsing before the store is opened. |
 | `-h`, `--help` | — | Print generated help. |
 

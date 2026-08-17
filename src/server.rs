@@ -4893,40 +4893,6 @@ impl SemanticMemoryServer {
     }
 
     #[tool(
-        description = "Rebuild TurboQuant derived vector artifacts from authoritative f32 embeddings. The artifacts are rebuildable acceleration data; every search still exact-reranks f32 candidates.",
-        annotations(idempotent_hint = true)
-    )]
-    fn sm_rebuild_vector_artifacts(&self) -> Result<Json<StructuredOutput>, ErrorData> {
-        let store = &self.bridge.store;
-        let result = tokio::task::block_in_place(|| {
-            Handle::current().block_on(store.rebuild_vector_artifacts())
-        });
-        match result {
-            Ok(receipt) => json_to_output(&serde_json::json!({
-                "ok": true,
-                "receipt": mcp_receipt("sm_rebuild_vector_artifacts"),
-                "schema_version": receipt.schema_version,
-                "codec_family": receipt.codec_family,
-                "codec_profile_digest": receipt.codec_profile_digest,
-                "source_row_count": receipt.source_row_count,
-                "artifact_count": receipt.artifact_count,
-                "generation_id": receipt.generation_id,
-                "source_snapshot_digest": receipt.source_snapshot_digest,
-                "artifact_manifest_digest": receipt.artifact_manifest_digest,
-                "build_receipt_id": receipt.build_receipt_id,
-                "skipped_row_count": receipt.skipped_row_count,
-                "elapsed_ms": receipt.elapsed_ms,
-                "exact_rerank_required": true,
-                "degradations": receipt.degradations,
-            })),
-            Err(e) => Err(ErrorData::internal_error(
-                format!("rebuild_vector_artifacts error: {e}"),
-                None,
-            )),
-        }
-    }
-
-    #[tool(
         description = "Check if embeddings need re-generation after a model change. Returns true if the embedding model or dimensions have changed since the last embedding was stored.",
         annotations(read_only_hint = true)
     )]
@@ -6395,49 +6361,6 @@ mod correctness_contract_tests {
                 .total_facts,
             0
         );
-    }
-
-    #[test]
-    fn rebuild_vector_artifacts_tool_returns_exact_rerank_receipt() {
-        let dir = tempfile::tempdir().unwrap();
-        let bridge = MemoryBridge::open(
-            BridgeConfig {
-                memory_dir: dir.path().to_path_buf(),
-                embedder_backend: EmbedderBackend::Mock,
-                embedding_url: String::new(),
-                embedding_model: "mock".into(),
-                embedding_dims: 768,
-                turbo_quant_enabled: true,
-                turbo_quant_bits: Some(8),
-                turbo_quant_projections: Some(16),
-                provekv_enabled: false,
-                fib_quant_enabled: false,
-                per_dim_enabled: false,
-            },
-            None,
-        )
-        .unwrap();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        runtime
-            .block_on(bridge.store.add_fact(
-                "general",
-                "artifact rebuild is derived from authoritative f32 embeddings",
-                None,
-                None,
-            ))
-            .unwrap();
-        let server = SemanticMemoryServer::new(bridge, "full");
-        let body = runtime
-            .block_on(async {
-                tokio::task::block_in_place(|| server.sm_rebuild_vector_artifacts())
-            })
-            .expect("rebuild tool should succeed");
-        let json: serde_json::Value = structured_value(&body);
-        assert_eq!(json["ok"], true);
-        assert_eq!(json["codec_family"], "turbo_quant");
-        assert_eq!(json["source_row_count"], 1);
-        assert_eq!(json["artifact_count"], 1);
-        assert_eq!(json["exact_rerank_required"], true);
     }
 
     #[test]

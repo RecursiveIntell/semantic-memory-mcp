@@ -746,6 +746,72 @@ mod http_server_tests {
         );
         assert!(result.is_err());
     }
+
+    #[test]
+    fn streamable_mcp_http_requires_auth_and_exposes_profile_tools() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = open_bridge(directory.path());
+        let server = semantic_memory_mcp::mcp_http_server::start_mcp_http_server(
+            port,
+            "test-token",
+            bridge,
+            semantic_memory_mcp::profile::ToolProfile::Full,
+        )
+        .expect("start authenticated streamable MCP HTTP server");
+
+        let client = reqwest::blocking::Client::new();
+        let endpoint = format!("http://127.0.0.1:{port}/mcp");
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                "clientInfo": {"name": "integration-test", "version": "1"}}
+        });
+        let denied = client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&initialize)
+            .send()
+            .expect("unauthenticated response");
+        assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        let initialized = client
+            .post(&endpoint)
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&initialize)
+            .send()
+            .expect("authenticated initialize response");
+        assert_eq!(initialized.status(), reqwest::StatusCode::OK);
+        let initialized_body: serde_json::Value = initialized.json().expect("initialize JSON");
+        assert_eq!(initialized_body["id"], 1);
+        assert!(initialized_body["result"].is_object());
+
+        let listed = client
+            .post(&endpoint)
+            .header("authorization", "Bearer test-token")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}))
+            .send()
+            .expect("tools/list response");
+        assert_eq!(listed.status(), reqwest::StatusCode::OK);
+        let listed_body: serde_json::Value = listed.json().expect("tools/list JSON");
+        assert!(listed_body["result"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|tool| tool["name"] == "sm_search"));
+
+        server
+            .shutdown()
+            .expect("MCP HTTP server should stop without a background panic");
+    }
 }
 
 #[cfg(feature = "full")]
