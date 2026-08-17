@@ -13,6 +13,11 @@ in-process Candle embedder. Ollama is an alternative embedder. The first Candle
 run downloads the configured Hugging Face model; after that, normal search and
 storage do not require a hosted database or API key.
 
+> **No cloud dependencies.** There are no calls to OpenAI, Anthropic, Pinecone,
+> Weaviate, Supabase, or any hosted service. Your memory stays on your machine;
+> the only network fetch is the optional one-time Candle model download from
+> Hugging Face (cached locally), and Ollama, when used, is your own server.
+
 [![Architecture](docs/architecture.svg)](docs/architecture.svg)
 
 ## Status at a glance
