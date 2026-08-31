@@ -320,13 +320,98 @@ def stats(timeout=5):
     return rpc_call_fallback("sm_stats", {}, timeout=timeout + 10)
 
 def add_fact(content, namespace="general", source=None, timeout=DEFAULT_TIMEOUT):
-    """Add a fact. Tries warm HTTP first, falls back to spawn."""
-    if http_available():
-        return http_add_fact(content, namespace=namespace, source=source, timeout=timeout)
+    """Add a fact through governed admission.
+
+    The warm HTTP /add endpoint is fail-closed by design (503: no trusted
+    authenticated authority issuer on the plain HTTP path), so a non-ok or
+    unavailable result falls through to the MCP write path. The warm server's
+    streamable-HTTP MCP endpoint performs the same governed sm_add_fact with
+    the operator-authority token held in-process; a stdio spawn is the last
+    resort. Port/env overrides (SEMANTIC_MEMORY_MCP_HTTP_PORT,
+    SEMANTIC_MEMORY_MCP_TOKEN_FILE) keep per-store/profile deployments isolated.
+    """
+    result = http_add_fact(content, namespace=namespace, source=source, timeout=timeout)
+    if result is not None and result.get("ok"):
+        return result
     args = {"content": content, "namespace": namespace}
     if source:
         args["source"] = source
+    result = mcp_http_call("sm_add_fact", args, timeout=timeout)
+    if result is not None and result.get("ok"):
+        return result
     return rpc_call_fallback("sm_add_fact", args, timeout=timeout + 10)
+
+
+MCP_HTTP_DEFAULT_PORT = 1739
+
+
+def mcp_http_token():
+    env_token = os.environ.get("SEMANTIC_MEMORY_MCP_TOKEN")
+    if env_token:
+        return env_token
+    try:
+        return Path(
+            os.environ.get(
+                "SEMANTIC_MEMORY_MCP_TOKEN_FILE",
+                str(Path.home() / ".hermes" / "semantic-memory-mcp.token"),
+            )
+        ).read_text().strip()
+    except Exception:
+        return ""
+
+
+def mcp_http_call(tool, arguments, timeout=DEFAULT_TIMEOUT):
+    """Call an MCP tool on the warm server's streamable-HTTP /mcp endpoint.
+
+    Governed mutations (sm_add_fact) are admitted here because the warm server
+    holds the operator-authority token in-process. Notifications legitimately
+    return 202 with an empty body; only parse JSON when a body was sent.
+    """
+    port = int(os.environ.get("SEMANTIC_MEMORY_MCP_HTTP_PORT", str(MCP_HTTP_DEFAULT_PORT)))
+    token = mcp_http_token()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    def post(body, session_id=None):
+        if session_id:
+            headers["MCP-Session-Id"] = session_id
+        request = Request(
+            f"http://127.0.0.1:{port}/mcp",
+            data=json.dumps(body).encode(),
+            method="POST",
+            headers=headers,
+        )
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode()
+            parsed = json.loads(raw) if raw.strip() else None
+            return parsed, response.headers.get("MCP-Session-Id")
+
+    try:
+        _, session_id = post({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "hermes-sm-hook", "version": "1"},
+            },
+        })
+        post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session_id)
+        response, _ = post({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }, session_id)
+        return json.loads(response["result"]["content"][0]["text"])
+    except Exception:
+        return None
 
 
 def http_record_outcome(query, outcome="good", query_class="A", timeout=3):
