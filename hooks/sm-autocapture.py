@@ -291,6 +291,11 @@ def dedupe_against_db(candidates):
 
 def namespace_for(cwd, category):
     """Determine namespace based on cwd and category."""
+    # Profile-scoped stores: SEMANTIC_MEMORY_NAMESPACE env (set per-profile) wins,
+    # so auto-captured facts land in that profile's own namespace in a shared DB.
+    env_ns = os.environ.get("SEMANTIC_MEMORY_NAMESPACE", "").strip()
+    if env_ns:
+        return env_ns
     # Previously returned "projects" for any cwd with a name, which
     # caused session-progress noise to accumulate in the projects namespace.
     # Now use "general" for autocaptured facts — durable facts should be

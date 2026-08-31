@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 
 # Add the agent-hooks directory to the path so we can import the HTTP client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sm_http_client import stats as http_stats, search as http_search, http_available, get_http_port
+from sm_http_client import stats as http_stats, search as http_search, http_available, get_http_port, memory_dir
 
 def http_post(path, body=None, timeout=10):
     """POST to a maintenance endpoint. Returns parsed JSON or None."""
@@ -93,7 +93,7 @@ def run_auto_management():
     # PASSIVE checkpoint (doesn't block readers, just merges committed pages).
     try:
         import sqlite3
-        db_path = str(Path.home() / ".hermes" / "semantic-memory.db" / "memory.db")
+        db_path = str(Path(memory_dir()) / "memory.db")
         if os.path.exists(db_path):
             conn = sqlite3.connect(db_path, timeout=5)
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
@@ -153,7 +153,7 @@ def main():
     # Check for stale DB -- warn if no recent activity
     try:
         import sqlite3
-        db_path = os.path.expanduser("~/.hermes/semantic-memory.db/memory.db")
+        db_path = os.path.join(memory_dir(), "memory.db")
         if os.path.exists(db_path):
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             latest = conn.execute("SELECT created_at FROM facts ORDER BY created_at DESC LIMIT 1").fetchone()
@@ -176,10 +176,15 @@ def main():
         query = f"{proj} project config hooks tools"
 
     # Search via HTTP (warm) or fallback
-    # Use priority namespaces to avoid social media noise
-    PRIORITY_NAMESPACES = ["projects", "research", "semantic-memory", "libraries",
-                           "libraries-crates", "doctrine", "agent-setup", "infrastructure",
-                           "personal", "behavioral", "codex", "recursiveintell", "general"]
+    # Priority namespaces: overridable via SEMANTIC_MEMORY_NAMESPACES (comma-separated)
+    # so profile-scoped stores (e.g. shared profile-bot DB) can recall from their own
+    # and sibling namespaces while the main agent keeps the default broad set.
+    PRIORITY_NAMESPACES = [
+        ns.strip() for ns in os.environ.get("SEMANTIC_MEMORY_NAMESPACES", "").split(",")
+        if ns.strip()
+    ] or ["projects", "research", "semantic-memory", "libraries",
+          "libraries-crates", "doctrine", "agent-setup", "infrastructure",
+          "personal", "behavioral", "codex", "recursiveintell", "general"]
     result = http_search(query, top_k=10, namespaces=PRIORITY_NAMESPACES, timeout=8)
     if result and result.get("ok"):
         hits = result.get("results") or []
