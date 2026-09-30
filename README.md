@@ -3,7 +3,7 @@
 [![MCP Badge](https://lobehub.com/badge/mcp-full/recursiveintell-semantic-memory-mcp?theme=light)](https://lobehub.com/mcp/recursiveintell-semantic-memory-mcp)
 
 `semantic-memory-mcp` is a local-first Model Context Protocol server for the
-[`semantic-memory`](../semantic-memory) Rust library. It gives MCP clients
+[`semantic-memory`](https://github.com/RecursiveIntell/semantic-memory) Rust library. It gives MCP clients
 persistent semantic search, witnessed retrieval, durable receipts, governed
 authority decisions, graph and lifecycle tools, and optional claim-ledger trust
 enrichment over a store that remains on the operator's machine.
@@ -13,10 +13,7 @@ in-process Candle embedder. Ollama is an alternative embedder. The first Candle
 run downloads the configured Hugging Face model; after that, normal search and
 storage do not require a hosted database or API key.
 
-> **No cloud dependencies.** There are no calls to OpenAI, Anthropic, Pinecone,
-> Weaviate, Supabase, or any hosted service. Your memory stays on your machine;
-> the only network fetch is the optional one-time Candle model download from
-> Hugging Face (cached locally), and Ollama, when used, is your own server.
+> **Local-first storage.** A hosted database is not required. Candle may download model artifacts from Hugging Face when its cache is empty; Ollama uses the configured endpoint. Optional integrations can have their own network paths, so review your feature/profile and endpoint configuration before sending private data.
 
 [![Architecture](docs/architecture.svg)](docs/architecture.svg)
 
@@ -55,7 +52,7 @@ Or add to your MCP client config:
   "mcpServers": {
     "semantic-memory": {
       "command": "npx",
-      "args": ["-y", "@recursiveintell/semantic-memory-mcp", "--memory-dir", "~/.local/share/semantic-memory", "--tool-profile", "agent"]
+      "args": ["-y", "@recursiveintell/semantic-memory-mcp", "--memory-dir", "/absolute/path/to/semantic-memory", "--tool-profile", "agent"]
     }
   }
 }
@@ -63,10 +60,10 @@ Or add to your MCP client config:
 
 ### Option 2: Cargo install
 
-Install the published package from crates.io:
+Install the non-yanked 0.5.8 release from crates.io. This README describes the checked-in source; inspect the installed binary's `--help` when comparing release behavior with newer main-branch changes:
 
 ```bash
-cargo install semantic-memory-mcp --locked --version '=0.5.6'
+cargo install semantic-memory-mcp --locked --version '=0.5.8'
 ```
 
 Then add to your MCP client config:
@@ -76,7 +73,7 @@ Then add to your MCP client config:
   "mcpServers": {
     "semantic-memory": {
       "command": "semantic-memory-mcp",
-      "args": ["--memory-dir", "~/.local/share/semantic-memory", "--tool-profile", "agent"]
+      "args": ["--memory-dir", "/absolute/path/to/semantic-memory", "--tool-profile", "agent"]
     }
   }
 }
