@@ -15,7 +15,7 @@ remains authoritative for the selected build and runtime profile.
 | Profile | Visible intent | Recommended use |
 | --- | --- | --- |
 | `lean` / `standard` | Four governed read-only tools: witnessed search, stored replay, assertion decision, action decision | Autonomous or least-privilege recall |
-| `agent` | Eleven bounded read-only tools: witnessed search, replay, authority decisions, fact reads, graph, namespaces, conversations, stats | Trusted coding agents (read-only until trusted issuer injected) |
+| `agent` | Current `main` source (crate `0.5.8`): 12 bounded tools (11 read-only plus governed `sm_add_fact` write). The GitHub `v1.1.0` tag (crate `0.5.6`) omits `sm_add_fact` from `agent`. | Trusted coding agents; `sm_add_fact` requires the operator-authority token. On `0.5.6`, use `full` or upgrade to a build with the updated `agent` allowlist. |
 | `full` | Every compiled router tool, including operator/admin surfaces | Interactive operators with explicit approvals |
 
 Do not infer the full profile's count from this repository: compile-time
