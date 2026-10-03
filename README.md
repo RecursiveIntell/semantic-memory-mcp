@@ -208,6 +208,7 @@ install -d -m 700 "$HOME/.config/semantic-memory"
 umask 077
 openssl rand -hex 32 > "$HOME/.config/semantic-memory/operator-authority.token"
 semantic-memory-mcp \
+  --memory-dir "$HOME/.local/share/semantic-memory" \
   --operator-authority-token-file "$HOME/.config/semantic-memory/operator-authority.token" \
   --tool-profile agent
 ```
@@ -264,7 +265,7 @@ against any profile.
 
 | Tool | Description | Profile |
 |------|-------------|---------|
-| `sm_add_fact` | Add a fact — embedded, FTS-indexed, optional entity extraction | full |
+| `sm_add_fact` | Governed fact capture; admission and extraction remain authority-gated | agent+ |
 | `sm_get_fact` | Fetch one fact by ID with full metadata | agent+ |
 | `sm_get_fact_neighbors` | Fetch a fact plus its graph neighbors with content | agent+ |
 | `sm_update_fact` | Update fact content in-place — re-embeds, updates indexes | full |
@@ -663,3 +664,4 @@ Apache-2.0. See [LICENSE](LICENSE).
 - [Claude Code plugin reference](https://code.claude.com/docs/en/plugins-reference)
 - [Codex MCP](https://developers.openai.com/codex/mcp)
 - [Codex Agent Skills](https://developers.openai.com/codex/skills)
+
