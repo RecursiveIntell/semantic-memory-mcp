@@ -366,7 +366,7 @@ POST /maintenance/rebuild-hnsw   — rebuild HNSW index
 POST /maintenance/compact-hnsw   — compact HNSW index
 ```
 
-Lean/standard/agent profiles expose only `/health`. Full exposes all routes. All non-health endpoints require Bearer token auth.
+Lean/standard/agent profiles expose only `/health`. Full exposes additional routes. Every HTTP endpoint, including `/health`, requires Bearer token authentication.
 
 ## Witnessed retrieval, replay, and authority
 
