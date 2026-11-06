@@ -192,6 +192,8 @@ if [ "$SKIP_HOOKS" = false ]; then
     
     HOOKS=(
         "sm_http_client.py"
+        "recall_policy.py"
+        "mnemes-context-recall.py"
         "sm-primer.py"
         "sm-recall.py"
         "sm-autocapture.py"
