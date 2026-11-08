@@ -28,7 +28,11 @@ Wire protocol (stdin JSON from Hermes shell-hooks bridge):
   }
 }
 """
-import json, os, re, subprocess, sys
+import json
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 # Add the agent-hooks directory to the path for the HTTP client
@@ -36,8 +40,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sm_http_client import (
     search as http_search,
     add_fact as http_add_fact,
-    http_available,
-    http_record_outcome,
 )
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -358,11 +360,6 @@ def main():
             fact_id = result.get("fact_id") or result.get("id") or ""
             if fact_id:
                 captured.append(f"{c['category']}: {content[:80]}")
-                # Record outcome for RL feedback
-                try:
-                    http_record_outcome(content[:200], outcome="good", query_class="A", timeout=3)
-                except Exception:
-                    pass
 
     if captured:
         # Log to stderr (appears in logs, doesn't interfere with output)

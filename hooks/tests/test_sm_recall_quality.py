@@ -41,7 +41,7 @@ def test_quality_labels_status_as_not_evidence():
     assert_in("needs-live-verification", q["reasons"], "reasons")
 
 
-def test_quality_labels_verified_research_as_authoritative_durable():
+def test_quality_labels_verified_research_as_untrusted_recall():
     q = mod.classify_recall_quality(
         {
             "namespace": "research",
@@ -50,8 +50,8 @@ def test_quality_labels_verified_research_as_authoritative_durable():
         },
         "ShareLock MCP poisoning",
     )
-    assert_eq(q["label"], "authoritative_durable", "label")
-    assert_eq(q["safe_as_evidence"], True, "safe_as_evidence")
+    assert_eq(q["label"], "untrusted_recall", "label")
+    assert_eq(q["safe_as_evidence"], False, "safe_as_evidence")
     assert_in("verification-signal", q["reasons"], "reasons")
 
 
@@ -63,8 +63,8 @@ def test_format_line_includes_quality_metadata():
     }
     q = mod.classify_recall_quality(result, "MCP poisoning")
     line = mod.format_recall_line(result, q, score_val=0.25)
-    assert_in("quality=authoritative_durable", line, "quality metadata")
-    assert_in("safe_evidence=yes", line, "safe evidence metadata")
+    assert_in("quality=untrusted_recall", line, "quality metadata")
+    assert_in("safe_evidence=no", line, "safe evidence metadata")
 
 
 def test_filter_omits_unsafe_by_default_and_reports_count():
@@ -89,8 +89,8 @@ def test_background_is_not_safe_evidence_without_verification_signal():
     assert_eq(q["safe_as_evidence"], False, "safe_as_evidence")
 
     kept, filtered = mod.apply_quality_gate([result], "what do you remember?", maxhits=5)
-    assert_eq(len(kept), 0, "unsafe background kept count")
-    assert_eq(len(filtered), 1, "unsafe background filtered count")
+    assert_eq(len(kept), 1, "untrusted background kept count")
+    assert_eq(len(filtered), 0, "untrusted background filtered count")
 
 
 def test_speculative_cargo_graph_proposal_is_not_safe_evidence():
