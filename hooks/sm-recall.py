@@ -7,7 +7,7 @@ facts as context. Uses adaptive routing:
   - Class A (simple): flat /search (fast, ~140ms)
   - Class B/C/D/E (complex): /search-routed (adjusts top_k, exactness)
 
-Self-RAG gate: skips retrieval for greetings, confirmations, and trivial queries.
+Self-RAG gate: skips short inputs, greetings, and confirmations.
 
 Search/capture observations do not emit utility rewards. Presentation is
 untrusted context; native owners, not keywords, decide evidence authority.
@@ -15,10 +15,13 @@ untrusted context; native owners, not keywords, decide evidence authority.
 Uses the warm HTTP server when available, falls back to spawning.
 Fails open: any error -> exit 0, no output.
 """
+import hashlib
 import json
 import os
 import re
+import stat
 import sys
+from pathlib import Path
 
 # Add the agent-hooks directory to the path for the HTTP client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -181,43 +184,143 @@ def live_verification_guidance():
 
 
 
-INJECTION_LEDGER = os.path.expanduser(
-    os.environ.get("SM_INJECTION_LEDGER",
-                   "~/.ares/semantic-memory.db/recall-injection-ledger.jsonl"))
+INJECTION_LEDGER_MAX_BYTES = 1024 * 1024
+INJECTION_LEDGER_MAX_RECORD_BYTES = 1024
+_INJECTION_LABELS = {
+    "artifact_template", "background", "duplicate_context", "graph_discovery",
+    "invalid_candidate", "output_cap", "quoted_historical", "speculative",
+    "stale_status", "untrusted_recall", "unlabeled", "other",
+}
+
+
+def _open_injection_ledger_parent(parent):
+    """Open every directory component without following symlinks."""
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        return None
+    try:
+        fd = os.open(os.path.sep, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return None
+    try:
+        for component in parent.parts[1:]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=fd,
+            )
+            os.close(fd)
+            fd = next_fd
+        directory = os.fstat(fd)
+        if (not stat.S_ISDIR(directory.st_mode)
+                or directory.st_uid != os.geteuid()
+                or directory.st_mode & 0o022):
+            os.close(fd)
+            return None
+        return fd
+    except (OSError, AttributeError, TypeError):
+        os.close(fd)
+        return None
+
+
+def _bounded_pair_count(pairs):
+    try:
+        return min(len(pairs or []), 10000)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _injection_label_counts(pairs):
+    labels = {}
+    for pair in (pairs or [])[:64]:
+        try:
+            quality = pair[1]
+            label = quality.get("label", "other") if isinstance(quality, dict) else "other"
+        except (IndexError, KeyError, TypeError):
+            label = "other"
+        if label not in _INJECTION_LABELS:
+            label = "other"
+        labels[label] = labels.get(label, 0) + 1
+    return labels
 
 
 def record_injection_outcome(query, query_class, kept_pairs, filtered_pairs):
-    """Append one JSONL line per non-trivial evaluated turn. Fail-open (I1).
+    """Best-effort append of bounded metadata, enabled only by explicit path.
 
-    kept_pairs/filtered_pairs: lists of (result, quality) tuples, or [] when
-    the turn was rejected by the score gate before quality labelling.
+    New records contain a query digest and aggregate labels/counts only, never
+    query text, fact IDs, snippets, or fact contents. This does not anonymize
+    queries or sanitize legacy records. Existing ledgers are append-only and
+    are never truncated or permission-repaired. Opt-in file safety uses POSIX
+    primitives; unavailable support disables only this optional telemetry.
     """
+    raw_path = os.environ.get("SM_INJECTION_LEDGER", "").strip()
+    if not raw_path:
+        return
+
+    parent_fd = None
+    fd = None
+    locked = False
+    fcntl = None
     try:
-        import time as _time
+        from datetime import datetime, timezone
+        import fcntl
 
-        def _labels(pairs):
-            d = {}
-            for _r, q in (pairs or []):
-                lbl = q.get("label", "unknown")
-                d[lbl] = d.get(lbl, 0) + 1
-            return d
+        path = Path(os.path.expanduser(raw_path))
+        if not path.is_absolute() or ".." in path.parts or not path.name:
+            return
+        parent_fd = _open_injection_ledger_parent(path.parent)
+        if parent_fd is None:
+            return
 
-        kept_n = len(kept_pairs or [])
-        filtered_n = len(filtered_pairs or [])
+        query_text = str(query or "")
+        query_class = query_class if query_class in {"A", "B", "C", "D", "E"} else "unknown"
         rec = {
-            "ts": _time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "query": (query or "")[:200],
+            "schema": "semantic-memory.recall-injection-metadata/v1",
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "query_sha256": hashlib.sha256(query_text.encode("utf-8", errors="replace")).hexdigest(),
             "query_class": query_class,
-            "kept_n": kept_n,
-            "filtered_n": filtered_n,
-            "kept_labels": _labels(kept_pairs),
-            "filtered_labels": _labels(filtered_pairs),
-            "injected": kept_n > 0,
+            "kept_n": _bounded_pair_count(kept_pairs),
+            "filtered_n": _bounded_pair_count(filtered_pairs),
+            "kept_labels": _injection_label_counts(kept_pairs),
+            "filtered_labels": _injection_label_counts(filtered_pairs),
+            "injected": bool(kept_pairs),
         }
-        with open(INJECTION_LEDGER, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        record = (json.dumps(rec, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+        if len(record) > INJECTION_LEDGER_MAX_RECORD_BYTES:
+            return
+
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) & 0o077):
+            return
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked = True
+        info = os.fstat(fd)
+        if info.st_size + len(record) > INJECTION_LEDGER_MAX_BYTES:
+            return
+        os.write(fd, record)
     except Exception:
-        pass  # fail open, never block the LLM call
+        pass  # fail open: telemetry must never block recall
+    finally:
+        if fd is not None:
+            if locked and fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if parent_fd is not None:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 def main():
@@ -244,22 +347,6 @@ def main():
            for p in ["can you", "could you", "would you", "will you"]):
         return 0
 
-    # Trivial-intent gate: queries with no durable-knowledge content.
-    # Two rules: (1) explicit smalltalk/time/weather patterns; (2) fewer than
-    # 2 informative terms after stopword removal cannot name anything worth
-    # recalling. Both must be evaluated AFTER the SKIP_PHRASES exact match
-    # and BEFORE classify_query() so trivial prompts never reach the KB.
-    _TRIVIAL_PATTERNS = (
-        r"^(what|whats|what's)\s+(time|day|date)\b",
-        r"\bhow\s+(are|r)\s+(you|u)\b",
-        r"\bweather\b",
-        r"^(tell|say)\s+(me\s+)?(a\s+)?(joke|story|funny)\b",
-        r"^(hi|hey|hello|yo|sup|hiya)\b[\s,!.]+$",
-    )
-    if any(re.search(p, prompt_lower) for p in _TRIVIAL_PATTERNS):
-        return 0
-    if len(terms(prompt)) < 2:
-        return 0
 
     # Classify query complexity
     query_class = classify_query(prompt)

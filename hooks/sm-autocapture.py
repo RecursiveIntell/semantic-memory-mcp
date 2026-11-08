@@ -69,7 +69,7 @@ def resolve_binary():
 
 def memory_dir():
     return os.environ.get("SEMANTIC_MEMORY_DIR",
-                          str(Path.home() / ".ares/semantic-memory.db"))
+                          str(Path.home() / ".hermes/semantic-memory.db"))
 
 def rpc_call(binary, memdir, tool, arguments, timeout=10):
     reqs = [
