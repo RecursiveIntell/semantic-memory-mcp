@@ -186,7 +186,7 @@ fn normalize_http_auth_token(raw: &str, source: &str) -> anyhow::Result<String> 
     Ok(token.to_string())
 }
 
-#[cfg(all(not(feature = "stable"), unix))]
+#[cfg(all(not(all(feature = "stable", not(feature = "full"))), unix))]
 fn validate_http_token_file_permissions(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -203,7 +203,7 @@ fn validate_http_token_file_permissions(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(all(not(feature = "stable"), not(unix)))]
+#[cfg(all(not(all(feature = "stable", not(feature = "full"))), not(unix)))]
 fn validate_http_token_file_permissions(_path: &Path) -> anyhow::Result<()> {
     // Windows and other non-Unix platforms do not expose POSIX mode bits. The
     // caller still validates token content; platform-specific ACL enforcement
