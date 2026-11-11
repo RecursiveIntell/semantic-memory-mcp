@@ -100,7 +100,7 @@ claim-ledger = { version = "0.3.0", path = "../claim-ledger", optional = true }
 llm-output-parser = { version = "0.2.0", path = "../llm-output-parser", optional = true }
 knowledge-runtime = { version = "0.1.0", path = "../knowledge-runtime", optional = true }
 boundary-compiler = { version = "0.1.0", path = "../boundary-compiler" }
-rmcp = { version = "1.7.0", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
+rmcp = { version = "3.9", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
 axum = "0.8"
 bytes = "1"
 http-body-util = "0.1"

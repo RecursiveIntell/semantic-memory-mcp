@@ -5567,7 +5567,12 @@ mod correctness_contract_tests {
             "ok": true,
             "fact_id": "fact-1",
         }));
-        let result = output.into_call_tool_result().expect("tool result");
+        // rmcp 3.9: into_call_tool_result returns the CallToolResponse
+        // outcome enum; a completed call wraps CallToolResult.
+        let result = match output.into_call_tool_result().expect("tool result") {
+            rmcp::model::CallToolResponse::Complete(result) => result,
+            other => panic!("expected completed tool result, got {other:?}"),
+        };
 
         assert_eq!(
             result.structured_content,
@@ -7100,7 +7105,7 @@ impl ServerHandler for SemanticMemoryServer {
         &self,
         request: rmcp::model::GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResponse, rmcp::ErrorData>>
            + rmcp::service::MaybeSendFuture
            + '_ {
         let args: Vec<(String, String)> = request
@@ -7109,8 +7114,10 @@ impl ServerHandler for SemanticMemoryServer {
             .into_iter()
             .map(|(k, v)| (k, v.to_string()))
             .collect();
+        // rmcp 3.9: handlers return the GetPromptResponse enum; a completed
+        // prompt wraps in Complete via From<GetPromptResult>.
         std::future::ready(match crate::skills::get_prompt(&request.name, &args) {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(rmcp::model::GetPromptResponse::Complete(result)),
             Err(e) => Err(rmcp::ErrorData::invalid_params(e, None)),
         })
     }
@@ -7146,11 +7153,12 @@ impl ServerHandler for SemanticMemoryServer {
         &self,
         request: rmcp::model::ReadResourceRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResult, rmcp::ErrorData>>
+    ) -> impl std::future::Future<Output = Result<rmcp::model::ReadResourceResponse, rmcp::ErrorData>>
            + rmcp::service::MaybeSendFuture
            + '_ {
+        // rmcp 3.9: handlers return the ReadResourceResponse enum.
         std::future::ready(match crate::skills::read_resource(&request.uri) {
-            Ok(result) => Ok(result),
+            Ok(result) => Ok(rmcp::model::ReadResourceResponse::Complete(result)),
             Err(e) => Err(rmcp::ErrorData::invalid_params(e, None)),
         })
     }

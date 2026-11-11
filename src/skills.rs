@@ -15,8 +15,8 @@
 //!   workflow, with the exact tool-call sequence.
 
 use rmcp::model::{
-    Annotated, GetPromptResult, Prompt, PromptArgument, PromptMessage, PromptMessageContent,
-    PromptMessageRole, RawResource, RawResourceTemplate, ReadResourceResult, ResourceContents,
+    ContentBlock, GetPromptResult, Prompt, PromptArgument, PromptMessage, ReadResourceResult,
+    Resource, ResourceContents, ResourceTemplate, Role,
 };
 
 // ─── Prompt definitions ─────────────────────────────────────────────────
@@ -126,10 +126,9 @@ pub fn get_prompt(name: &str, args: &[(String, String)]) -> Result<GetPromptResu
 // ─── Resource definitions ───────────────────────────────────────────────
 
 /// All static resources exposed by this MCP server.
-pub fn all_resources() -> Vec<Annotated<RawResource>> {
+pub fn all_resources() -> Vec<Resource> {
     vec![
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/retrieval-strategy",
                 "retrieval-strategy",
             )
@@ -137,10 +136,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Primary strategy for source-first semantic-memory recall, adaptive routing,                  graph hydration, contradiction checks, and evidence-backed retrospectives.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/memory-curator",
                 "memory-curator",
             )
@@ -148,10 +144,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Audit and improve the semantic memory store: find duplicates, contradictions,                  stale facts, and graph gaps. Reconcile only after user approval.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/memory-maintenance",
                 "memory-maintenance",
             )
@@ -159,10 +152,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Store-level maintenance: integrity check, FTS rebuild, vacuum, re-embedding,                  index repair, and process cleanup.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/knowledge-graph-explorer",
                 "knowledge-graph-explorer",
             )
@@ -170,10 +160,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Explore the typed knowledge graph: related items, shortest paths between                  concepts, community clusters, and topological voids.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/memory-keeper",
                 "memory-keeper",
             )
@@ -181,10 +168,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Delegate heavy memory operations (audit, bulk ingest, contradiction sweep,                  dedup, edge population) to a focused subagent.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/pooled-memory-operations",
                 "pooled-memory-operations",
             )
@@ -192,10 +176,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "Multi-device memory mesh: identity/provenance, typed synchronization,                  per-device SQLite primaries and server replicas, sparse routed retrieval.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://skill/standard-workflow",
                 "standard-workflow",
             )
@@ -203,10 +184,7 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "The canonical workflow for using semantic-memory MCP tools: search first,                  verify against current sources, store durable facts, supersede stale ones.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
-        Annotated::new(
-            RawResource::new(
+                    Resource::new(
                 "sm://protocol/authority",
                 "authority-model",
             )
@@ -214,20 +192,17 @@ pub fn all_resources() -> Vec<Annotated<RawResource>> {
                 "The governed authority model: recall authority vs assertion authority vs                  action authority. How to use sm_decide_assertion_authority and                  sm_decide_action_authority.",
             )
             .with_mime_type("text/markdown"),
-            None,
-        ),
     ]
 }
 
-pub fn all_resource_templates() -> Vec<Annotated<RawResourceTemplate>> {
-    vec![Annotated::new(
-        RawResourceTemplate::new("sm://skill/{skill_name}", "skill-by-name")
+pub fn all_resource_templates() -> Vec<ResourceTemplate> {
+    vec![
+        ResourceTemplate::new("sm://skill/{skill_name}", "skill-by-name")
             .with_description(
                 "Fetch a skill document by name. Available skills: retrieval-strategy,                  memory-curator, memory-maintenance, knowledge-graph-explorer,                  memory-keeper, pooled-memory-operations, standard-workflow,                  authority-model.",
             )
             .with_mime_type("text/markdown"),
-        None,
-    )]
+    ]
 }
 
 pub fn read_resource(uri: &str) -> Result<ReadResourceResult, String> {
@@ -304,8 +279,8 @@ fn prompt_recall(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!("Recall: {query}")))
 }
@@ -350,8 +325,8 @@ fn prompt_capture(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!("Capture fact in {namespace}")))
 }
@@ -393,8 +368,8 @@ fn prompt_audit(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!(
         "Audit semantic memory{}",
@@ -457,8 +432,8 @@ fn prompt_explore(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!("Explore graph: {topic}")))
 }
@@ -520,8 +495,8 @@ fn prompt_maintenance(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!("Maintenance: {desc}")))
 }
@@ -556,8 +531,8 @@ fn prompt_supersede(
     );
 
     Ok(GetPromptResult::new(vec![
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(system)),
-        PromptMessage::new(PromptMessageRole::User, PromptMessageContent::text(user)),
+        PromptMessage::new(Role::User, ContentBlock::text(system)),
+        PromptMessage::new(Role::User, ContentBlock::text(user)),
     ])
     .with_description(format!("Supersede fact {old_fact_id}")))
 }
