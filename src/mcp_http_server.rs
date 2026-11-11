@@ -128,7 +128,9 @@ pub fn start_mcp_http_server(
                 // The stdio relay is intentionally stateless. It forwards each
                 // JSON-RPC request independently and does not create durable
                 // transport sessions inside the warm store owner.
-                config.stateful_mode = false;
+                // rmcp 3.9 renamed stateful_mode -> legacy_session_mode (with
+                // inverted polarity and legacy-protocol-only scope).
+                config.legacy_session_mode = false;
                 config.json_response = true;
                 config
             },
