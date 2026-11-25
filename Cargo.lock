@@ -2336,6 +2336,7 @@ dependencies = [
 name = "knowledge-runtime"
 version = "0.1.0"
 dependencies = [
+ "bitemporal-runtime",
  "chrono",
  "constraint-compiler",
  "forge-memory-bridge",

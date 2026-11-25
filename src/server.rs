@@ -1435,6 +1435,25 @@ impl SemanticMemoryServer {
                     fresh_results
                 };
                 let superseded_filtered_count = results.len().saturating_sub(result_refs.len());
+
+                #[cfg(feature = "orchestration")]
+                let orchestration_warnings: Vec<String> = {
+                    let ns0 = namespaces
+                        .as_ref()
+                        .and_then(|v| v.first().cloned())
+                        .unwrap_or_else(|| "default".to_string());
+                    let q = query.clone();
+                    let st = store.clone();
+                    tokio::task::block_in_place(|| {
+                        Handle::current().block_on(crate::query_orchestration::query_with_warnings(
+                            st, &q, &ns0,
+                        ))
+                    })
+                    .map(|o| o.warnings)
+                    .unwrap_or_default()
+                };
+                #[cfg(not(feature = "orchestration"))]
+                let orchestration_warnings: Vec<String> = Vec::new();
                 let json_results: Vec<serde_json::Value> = result_refs
                     .iter()
                     .take(requested_k)
@@ -1464,6 +1483,7 @@ impl SemanticMemoryServer {
                     "results": json_results,
                     "count": json_results.len(),
                     "superseded_filtered_count": superseded_filtered_count,
+                    "warnings": orchestration_warnings,
                 }))
             }
             Err(e) => Err(ErrorData::internal_error(
