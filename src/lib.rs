@@ -12,6 +12,8 @@ pub mod http_server;
 pub mod http_server;
 pub mod mcp_http_server;
 pub mod profile;
+#[cfg(feature = "orchestration")]
+pub mod query_orchestration;
 #[cfg(feature = "search")]
 pub mod server;
 #[cfg(not(feature = "search"))]
