@@ -366,7 +366,7 @@ POST /maintenance/rebuild-hnsw   — rebuild HNSW index
 POST /maintenance/compact-hnsw   — compact HNSW index
 ```
 
-Lean/standard/agent profiles expose only `/health`. Full exposes all routes. All non-health endpoints require Bearer token auth.
+Lean/standard/agent profiles expose only `/health`. Full exposes additional routes. Every HTTP endpoint, including `/health`, requires Bearer token authentication.
 
 ## Witnessed retrieval, replay, and authority
 
@@ -511,7 +511,7 @@ Production-wired in the default build:
 
 Opt-in, feature-gated, or operationally experimental:
 
-- the loopback HTTP server is an auxiliary API, not MCP and not authenticated;
+- the loopback HTTP server is an auxiliary API, separate from MCP; it requires a configured Bearer token on every HTTP request;
 - `mock` embeddings are for tests;
 - `hnsw` is an optional alternative to the default usearch backend;
 - TurboQuant requires `--turbo-quant` and the local `full` cfg wiring;
@@ -544,10 +544,10 @@ POST /maintenance/compact-hnsw
 ```
 
 The HTTP sidecar applies the selected profile below transport. Lean, standard,
-and agent expose only `/health`; the explicit full operator profile exposes the
-authenticated non-health surface. All non-health requests require a valid bearer
-token. Mutation handlers without a trusted authority issuer fail closed. All
-requests still require loopback Host/Origin validation.
+and agent expose only `/health`; the explicit full operator profile exposes
+additional routes. Every HTTP request, including `/health`, requires a valid
+bearer token. Mutation handlers without a trusted authority issuer fail closed.
+All requests still require loopback Host/Origin validation.
 
 ## Agent integrations
 
